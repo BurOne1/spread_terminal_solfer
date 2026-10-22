@@ -1,0 +1,285 @@
+from django.http import JsonResponse
+from django.shortcuts import render
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
+import json
+
+from market.models import Candle, Instrument, Pair
+from strategy.models import EquityPoint, SpreadBar
+
+DEFAULT_LEVELS = (0.01, 0.015, 0.02)
+DEFAULT_TP = (0.0025, 0.0)
+
+
+def _pair(code):
+    pairs = Pair.objects.filter(active=True)
+    if code:
+        return pairs.filter(code=code).first() or pairs.first()
+    return pairs.first()
+
+
+def _contracts(pair):
+    if pair is None:
+        return []
+    return list(
+        Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE, roll_at__isnull=False)
+        .order_by("roll_at")
+        .values_list("code", flat=True)
+    )
+
+
+def _points(pair, start="", end=""):
+    if pair is None:
+        return []
+    codes = _contracts(pair)
+    if start and end and start in codes and end in codes:
+        left, right = codes.index(start), codes.index(end)
+        if left > right:
+            left, right = right, left
+        codes = codes[left:right + 1]
+    bars = SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("ts")
+    if start or end:
+        bars = bars.filter(contract__code__in=codes)
+    scale = pair.future_scale or 1
+    perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
+    perp_ohlc = {}
+    if perp is not None:
+        perp_ohlc = {
+            ts: (float(open_), float(high), float(low), float(close))
+            for ts, open_, high, low, close in Candle.objects.filter(instrument=perp).values_list(
+                "ts", "open", "high", "low", "close"
+            )
+        }
+    future_ohlc = {}
+    for instrument in Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE, code__in=codes):
+        for ts, open_, high, low, close in Candle.objects.filter(instrument=instrument).values_list(
+            "ts", "open", "high", "low", "close"
+        ):
+            future_ohlc[ts] = (float(open_) / scale, float(high) / scale, float(low) / scale, float(close) / scale)
+    rows = []
+    for bar in bars:
+        raw = float(bar.raw_spread)
+        candle = {"o": raw, "h": raw, "l": raw, "c": raw}
+        future = future_ohlc.get(bar.ts)
+        perp_bar = perp_ohlc.get(bar.ts)
+        if future and perp_bar:
+            opened = future[0] - perp_bar[0]
+            closed = future[3] - perp_bar[3]
+            high = max(future[1] - perp_bar[2], future[2] - perp_bar[1], opened, closed)
+            low = min(future[1] - perp_bar[2], future[2] - perp_bar[1], opened, closed)
+            candle = {"o": opened, "h": high, "l": low, "c": closed}
+        rows.append({
+            "t": bar.ts.isoformat(),
+            "contract": bar.contract.code,
+            "raw": raw,
+            "rate": None if bar.spread_rate is None else float(bar.spread_rate),
+            "days": bar.days_left,
+            "candle": candle,
+        })
+    return rows
+
+
+def _pnl(pair, start="", end=""):
+    if pair is None:
+        return []
+    codes = _contracts(pair)
+    if start and end and start in codes and end in codes:
+        left, right = codes.index(start), codes.index(end)
+        if left > right:
+            left, right = right, left
+        codes = codes[left:right + 1]
+    rows = EquityPoint.objects.filter(pair=pair).order_by("ts")
+    if start or end:
+        rows = rows.filter(contract__in=codes)
+    return [
+        {
+            "t": row.ts.isoformat(),
+            "contract": row.contract,
+            "equity": float(row.equity),
+            "marker": row.marker,
+        }
+        for row in rows
+    ]
+
+
+def _pcts(pair):
+    levels = pair.long_levels or list(DEFAULT_LEVELS)
+    tp = pair.long_tp or list(DEFAULT_TP)
+    return [float(item) for item in levels], [float(item) for item in tp]
+
+
+def _levels(pair):
+    if pair is None:
+        return {"long": [], "short": [], "tp": [], "pcts": [], "tp_pcts": []}
+    level_pcts, tp_pcts = _pcts(pair)
+    spot = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
+    if spot is None:
+        spot = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
+    last = None
+    if spot is not None:
+        last = Candle.objects.filter(instrument=spot).order_by("-ts").values_list("close", flat=True).first()
+    if last is None:
+        return {"long": [], "short": [], "tp": [], "pcts": level_pcts, "tp_pcts": tp_pcts, "spot": None}
+    price = float(last)
+    return {
+        "long": [-price * pct for pct in level_pcts],
+        "short": [price * pct for pct in level_pcts],
+        "tp": [price * pct if pct else 0 for pct in tp_pcts] + [-price * pct for pct in tp_pcts if pct],
+        "pcts": level_pcts,
+        "tp_pcts": tp_pcts,
+        "spot": price,
+    }
+
+
+def _funding(pair):
+    if pair is not None and pair.foreign_source == "EWMA14":
+        from rates.models import FundingPoint
+        return [
+            {"d": ts.date().isoformat(), "v": float(rate)}
+            for ts, rate in FundingPoint.objects.filter(pair=pair).order_by("ts").values_list("ts", "rate")
+        ]
+    from rates.models import FundingDay
+    from rates.funding import funding_field
+    field = funding_field(pair)
+    return [
+        {"d": day.isoformat(), "v": float(value)}
+        for day, value in FundingDay.objects.order_by("date").values_list("date", field)
+        if value is not None
+    ]
+
+
+def home(request):
+    pairs = list(Pair.objects.filter(active=True).order_by("code"))
+    pair = _pair(request.GET.get("pair", ""))
+    contracts = _contracts(pair)
+    start = request.GET.get("from", "")
+    end = request.GET.get("to", "")
+    if start not in contracts:
+        start = contracts[0] if contracts else ""
+    if end not in contracts:
+        end = contracts[-1] if contracts else ""
+    points = _points(pair, start, end)
+    pnl = _pnl(pair, start, end)
+    funding = _funding(pair)
+    return render(request, "charts/home.html", {
+        "pairs": pairs,
+        "pair": pair,
+        "contracts": contracts,
+        "start": start,
+        "end": end,
+        "points": points,
+        "pnl": pnl,
+        "funding": funding,
+        "levels": _levels(pair),
+        "count": len(points),
+    })
+
+
+def _rate_label(pair):
+    if pair is None:
+        return ""
+    if pair.foreign_source == "NONE":
+        return "только RUONIA"
+    if pair.foreign_source == "EWMA14":
+        return "EWMA14 фандинга"
+    return pair.foreign_source
+
+
+def spread_json(request):
+    pair = _pair(request.GET.get("pair", ""))
+    contracts = _contracts(pair)
+    start = request.GET.get("from", "")
+    end = request.GET.get("to", "")
+    if start not in contracts:
+        start = contracts[0] if contracts else ""
+    if end not in contracts:
+        end = contracts[-1] if contracts else ""
+    points = _points(pair, start, end)
+    funding = _funding(pair)
+    return JsonResponse({
+        "pair": "" if pair is None else pair.code,
+        "title": "" if pair is None else f"{pair.future_root} − {pair.perp_code}",
+        "spot": "" if pair is None else pair.spot_code,
+        "rate": _rate_label(pair),
+        "quote": "" if pair is None else pair.quote,
+        "root": "" if pair is None else pair.future_root,
+        "contracts": contracts,
+        "from": start,
+        "to": end,
+        "count": len(points),
+        "points": points,
+        "funding": funding,
+        "pnl": _pnl(pair, start, end),
+        "levels": _levels(pair),
+    })
+
+
+@csrf_exempt
+@require_POST
+def save_levels(request):
+    pair = _pair(request.GET.get("pair", ""))
+    if pair is None:
+        return JsonResponse({"error": "нет пары"}, status=404)
+    body = json.loads(request.body or "{}")
+    pair.long_levels = [float(item) / 100 for item in body.get("entries", [])]
+    pair.short_levels = pair.long_levels
+    pair.long_tp = [float(item) / 100 for item in body.get("takes", [])]
+    pair.short_tp = pair.long_tp
+    pair.save(update_fields=["long_levels", "short_levels", "long_tp", "short_tp"])
+    return JsonResponse({"ok": True, "levels": _levels(pair)})
+
+
+@csrf_exempt
+@require_POST
+def recalc(request):
+    pair = _pair(request.GET.get("pair", ""))
+    if pair is None:
+        return JsonResponse({"error": "нет пары"}, status=404)
+    from decimal import Decimal
+    from rates.models import FundingDay
+    from strategy.engine import run
+    bars = [
+        {
+            "ts": bar.ts, "contract": bar.contract.code,
+            "raw": float(bar.raw_spread),
+            "rate": None if bar.spread_rate is None else float(bar.spread_rate),
+            "spot": float(bar.spot),
+            "fair": None if bar.fair is None else float(bar.fair),
+            "future": float(bar.future_close), "perp": float(bar.perp_close),
+        }
+        for bar in SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("ts")
+    ]
+    from rates.funding import funding_field
+    funding_mode = "daily"
+    if pair.foreign_source == "EWMA14":
+        from rates.models import FundingPoint
+        funding = [
+            (ts, float(rate))
+            for ts, rate in FundingPoint.objects.filter(pair=pair).order_by("ts").values_list("ts", "rate")
+        ]
+        funding_mode = "interval"
+    else:
+        field = funding_field(pair)
+        funding = [
+            (day, float(value))
+            for day, value in FundingDay.objects.order_by("date").values_list("date", field)
+            if value is not None
+        ]
+    level_pcts, tp_pcts = _pcts(pair)
+    body = json.loads(request.body or "{}")
+    points, trades = run(
+        bars, funding, level_pcts, tp_pcts,
+        entry_mode=body.get("entry", "touch"),
+        average=bool(body.get("average", True)),
+        notional=pair.lot or 1000,
+        funding_mode=funding_mode,
+    )
+    EquityPoint.objects.filter(pair=pair).delete()
+    EquityPoint.objects.bulk_create([
+        EquityPoint(
+            pair=pair, ts=point["t"], contract=point["contract"],
+            equity=Decimal(f"{point['equity']:.2f}"), marker=point["marker"],
+        )
+        for point in points
+    ], batch_size=1000)
+    return JsonResponse({"ok": True, "trades": len(trades), "pnl": points})

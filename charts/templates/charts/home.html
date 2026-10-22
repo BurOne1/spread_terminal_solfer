@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>{% if pair %}{{ pair.future_root }} − {{ pair.perp_code }}{% else %}спред{% endif %}</title>
+  <script src="https://unpkg.com/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://unpkg.com/lightweight-charts-drawing@0.6.2/dist/lightweight-charts-drawing.umd.cjs"></script>
+  <style>
+    :root { --bg:#f4f6f8; --card:#fff; --ink:#1b2430; --muted:#667085; --line:#e6ebf1; --blue:#2f6fdb; --red:#e25b45; --green:#168a4a; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 "Segoe UI", sans-serif; }
+    .page { max-width: 1760px; margin: 0 auto; padding: 16px 14px 36px; }
+    header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 14px; }
+    h1 { margin: 0; font-size: 22px; font-weight: 650; }
+    .sub { margin: 4px 0 0; color: var(--muted); }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    select, .toolbar label { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 12px; align-items: start; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+    .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+    .legend { display: flex; gap: 12px; color: var(--muted); font-size: 12px; }
+    .swatch { display: inline-block; width: 12px; height: 2px; margin-right: 6px; vertical-align: middle; }
+    .count { color: var(--muted); font-size: 12px; }
+    .live { color: var(--green); }
+    .plot { position: relative; }
+    .pane { height: 420px; }
+    .pane.small { height: 180px; }
+    .cursor { position: absolute; top: 0; bottom: 28px; width: 1px; background: #98a2b3; pointer-events: none; display: none; }
+    .split { height: 8px; cursor: row-resize; background: transparent; }
+    .split:hover { background: #d9e2ef; }
+    .side { position: sticky; top: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+    .side select, .side input[type="number"] { width: 100%; }
+    .side h2 { margin: 0 0 4px; font-size: 15px; }
+    .hint, .note { color: var(--muted); font-size: 12px; }
+    .group { margin: 12px 0 6px; color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+    .level { display: grid; grid-template-columns: 8px 1fr auto auto; gap: 8px; align-items: center; padding: 8px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 10px; }
+    .level.armed { border-color: var(--blue); background: #f3f7ff; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .level input { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+    .level button, .add, .side > button { border: 0; border-radius: 8px; padding: 6px 8px; cursor: pointer; }
+    .pick { background: #eef3fb; color: var(--blue); }
+    .drop { background: #f6f1f0; color: var(--red); }
+    .add, .side > button { width: 100%; margin-top: 8px; padding: 9px 10px; background: var(--ink); color: #fff; }
+    .side > button.ghost { background: #eef1f5; color: var(--ink); }
+    .drawbar { display: flex; flex-wrap: wrap; gap: 4px; }
+    .drawbar button { border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 8px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
+    .drawbar button.on { border-color: var(--blue); background: #eef3fb; color: var(--blue); font-weight: 650; }
+    .editor { display: none; position: absolute; top: 10px; left: 10px; z-index: 5; gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.96); box-shadow: 0 6px 18px rgba(27,36,48,.12); font-size: 12px; }
+    .editor.show { display: flex; flex-wrap: wrap; }
+    .editor label { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+    .editor input[type="number"] { width: 52px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
+    .editor select { border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
+    .editor button { border: 0; border-radius: 8px; padding: 5px 8px; background: #f6f1f0; color: var(--red); cursor: pointer; }
+    @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } .side { position: static; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div>
+        <h1 id="title">{% if pair %}{{ pair.future_root }} − {{ pair.perp_code }}{% else %}спред{% endif %}</h1>
+        <p class="sub" id="subtitle">{% if pair %}Спот {{ pair.spot_code }}, ставка {% if pair.foreign_source == "NONE" %}только RUONIA{% elif pair.foreign_source == "EWMA14" %}EWMA14 фандинга{% else %}{{ pair.foreign_source }}{% endif %}, {{ pair.quote }}{% endif %}</p>
+      </div>
+      <div class="toolbar">
+        {% if pairs %}
+          <select id="pair">{% for item in pairs %}<option value="{{ item.code }}" {% if pair and item.code == pair.code %}selected{% endif %}>{{ item.code }} · {{ item.title }}</option>{% endfor %}</select>
+        {% endif %}
+        <select id="style"><option value="line">линия</option><option value="candle">свечи</option></select>
+        <label>с <select id="from">{% for code in contracts %}<option value="{{ code }}" {% if code == start %}selected{% endif %}>{{ code|cut:pair.future_root }}</option>{% endfor %}</select></label>
+        <label>по <select id="to">{% for code in contracts %}<option value="{{ code }}" {% if code == end %}selected{% endif %}>{{ code|cut:pair.future_root }}</option>{% endfor %}</select></label>
+      </div>
+    </header>
+    <div class="layout">
+      <div id="stack">
+        <section class="card">
+          <div class="card-head">
+            <div class="legend">
+              <span><i class="swatch" style="background:#2f6fdb"></i>сырой спред</span>
+              <span><i class="swatch" style="background:#e25b45"></i>spread_rate</span>
+              <span><i class="swatch" style="background:#168a4a"></i>вход</span>
+              <span><i class="swatch" style="background:#e25b45"></i>выход</span>
+            </div>
+            <div class="drawbar" id="drawbar">
+              <button type="button" data-tool="">курсор</button>
+              <button type="button" data-tool="trend-line">линия</button>
+              <button type="button" data-tool="ray">луч</button>
+              <button type="button" data-tool="horizontal-line">гориз.</button>
+              <button type="button" data-tool="vertical-line">верт.</button>
+              <button type="button" data-tool="parallel-channel">канал</button>
+              <button type="button" data-tool="fib-retracement">фибо</button>
+              <button type="button" data-tool="rectangle">прямоуг.</button>
+              <button type="button" data-clear="1">очистить</button>
+            </div>
+            <span class="count" id="status">{{ count }} баров</span>
+          </div>
+          <div class="plot">
+            <div class="editor" id="editor">
+              <label>цвет <input type="color" id="draw-color" value="#2962ff"></label>
+              <label>толщина <input type="number" id="draw-width" min="1" max="6" step="1" value="1"></label>
+              <label>линия <select id="draw-style"><option value="solid">сплошная</option><option value="dashed">пунктир</option><option value="dotted">точки</option></select></label>
+              <label>прозрачность <input type="range" id="draw-alpha" min="0" max="90" value="80"></label>
+              <label><input type="checkbox" id="draw-fill" checked> заливка</label>
+              <button type="button" id="draw-delete">удалить</button>
+            </div>
+            <div id="chart" class="pane"></div><div class="cursor" id="spread-cursor"></div>
+          </div>
+        </section>
+        <div class="split" data-above="chart" data-below="carry"></div>
+        <section class="card" id="carry-card">
+          <div class="card-head">
+            <div class="legend"><span id="indicator-title">фандинг − контанго</span></div>
+            <span class="count" id="carry-status"></span>
+          </div>
+          <div class="plot"><div id="carry" class="pane small"></div><div class="cursor" id="carry-cursor"></div></div>
+        </section>
+        <div class="split" data-above="carry" data-below="pnl"></div>
+        <section class="card">
+          <div class="card-head">
+            <div class="legend"><span><i class="swatch" style="background:#2f6fdb"></i>PNL контракта</span></div>
+            <span class="count" id="pnl-status"></span>
+          </div>
+          <div class="plot"><div id="pnl" class="pane small"></div><div class="cursor" id="pnl-cursor"></div></div>
+        </section>
+      </div>
+      <aside class="side">
+        <h2>Уровни</h2>
+        <p class="hint">Процент спота. Можно вписать или взять кликом по графику.</p>
+        <div class="group">Вход</div>
+        <select id="entry-mode"><option value="touch">при достижении уровня</option><option value="reverse">обратное пробитие</option></select>
+        <label class="check"><input id="average" type="checkbox" checked> усреднять глубже</label>
+        <div id="entry-list"></div>
+        <button class="add" type="button" data-add="entry">+ вход</button>
+        <div class="group">Тейки</div>
+        <div id="take-list"></div>
+        <button class="add" type="button" data-add="take">+ тейк</button>
+        <button id="save-levels" type="button">Применить линии</button>
+        <button id="recalc" class="ghost" type="button">Пересчитать стратегию</button>
+        <p class="note" id="level-note">Хранятся у пары.</p>
+        <div class="group">Индикатор</div>
+        <select id="indicator">
+          <option value="carry">фандинг − контанго</option>
+          <option value="zscore">z-score</option>
+          <option value="off">скрыть</option>
+        </select>
+        <p class="note" id="indicator-note">средний фандинг за дни до склейки × эти дни − сырой спред × 1000</p>
+      </aside>
+    </div>
+  </div>
+  {{ points|json_script:"points-data" }}
+  {{ pnl|json_script:"pnl-data" }}
+  {{ funding|json_script:"funding-data" }}
+  {{ levels|json_script:"levels-data" }}
+  <script>
+    let points = JSON.parse(document.getElementById("points-data").textContent);
+    let pnl = JSON.parse(document.getElementById("pnl-data").textContent);
+    let funding = JSON.parse(document.getElementById("funding-data").textContent);
+    const levels = JSON.parse(document.getElementById("levels-data").textContent);
+    const status = document.getElementById("status");
+    const pnlStatus = document.getElementById("pnl-status");
+    const look = {
+      layout: { background: { color: "#fff" }, textColor: "#667085", fontFamily: "Segoe UI, sans-serif" },
+      grid: { vertLines: { color: "#f0f3f7" }, horzLines: { color: "#f0f3f7" } },
+      rightPriceScale: { borderColor: "#e6ebf1", minimumWidth: 72 },
+      timeScale: { borderColor: "#e6ebf1", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001, fixLeftEdge: false, fixRightEdge: false, rightOffset: 10, shiftVisibleRangeOnNewBar: false },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      kineticScroll: { mouse: false, touch: false },
+    };
+    const spreadChart = LightweightCharts.createChart(document.getElementById("chart"), { ...look, height: 420 });
+    const carryChart = LightweightCharts.createChart(document.getElementById("carry"), { ...look, height: 180 });
+    const pnlChart = LightweightCharts.createChart(document.getElementById("pnl"), { ...look, height: 180 });
+    const rawSeries = spreadChart.addSeries(LightweightCharts.LineSeries, { color: "#2f6fdb", lineWidth: 2, priceLineVisible: false });
+    let candleSeries = null;
+    const rateSeries = spreadChart.addSeries(LightweightCharts.LineSeries, { color: "#e25b45", lineWidth: 2, priceLineVisible: false });
+    const carrySeries = carryChart.addSeries(LightweightCharts.LineSeries, { color: "#7c3aed", lineWidth: 2, priceLineVisible: false });
+    const equitySeries = pnlChart.addSeries(LightweightCharts.LineSeries, { color: "#2f6fdb", lineWidth: 2, priceLineVisible: false });
+    const rateMarkers = LightweightCharts.createSeriesMarkers(rateSeries, []);
+    const equityMarkers = LightweightCharts.createSeriesMarkers(equitySeries, []);
+    let drawings = null;
+    try {
+      drawings = new LightweightChartsDrawing.DrawingManager(spreadChart, rateSeries, { magnet: "off", stayInDrawingMode: false });
+    } catch (error) {
+      console.error("инструменты не поднялись", error);
+    }
+    const priceLines = [];
+    const zLines = [];
+    let armed = null;
+
+    function unix(value) { return Math.floor(new Date(value).getTime() / 1000); }
+    function unique(rows) {
+      const seen = new Map();
+      rows.forEach((row) => seen.set(row.time, row));
+      return [...seen.values()].sort((a, b) => a.time - b.time);
+    }
+    function clearLines() { priceLines.splice(0).forEach((row) => rateSeries.removePriceLine(row)); }
+    function clearZ() { zLines.splice(0).forEach((row) => carrySeries.removePriceLine(row)); }
+    function indicatorData() {
+      const mode = document.getElementById("indicator").value;
+      const rates = points.filter((point) => point.rate !== null);
+      if (mode === "zscore") {
+        const values = rates.map((point) => point.rate);
+        return rates.map((point, index) => {
+          const slice = values.slice(Math.max(0, index - 59), index + 1);
+          const mean = slice.reduce((sum, item) => sum + item, 0) / slice.length;
+          const variance = slice.reduce((sum, item) => sum + (item - mean) ** 2, 0) / slice.length;
+          const deviation = Math.sqrt(variance) || 1;
+          return { time: unix(point.t), value: (point.rate - mean) / deviation };
+        });
+      }
+      const days = funding.map((row) => row.d);
+      const values = funding.map((row) => row.v);
+      return rates.map((point) => {
+        const day = point.t.slice(0, 10);
+        let end = days.findIndex((item) => item > day);
+        if (end < 0) end = days.length;
+        const windowDays = Math.max(1, point.days || 1);
+        const slice = values.slice(Math.max(0, end - windowDays), end);
+        const avg = slice.length ? slice.reduce((sum, item) => sum + item, 0) / slice.length : 0;
+        return { time: unix(point.t), value: avg * windowDays - point.raw * 1000 };
+      });
+    }
+    let spreadLine = [];
+    let carryLine = [];
+    let pnlLine = [];
+    let painting = false;
+    let lastCount = 0;
+    function timesOf() {
+      const times = new Set();
+      points.forEach((point) => times.add(unix(point.t)));
+      pnl.forEach((point) => times.add(unix(point.t)));
+      return [...times].sort((a, b) => a - b);
+    }
+    function align(times, rows) {
+      const byTime = new Map(rows.map((row) => [row.time, row]));
+      return times.map((time) => byTime.has(time) ? { ...byTime.get(time), time } : { time });
+    }
+    function paint(reset) {
+      if (reset) fitPrices();
+      const logical = reset ? null : spreadChart.timeScale().getVisibleLogicalRange();
+      const style = document.getElementById("style").value;
+      const times = timesOf();
+      const raw = align(times, points.filter((point) => point.raw !== null).map((point) => ({ time: unix(point.t), value: point.raw })));
+      const rate = align(times, points.filter((point) => point.rate !== null).map((point) => ({ time: unix(point.t), value: point.rate })));
+      painting = true;
+      try {
+        if (style === "candle") {
+          rawSeries.setData([]);
+          if (!candleSeries) candleSeries = spreadChart.addSeries(LightweightCharts.CandlestickSeries, { upColor: "#168a4a", downColor: "#e25b45", borderVisible: false, wickUpColor: "#168a4a", wickDownColor: "#e25b45" });
+          candleSeries.setData(align(times, points.filter((point) => point.candle).map((point) => ({ time: unix(point.t), open: point.candle.o, high: point.candle.h, low: point.candle.l, close: point.candle.c }))));
+        } else {
+          if (candleSeries) candleSeries.setData([]);
+          rawSeries.setData(raw);
+        }
+        rateSeries.setData(rate);
+        spreadLine = rate.filter((point) => point.value !== undefined && point.value !== null);
+        const mode = document.getElementById("indicator").value;
+        document.getElementById("carry-card").style.display = mode === "off" ? "none" : "";
+        document.getElementById("indicator-title").textContent = mode === "zscore" ? "z-score spread_rate" : "фандинг − контанго";
+        document.getElementById("indicator-note").textContent = mode === "zscore"
+          ? "z-score за 60 баров, линии ±1.5"
+          : "средний фандинг за дни до склейки × эти дни − сырой спред × 1000";
+        clearZ();
+        if (mode !== "off") {
+          const data = align(times, indicatorData());
+          carryLine = data.filter((point) => point.value !== undefined && point.value !== null);
+          carrySeries.setData(data);
+          if (mode === "zscore") {
+            [1.5, -1.5, 0].forEach((price) => zLines.push(carrySeries.createPriceLine({ price, color: price ? "#98a2b3" : "#555", lineWidth: 1, lineStyle: price ? 2 : 0, axisLabelVisible: true })));
+          } else {
+            zLines.push(carrySeries.createPriceLine({ price: 0, color: "#555", lineWidth: 1, axisLabelVisible: true }));
+          }
+          const last = data.filter((point) => point.value !== undefined).at(-1);
+          if (last) document.getElementById("carry-status").textContent = last.value.toFixed(2);
+        } else {
+          carryLine = [];
+        }
+        clearLines();
+        priceLines.push(rateSeries.createPriceLine({ price: 0, color: "#555", lineWidth: 1, axisLabelVisible: true }));
+        (levels.long || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: "#168a4a", lineWidth: 1, axisLabelVisible: true })));
+        (levels.short || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: "#e25b45", lineWidth: 1, axisLabelVisible: true })));
+        (levels.tp || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: "#98a2b3", lineWidth: 1, lineStyle: 2, axisLabelVisible: true })));
+        const marks = new Map(pnl.filter((point) => point.marker).map((point) => [unix(point.t), point.marker]));
+        rateMarkers.setMarkers([...marks].map(([time, marker]) => ({
+          time, position: marker === "entry" ? "belowBar" : "aboveBar",
+          color: marker === "entry" ? "#168a4a" : "#e25b45", shape: "circle",
+        })));
+        const equity = align(times, pnl.map((point) => ({ time: unix(point.t), value: point.equity })));
+        pnlLine = equity.filter((point) => point.value !== undefined && point.value !== null);
+        equitySeries.setData(equity);
+        equityMarkers.setMarkers(pnl.filter((point) => point.marker).map((point) => ({
+          time: unix(point.t), position: point.marker === "entry" ? "belowBar" : "aboveBar",
+          color: point.marker === "entry" ? "#168a4a" : "#e25b45", shape: "circle",
+        })));
+        if (!equitySeries.__zero) { equitySeries.createPriceLine({ price: 0, color: "#555", lineWidth: 1, axisLabelVisible: true }); equitySeries.__zero = true; }
+        if (pnl.length) pnlStatus.textContent = pnl[pnl.length - 1].contract + " · " + Math.round(pnl[pnl.length - 1].equity) + " ₽";
+        const added = Math.max(0, times.length - lastCount);
+        if (reset || !logical) spreadChart.timeScale().fitContent();
+        let shared = reset || !logical ? spreadChart.timeScale().getVisibleLogicalRange() : logical;
+        if (shared && !reset && added && logical.to >= lastCount - 2) {
+          shared = { from: logical.from + added, to: logical.to + added };
+        }
+        if (shared) {
+          [spreadChart, carryChart, pnlChart].forEach((chart) => {
+            try { chart.timeScale().setVisibleLogicalRange(shared); } catch (error) { /* шкала ещё пустая */ }
+          });
+        }
+        lastCount = times.length;
+        if (reset) fitPrices();
+      } finally {
+        painting = false;
+      }
+    }
+
+    function row(kind, value) {
+      const node = document.createElement("div");
+      node.className = "level";
+      node.dataset.kind = kind;
+      node.innerHTML = `<i class="dot" style="background:${kind === "take" ? "#98a2b3" : "#168a4a"}"></i><input type="number" step="0.01" value="${value}"><button class="pick" type="button">клик</button><button class="drop" type="button">×</button>`;
+      node.querySelector(".pick").addEventListener("click", () => { document.querySelectorAll(".level").forEach((item) => item.classList.remove("armed")); node.classList.add("armed"); armed = node; if (drawings) drawings.setTool(null); markTool(""); });
+      node.querySelector(".drop").addEventListener("click", () => node.remove());
+      return node;
+    }
+    function renderLevels(pcts, takes) {
+      const entries = document.getElementById("entry-list");
+      const takeList = document.getElementById("take-list");
+      entries.innerHTML = ""; takeList.innerHTML = "";
+      (pcts.length ? pcts : [1, 1.5, 2]).forEach((value) => entries.appendChild(row("entry", value)));
+      (takes.length ? takes : [0.25, 0]).forEach((value) => takeList.appendChild(row("take", value)));
+    }
+    function collect(kind) { return [...document.querySelectorAll(`.level[data-kind="${kind}"] input`)].map((input) => input.value.trim()).filter(Boolean); }
+    document.querySelectorAll("[data-add]").forEach((button) => button.addEventListener("click", () => {
+      document.getElementById(button.dataset.add === "entry" ? "entry-list" : "take-list").appendChild(row(button.dataset.add, ""));
+    }));
+    spreadChart.subscribeClick((param) => {
+      if (!drawings || drawings.tool() || !armed || !param.point || !levels.spot) return;
+      const price = rateSeries.coordinateToPrice(param.point.y);
+      if (price === null) return;
+      const pct = price / levels.spot * 100;
+      armed.querySelector("input").value = (armed.dataset.kind === "take" ? pct : Math.abs(pct)).toFixed(3);
+      armed.classList.remove("armed");
+      armed = null;
+    });
+
+    const charts = [[spreadChart, "spread", () => rateSeries], [carryChart, "carry", () => carrySeries], [pnlChart, "pnl", () => equitySeries]];
+    const lines = { spread: () => spreadLine, carry: () => carryLine, pnl: () => pnlLine };
+    function priceAt(name, time) {
+      let best = null;
+      let dist = Infinity;
+      lines[name]().forEach((point) => {
+        const gap = Math.abs(point.time - time);
+        if (gap < dist) { dist = gap; best = point.value; }
+      });
+      return dist <= 3600 ? best : null;
+    }
+    let crosshairLock = false;
+    function syncCrosshair(source, param) {
+      if (crosshairLock || painting) return;
+      crosshairLock = true;
+      try {
+        charts.forEach(([chart, name, series]) => {
+          if (chart === source) return;
+          if (!param || !param.time || !param.point) { chart.clearCrosshairPosition(); return; }
+          const price = priceAt(name, param.time);
+          if (price === null) { chart.clearCrosshairPosition(); return; }
+          chart.setCrosshairPosition(price, param.time, series());
+        });
+      } finally {
+        crosshairLock = false;
+      }
+    }
+    charts.forEach(([chart]) => chart.subscribeCrosshairMove((param) => syncCrosshair(chart, param)));
+    let syncing = false;
+    function syncRange(source) {
+      if (painting || syncing) return;
+      const range = source.timeScale().getVisibleLogicalRange();
+      if (!range) return;
+      syncing = true;
+      try {
+        charts.forEach(([chart]) => {
+          if (chart !== source) chart.timeScale().setVisibleLogicalRange(range);
+        });
+      } finally {
+        syncing = false;
+      }
+    }
+    charts.forEach(([chart]) => chart.timeScale().subscribeVisibleLogicalRangeChange(() => syncRange(chart)));
+    document.querySelectorAll(".split").forEach((handle) => {
+      handle.addEventListener("mousedown", (event) => {
+        const above = document.getElementById(handle.dataset.above);
+        const below = document.getElementById(handle.dataset.below);
+        const start = event.clientY;
+        const aboveH = above.clientHeight;
+        const belowH = below.clientHeight;
+        function drag(move) {
+          const delta = move.clientY - start;
+          above.style.height = Math.max(120, aboveH + delta) + "px";
+          below.style.height = Math.max(100, belowH - delta) + "px";
+          spreadChart.applyOptions({ height: document.getElementById("chart").clientHeight });
+          carryChart.applyOptions({ height: document.getElementById("carry").clientHeight });
+          pnlChart.applyOptions({ height: document.getElementById("pnl").clientHeight });
+        }
+        function stop() { window.removeEventListener("mousemove", drag); window.removeEventListener("mouseup", stop); }
+        window.addEventListener("mousemove", drag);
+        window.addEventListener("mouseup", stop);
+      });
+    });
+    new ResizeObserver(() => {
+      spreadChart.applyOptions({ width: document.getElementById("chart").clientWidth, height: document.getElementById("chart").clientHeight });
+      carryChart.applyOptions({ width: document.getElementById("carry").clientWidth, height: document.getElementById("carry").clientHeight });
+      pnlChart.applyOptions({ width: document.getElementById("pnl").clientWidth, height: document.getElementById("pnl").clientHeight });
+    }).observe(document.getElementById("stack"));
+
+    const root = "{{ pair.future_root|default:'' }}";
+    window.pairRoot = root;
+    function shortCode(code) { return window.pairRoot && code.startsWith(window.pairRoot) ? code.slice(window.pairRoot.length) : code; }
+    const pairSelect = document.getElementById("pair");
+    const fromSelect = document.getElementById("from");
+    const toSelect = document.getElementById("to");
+    function query() {
+      const params = new URLSearchParams();
+      if (pairSelect) params.set("pair", pairSelect.value);
+      const saved = loadWindow(pairSelect ? pairSelect.value : "");
+      const from = fromSelect && fromSelect.value ? fromSelect.value : saved.from;
+      const to = toSelect && toSelect.value ? toSelect.value : saved.to;
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      return params.toString();
+    }
+    function windowKey(code) { return "spread-window-" + code; }
+    function loadWindow(code) { try { return JSON.parse(localStorage.getItem(windowKey(code)) || "{}"); } catch (error) { return {}; } }
+    function saveWindow() { if (pairSelect) localStorage.setItem(windowKey(pairSelect.value), JSON.stringify({ from: fromSelect ? fromSelect.value : "", to: toSelect ? toSelect.value : "" })); }
+    function fillLevels(body) {
+      if (!body.levels) return;
+      levels.spot = body.levels.spot; levels.long = body.levels.long; levels.short = body.levels.short; levels.tp = body.levels.tp || [];
+      renderLevels((body.levels.pcts || []).map((item) => +(item * 100).toFixed(4)), (body.levels.tp_pcts || []).map((item) => +(item * 100).toFixed(4)));
+    }
+    function fillContracts(codes, start, end) {
+      if (!fromSelect || !toSelect || !codes) return;
+      for (const select of [fromSelect, toSelect]) {
+        const current = select === fromSelect ? start : end;
+        select.innerHTML = "";
+        codes.forEach((code) => { const option = document.createElement("option"); option.value = code; option.textContent = shortCode(code); if (code === current) option.selected = true; select.appendChild(option); });
+      }
+    }
+    let lastLevelsPair = "";
+    function fitPrices() {
+      [spreadChart, carryChart, pnlChart].forEach((chart) => {
+        const scale = chart.priceScale("right");
+        scale.applyOptions({ autoScale: false });
+        scale.applyOptions({ autoScale: true });
+      });
+    }
+    async function refresh(fitPrice = false) {
+      try {
+        const response = await fetch("/api/spread/?" + query(), { cache: "no-store" });
+        if (!response.ok) throw new Error(response.status);
+        const body = await response.json();
+        points = body.points; pnl = body.pnl || []; funding = body.funding || [];
+        if (body.pair) {
+          document.getElementById("title").textContent = body.title || body.pair;
+          document.getElementById("subtitle").textContent = "Спот " + (body.spot || "") + ", ставка " + (body.rate || "") + (body.quote ? ", " + body.quote : "");
+          window.pairRoot = body.root || "";
+        }
+        fillContracts(body.contracts, body.from, body.to);
+        if (body.levels) { levels.spot = body.levels.spot; levels.long = body.levels.long; levels.short = body.levels.short; levels.tp = body.levels.tp || []; }
+        if (body.pair && body.pair !== lastLevelsPair) { fillLevels(body); lastLevelsPair = body.pair; }
+        saveWindow();
+        status.textContent = body.count + " баров · " + new Date().toLocaleTimeString("ru-RU", { hour12: false });
+        status.className = "count live";
+        paint(fitPrice);
+      } catch (error) { status.textContent = "нет связи с сервером"; status.className = "count"; }
+    }
+    let previousPair = pairSelect ? pairSelect.value : "";
+    function remember() {
+      const pairChanged = pairSelect && pairSelect.value !== previousPair;
+      if (pairChanged) {
+        localStorage.setItem(windowKey(previousPair), JSON.stringify({ from: fromSelect ? fromSelect.value : "", to: toSelect ? toSelect.value : "" }));
+        previousPair = pairSelect.value;
+        if (fromSelect) fromSelect.value = "";
+        if (toSelect) toSelect.value = "";
+        loadDrawings();
+      } else saveWindow();
+      const url = new URL(window.location.href);
+      if (pairSelect) url.searchParams.set("pair", pairSelect.value);
+      if (fromSelect) url.searchParams.set("from", fromSelect.value);
+      if (toSelect) url.searchParams.set("to", toSelect.value);
+      history.replaceState(null, "", url);
+      refresh(true);
+    }
+    if (pairSelect) pairSelect.addEventListener("change", remember);
+    if (fromSelect) fromSelect.addEventListener("change", remember);
+    if (toSelect) toSelect.addEventListener("change", remember);
+    document.getElementById("style").addEventListener("change", () => paint(false));
+    document.getElementById("indicator").addEventListener("change", () => paint(false));
+    document.getElementById("save-levels").addEventListener("click", async () => {
+      const response = await fetch("/api/levels/?" + query(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: collect("entry"), takes: collect("take") }) });
+      document.getElementById("level-note").textContent = response.ok ? "линии сохранены" : "не сохранилось";
+      refresh();
+    });
+    document.getElementById("recalc").addEventListener("click", async () => {
+      document.getElementById("level-note").textContent = "считаю…";
+      const response = await fetch("/api/recalc/?" + query(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entry: document.getElementById("entry-mode").value, average: document.getElementById("average").checked }) });
+      const body = await response.json();
+      document.getElementById("level-note").textContent = response.ok ? "сделок " + body.trades : "пересчёт не прошёл";
+      refresh();
+    });
+    function drawingKey() { return "drawings:" + (pairSelect ? pairSelect.value : ""); }
+    function markTool(kind) {
+      document.querySelectorAll("#drawbar [data-tool]").forEach((button) => button.classList.toggle("on", button.dataset.tool === (kind || "")));
+    }
+    function loadDrawings() {
+      if (!drawings) return;
+      try { drawings.importJSON(localStorage.getItem(drawingKey()) || "[]"); } catch (error) { drawings.clear(); }
+    }
+    function selectedDrawings() {
+      if (!drawings) return [];
+      return drawings.selection().map((id) => drawings.get(id)).filter(Boolean);
+    }
+    function showEditor() {
+      const editor = document.getElementById("editor");
+      const rows = selectedDrawings();
+      editor.classList.toggle("show", rows.length > 0);
+      if (!rows.length) return;
+      const style = rows[0].style || {};
+      document.getElementById("draw-color").value = /^#([0-9a-f]{6})$/i.test(style.color || "") ? style.color : "#2962ff";
+      document.getElementById("draw-width").value = style.width || 1;
+      document.getElementById("draw-style").value = style.lineStyle || "solid";
+      document.getElementById("draw-alpha").value = style.transparency ?? 80;
+      document.getElementById("draw-fill").checked = style.fillBackground !== false;
+    }
+    function restyle(patch) {
+      selectedDrawings().forEach((item) => {
+        const style = { ...item.style, ...patch };
+        if (style.levels) {
+          style.levels = style.levels.map((level) => ({
+            ...level,
+            ...(patch.color ? { color: patch.color } : {}),
+            ...(patch.width ? { width: patch.width } : {}),
+            ...(patch.lineStyle ? { style: patch.lineStyle } : {}),
+          }));
+        }
+        drawings.update({ ...item, style });
+      });
+    }
+    document.getElementById("draw-color").addEventListener("input", (event) => restyle({ color: event.target.value, backgroundColor: event.target.value }));
+    document.getElementById("draw-width").addEventListener("input", (event) => restyle({ width: Number(event.target.value) || 1 }));
+    document.getElementById("draw-style").addEventListener("change", (event) => restyle({ lineStyle: event.target.value }));
+    document.getElementById("draw-alpha").addEventListener("input", (event) => restyle({ transparency: Number(event.target.value) }));
+    document.getElementById("draw-fill").addEventListener("change", (event) => restyle({ fillBackground: event.target.checked }));
+    document.getElementById("draw-delete").addEventListener("click", () => {
+      drawings.selection().forEach((id) => drawings.remove(id));
+    });
+    if (drawings) drawings.on("selection", showEditor);
+    if (drawings) drawings.on("tool", () => markTool(drawings.tool() || ""));
+    if (drawings) drawings.on("change", () => localStorage.setItem(drawingKey(), drawings.exportJSON()));
+    document.getElementById("drawbar").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button || !drawings) return;
+      if (button.dataset.clear) { drawings.clear(); return; }
+      if (!("tool" in button.dataset)) return;
+      drawings.setTool(button.dataset.tool || null);
+      markTool(button.dataset.tool || "");
+      if (button.dataset.tool) { document.querySelectorAll(".level").forEach((item) => item.classList.remove("armed")); armed = null; }
+    });
+    markTool("");
+    loadDrawings();
+    renderLevels((levels.pcts || []).map((item) => +(item * 100).toFixed(4)), (levels.tp_pcts || []).map((item) => +(item * 100).toFixed(4)));
+    paint(true);
+    setInterval(refresh, 15000);
+  </script>
+</body>
+</html>
