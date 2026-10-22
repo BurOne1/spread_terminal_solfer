@@ -9,22 +9,22 @@
     :root { --bg:#f4f6f8; --card:#fff; --ink:#1b2430; --muted:#667085; --line:#e6ebf1; --blue:#2f6fdb; --red:#e25b45; --green:#168a4a; }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 "Segoe UI", sans-serif; }
-    .page { max-width: 1760px; margin: 0 auto; padding: 16px 14px 36px; }
-    header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 14px; }
+    .page { max-width: min(1760px, 100%); margin: 0 auto; padding: 16px 14px 36px; }
+    header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
     h1 { margin: 0; font-size: 22px; font-weight: 650; }
     .sub { margin: 4px 0 0; color: var(--muted); }
     .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     select, .toolbar label { background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; }
-    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 12px; align-items: start; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 260px); gap: 12px; align-items: start; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
-    .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
-    .legend { display: flex; gap: 12px; color: var(--muted); font-size: 12px; }
+    .card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .legend { display: flex; gap: 12px; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
     .swatch { display: inline-block; width: 12px; height: 2px; margin-right: 6px; vertical-align: middle; }
     .count { color: var(--muted); font-size: 12px; }
     .live { color: var(--green); }
     .plot { position: relative; }
-    .pane { height: 420px; }
-    .pane.small { height: 180px; }
+    .pane { height: clamp(280px, 46vh, 520px); }
+    .pane.small { height: clamp(140px, 20vh, 220px); }
     .cursor { position: absolute; top: 0; bottom: 28px; width: 1px; background: #98a2b3; pointer-events: none; display: none; }
     .split { height: 8px; cursor: row-resize; background: transparent; }
     .split:hover { background: #d9e2ef; }
@@ -42,16 +42,28 @@
     .drop { background: #f6f1f0; color: var(--red); }
     .add, .side > button { width: 100%; margin-top: 8px; padding: 9px 10px; background: var(--ink); color: #fff; }
     .side > button.ghost { background: #eef1f5; color: var(--ink); }
-    .drawbar { display: flex; flex-wrap: wrap; gap: 4px; }
-    .drawbar button { border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 8px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
-    .drawbar button.on { border-color: var(--blue); background: #eef3fb; color: var(--blue); font-weight: 650; }
-    .editor { display: none; position: absolute; top: 10px; left: 10px; z-index: 5; gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.96); box-shadow: 0 6px 18px rgba(27,36,48,.12); font-size: 12px; }
+    .drawbar { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
+    .drawbar button { width: 30px; height: 28px; display: grid; place-items: center; border: 1px solid transparent; background: transparent; color: #475467; border-radius: 7px; padding: 0; cursor: pointer; }
+    .drawbar button:hover { background: #f2f4f7; color: var(--ink); }
+    .drawbar button.on { border-color: #d6e4ff; background: #eef3fb; color: var(--blue); }
+    .drawbar button.danger:hover { background: #f8ecea; color: var(--red); }
+    .drawbar svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .editor { display: none; position: absolute; top: 10px; left: 10px; z-index: 5; max-width: calc(100% - 20px); gap: 8px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.96); box-shadow: 0 6px 18px rgba(27,36,48,.12); font-size: 12px; }
     .editor.show { display: flex; flex-wrap: wrap; }
     .editor label { display: flex; gap: 6px; align-items: center; color: var(--muted); }
     .editor input[type="number"] { width: 52px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
     .editor select { border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
     .editor button { border: 0; border-radius: 8px; padding: 5px 8px; background: #f6f1f0; color: var(--red); cursor: pointer; }
-    @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } .side { position: static; } }
+    @media (max-width: 1180px) { .layout { grid-template-columns: 1fr; } .side { position: static; } }
+    @media (max-width: 760px) {
+      .page { padding: 10px 8px 24px; }
+      header { align-items: stretch; }
+      h1 { font-size: 18px; }
+      .toolbar select, .toolbar label { width: 100%; }
+      .editor { left: 6px; right: 6px; }
+      .pane { height: 300px; }
+      .pane.small { height: 160px; }
+    }
   </style>
 </head>
 <body>
@@ -81,15 +93,15 @@
               <span><i class="swatch" style="background:#e25b45"></i>выход</span>
             </div>
             <div class="drawbar" id="drawbar">
-              <button type="button" data-tool="">курсор</button>
-              <button type="button" data-tool="trend-line">линия</button>
-              <button type="button" data-tool="ray">луч</button>
-              <button type="button" data-tool="horizontal-line">гориз.</button>
-              <button type="button" data-tool="vertical-line">верт.</button>
-              <button type="button" data-tool="parallel-channel">канал</button>
-              <button type="button" data-tool="fib-retracement">фибо</button>
-              <button type="button" data-tool="rectangle">прямоуг.</button>
-              <button type="button" data-clear="1">очистить</button>
+              <button type="button" data-tool="" title="Курсор (1)"><svg viewBox="0 0 16 16"><path d="M3 2.5 12.5 8 8.2 9.2 6.8 13.5Z"/></svg></button>
+              <button type="button" data-tool="trend-line" title="Линия (2)"><svg viewBox="0 0 16 16"><path d="M3 13 13 3"/><circle cx="3" cy="13" r="1.2" fill="currentColor" stroke="none"/><circle cx="13" cy="3" r="1.2" fill="currentColor" stroke="none"/></svg></button>
+              <button type="button" data-tool="ray" title="Луч (3)"><svg viewBox="0 0 16 16"><path d="M3 13 12 4"/><path d="M8.5 3.5H12.5V7.5"/></svg></button>
+              <button type="button" data-tool="horizontal-line" title="Горизонталь (4)"><svg viewBox="0 0 16 16"><path d="M2 8h12"/><circle cx="5" cy="8" r="1.2" fill="currentColor" stroke="none"/></svg></button>
+              <button type="button" data-tool="vertical-line" title="Вертикаль (5)"><svg viewBox="0 0 16 16"><path d="M8 2v12"/><circle cx="8" cy="6" r="1.2" fill="currentColor" stroke="none"/></svg></button>
+              <button type="button" data-tool="parallel-channel" title="Канал (6)"><svg viewBox="0 0 16 16"><path d="M3 11 11 3"/><path d="M5 13 13 5" stroke-dasharray="2.2 1.6"/><path d="M3 13 5 11"/></svg></button>
+              <button type="button" data-tool="fib-retracement" title="Фибоначчи (7)"><svg viewBox="0 0 16 16"><path d="M3 3h10M3 6.5h8M3 10h6M3 13.5h10"/></svg></button>
+              <button type="button" data-tool="rectangle" title="Прямоугольник (8)"><svg viewBox="0 0 16 16"><rect x="3" y="4" width="10" height="8" rx="1"/></svg></button>
+              <button type="button" data-clear="1" class="danger" title="Очистить"><svg viewBox="0 0 16 16"><path d="M3.5 4.5h9M6 4.5V3.2h4V4.5M4.5 4.5l.6 8.2h5.8l.6-8.2"/></svg></button>
             </div>
             <span class="count" id="status">{{ count }} баров</span>
           </div>
@@ -510,6 +522,54 @@
     function loadDrawings() {
       if (!drawings) return;
       try { drawings.importJSON(localStorage.getItem(drawingKey()) || "[]"); } catch (error) { drawings.clear(); }
+      drawings.drawings().forEach((item) => {
+        if (item.kind === "parallel-channel" && item.style && item.style.levels) drawings.update({ ...item, style: dashMiddle({ ...item.style }) });
+      });
+    }
+    const styleKey = "drawing-styles";
+    function savedStyles() {
+      try { return JSON.parse(localStorage.getItem(styleKey) || "{}"); } catch (error) { return {}; }
+    }
+    function dashMiddle(style) {
+      if (!style || !style.levels) return style;
+      style.levels = style.levels.map((level) => level.coeff === 0.5 ? { ...level, style: "dashed" } : level);
+      return style;
+    }
+    function rememberStyle(kind, style) {
+      if (!kind || !style) return;
+      const all = savedStyles();
+      const saved = {
+        color: style.color,
+        width: style.width,
+        lineStyle: style.lineStyle,
+        transparency: style.transparency,
+        fillBackground: style.fillBackground,
+        backgroundColor: style.backgroundColor || style.color,
+      };
+      if (style.levels) saved.levels = style.levels.map((level) => ({ ...level }));
+      all[kind] = saved;
+      localStorage.setItem(styleKey, JSON.stringify(all));
+    }
+    function styleFor(kind) {
+      const saved = savedStyles()[kind];
+      if (!saved) return;
+      if (kind === "parallel-channel") {
+        const color = saved.color || "#2962ff";
+        const width = saved.width || 2;
+        const lineStyle = saved.lineStyle || "solid";
+        saved.levels = (saved.levels || [-0.25, 0, 0.25, 0.5, 0.75, 1, 1.25].map((coeff, index) => ({
+          coeff, color, visible: index === 1 || index === 3 || index === 5, width, style: lineStyle,
+        }))).map((level) => ({
+          ...level,
+          color,
+          width,
+          style: level.coeff === 0.5 ? "dashed" : lineStyle,
+        }));
+      }
+      return saved;
+    }
+    if (window.LightweightChartsDrawing && LightweightChartsDrawing.setDefaultStyleOverride) {
+      LightweightChartsDrawing.setDefaultStyleOverride(styleFor);
     }
     function selectedDrawings() {
       if (!drawings) return [];
@@ -535,10 +595,12 @@
             ...level,
             ...(patch.color ? { color: patch.color } : {}),
             ...(patch.width ? { width: patch.width } : {}),
-            ...(patch.lineStyle ? { style: patch.lineStyle } : {}),
+            ...(patch.lineStyle && level.coeff !== 0.5 ? { style: patch.lineStyle } : {}),
+            ...(level.coeff === 0.5 ? { style: "dashed" } : {}),
           }));
         }
         drawings.update({ ...item, style });
+        rememberStyle(item.kind, style);
       });
     }
     document.getElementById("draw-color").addEventListener("input", (event) => restyle({ color: event.target.value, backgroundColor: event.target.value }));
@@ -551,7 +613,37 @@
     });
     if (drawings) drawings.on("selection", showEditor);
     if (drawings) drawings.on("tool", () => markTool(drawings.tool() || ""));
-    if (drawings) drawings.on("change", () => localStorage.setItem(drawingKey(), drawings.exportJSON()));
+    if (drawings) drawings.on("add", (item) => {
+      if (item.kind !== "parallel-channel" || !item.style || !item.style.levels) return;
+      drawings.update({ ...item, style: dashMiddle({ ...item.style, levels: item.style.levels.map((level) => ({ ...level })) }) });
+    });
+    const drawHistory = [];
+    let restoring = false;
+    function rememberDrawings() {
+      if (!drawings || restoring) return;
+      const json = drawings.exportJSON();
+      if (drawHistory.at(-1) === json) return;
+      drawHistory.push(json);
+      if (drawHistory.length > 40) drawHistory.shift();
+      localStorage.setItem(drawingKey(), json);
+    }
+    function undoDrawing() {
+      if (!drawings || drawHistory.length < 2) return;
+      drawHistory.pop();
+      restoring = true;
+      drawings.importJSON(drawHistory.at(-1) || "[]");
+      restoring = false;
+      localStorage.setItem(drawingKey(), drawHistory.at(-1) || "[]");
+    }
+    const hotTools = ["", "trend-line", "ray", "horizontal-line", "vertical-line", "parallel-channel", "fib-retracement", "rectangle"];
+    document.addEventListener("keydown", (event) => {
+      if (!drawings || event.target.closest("input, select, textarea")) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undoDrawing(); return; }
+      if (event.key === "Escape") { drawings.setTool(null); drawings.select([]); markTool(""); showEditor(); return; }
+      if (event.key === "Delete" || event.key === "Backspace") { drawings.selection().forEach((id) => drawings.remove(id)); return; }
+      const index = "12345678".indexOf(event.key);
+      if (index >= 0) { drawings.setTool(hotTools[index] || null); markTool(hotTools[index]); }
+    });
     document.getElementById("drawbar").addEventListener("click", (event) => {
       const button = event.target.closest("button");
       if (!button || !drawings) return;
@@ -561,8 +653,10 @@
       markTool(button.dataset.tool || "");
       if (button.dataset.tool) { document.querySelectorAll(".level").forEach((item) => item.classList.remove("armed")); armed = null; }
     });
+    if (drawings) drawings.on("change", rememberDrawings);
     markTool("");
     loadDrawings();
+    rememberDrawings();
     renderLevels((levels.pcts || []).map((item) => +(item * 100).toFixed(4)), (levels.tp_pcts || []).map((item) => +(item * 100).toFixed(4)));
     paint(true);
     setInterval(refresh, 15000);
