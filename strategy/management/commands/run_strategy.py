@@ -11,7 +11,7 @@ from django.core.management.base import BaseCommand
 
 from market.models import Pair
 from rates.models import FundingDay
-from strategy.engine import run
+from strategy.engine import pair_levels, run
 from strategy.models import EquityPoint, PaperTrade, SpreadBar
 
 
@@ -73,9 +73,16 @@ class Command(BaseCommand):
                 if value is not None
             ]
             mode = "daily"
-        levels = pair.long_levels or None
-        takes = pair.long_tp or None
-        return run(bars, funding, levels, takes, notional=pair.lot or 1000, funding_mode=mode)
+        long_pcts, short_pcts, long_tp, short_tp = pair_levels(pair)
+        return run(
+            bars, funding,
+            notional=pair.lot or 1000,
+            funding_mode=mode,
+            long_pcts=long_pcts,
+            short_pcts=short_pcts,
+            long_tp=long_tp,
+            short_tp=short_tp,
+        )
 
     def _store(self, pair, points):
         EquityPoint.objects.filter(pair=pair).delete()

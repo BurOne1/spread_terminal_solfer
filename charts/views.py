@@ -7,9 +7,6 @@ import json
 from market.models import Candle, Instrument, Pair
 from strategy.models import EquityPoint, SpreadBar
 
-DEFAULT_LEVELS = (0.01, 0.015, 0.02)
-DEFAULT_TP = (0.0025, 0.0)
-
 
 def _pair(code):
     pairs = Pair.objects.filter(active=True)
@@ -102,33 +99,43 @@ def _pnl(pair, start="", end=""):
     ]
 
 
-def _pcts(pair):
-    levels = pair.long_levels or list(DEFAULT_LEVELS)
-    tp = pair.long_tp or list(DEFAULT_TP)
-    return [float(item) for item in levels], [float(item) for item in tp]
-
-
 def _levels(pair):
+    from strategy.engine import pair_levels
+    empty = {
+        "long": [], "short": [], "long_tp": [], "short_tp": [],
+        "long_pcts": [], "short_pcts": [], "long_tp_pcts": [], "short_tp_pcts": [],
+        "pcts": [], "tp_pcts": [], "tp": [], "spot": None,
+    }
     if pair is None:
-        return {"long": [], "short": [], "tp": [], "pcts": [], "tp_pcts": []}
-    level_pcts, tp_pcts = _pcts(pair)
+        return empty
+    long_pcts, short_pcts, long_tp, short_tp = pair_levels(pair)
     spot = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
     if spot is None:
         spot = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
     last = None
     if spot is not None:
         last = Candle.objects.filter(instrument=spot).order_by("-ts").values_list("close", flat=True).first()
-    if last is None:
-        return {"long": [], "short": [], "tp": [], "pcts": level_pcts, "tp_pcts": tp_pcts, "spot": None}
-    price = float(last)
-    return {
-        "long": [-price * pct for pct in level_pcts],
-        "short": [price * pct for pct in level_pcts],
-        "tp": [price * pct if pct else 0 for pct in tp_pcts] + [-price * pct for pct in tp_pcts if pct],
-        "pcts": level_pcts,
-        "tp_pcts": tp_pcts,
-        "spot": price,
+    payload = {
+        "long_pcts": long_pcts,
+        "short_pcts": short_pcts,
+        "long_tp_pcts": long_tp,
+        "short_tp_pcts": short_tp,
+        "pcts": long_pcts,
+        "tp_pcts": long_tp,
+        "spot": None if last is None else float(last),
     }
+    if last is None:
+        payload.update({"long": [], "short": [], "long_tp": [], "short_tp": [], "tp": []})
+        return payload
+    price = float(last)
+    payload.update({
+        "long": [price * pct for pct in long_pcts],
+        "short": [price * pct for pct in short_pcts],
+        "long_tp": [price * pct for pct in long_tp],
+        "short_tp": [price * pct for pct in short_tp],
+        "tp": [price * pct for pct in long_tp] + [price * pct for pct in short_tp],
+    })
+    return payload
 
 
 def _funding(pair):
@@ -221,10 +228,14 @@ def save_levels(request):
     if pair is None:
         return JsonResponse({"error": "нет пары"}, status=404)
     body = json.loads(request.body or "{}")
-    pair.long_levels = [float(item) / 100 for item in body.get("entries", [])]
-    pair.short_levels = pair.long_levels
-    pair.long_tp = [float(item) / 100 for item in body.get("takes", [])]
-    pair.short_tp = pair.long_tp
+
+    def signed(key):
+        return {"signed": True, "values": [float(item) / 100 for item in body.get(key, [])]}
+
+    pair.long_levels = signed("long_entries")
+    pair.short_levels = signed("short_entries")
+    pair.long_tp = signed("long_takes")
+    pair.short_tp = signed("short_takes")
     pair.save(update_fields=["long_levels", "short_levels", "long_tp", "short_tp"])
     return JsonResponse({"ok": True, "levels": _levels(pair)})
 
@@ -237,7 +248,7 @@ def recalc(request):
         return JsonResponse({"error": "нет пары"}, status=404)
     from decimal import Decimal
     from rates.models import FundingDay
-    from strategy.engine import run
+    from strategy.engine import pair_levels, run
     bars = [
         {
             "ts": bar.ts, "contract": bar.contract.code,
@@ -265,14 +276,18 @@ def recalc(request):
             for day, value in FundingDay.objects.order_by("date").values_list("date", field)
             if value is not None
         ]
-    level_pcts, tp_pcts = _pcts(pair)
+    long_pcts, short_pcts, long_tp, short_tp = pair_levels(pair)
     body = json.loads(request.body or "{}")
     points, trades = run(
-        bars, funding, level_pcts, tp_pcts,
+        bars, funding,
         entry_mode=body.get("entry", "touch"),
         average=bool(body.get("average", True)),
         notional=pair.lot or 1000,
         funding_mode=funding_mode,
+        long_pcts=long_pcts,
+        short_pcts=short_pcts,
+        long_tp=long_tp,
+        short_tp=short_tp,
     )
     EquityPoint.objects.filter(pair=pair).delete()
     EquityPoint.objects.bulk_create([

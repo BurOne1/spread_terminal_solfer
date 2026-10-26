@@ -2,10 +2,12 @@
 
 from datetime import date, timedelta
 
+from django.conf import settings
+
 from rates.cbr import fetch_ruonia
 from rates.ecb import fetch_estr
 from rates.foreign import fetch_shibor
-from rates.fred import fetch_dfedtaru
+from rates.fred import fetch_dfedtaru, read_dfedtaru_csv
 from rates.models import RateDay
 
 
@@ -25,7 +27,13 @@ def sync_recent(days=40):
         dfed = fetch_dfedtaru(date(2023, 1, 1), end)
         dfed_n = _save(dfed, "dfedtaru")
     except Exception as exc:
-        extra = f"FRED не ответил, оставлена последняя ставка: {exc}"
+        bundled = settings.BASE_DIR / "DFEDTARU.csv"
+        if bundled.exists():
+            dfed = read_dfedtaru_csv(bundled, date(2023, 1, 1), end)
+            dfed_n = _save(dfed, "dfedtaru")
+            extra = f"FRED не ответил, взял {bundled.name}: {exc}"
+        else:
+            extra = f"FRED не ответил, оставлена последняя ставка: {exc}"
         note = f"{note}; {extra}" if note else extra
     estr, estr_n = [], 0
     try:

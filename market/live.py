@@ -173,6 +173,24 @@ def hour_floor(ts):
     return ts.replace(minute=0, second=0, microsecond=0)
 
 
+# Часовой бар подписан временем открытия.
+# 04:00 UTC = 07:00 МСК, начало утренней сессии срочного рынка.
+# 20:00 UTC ещё содержит торги до 23:50 МСК. 21:00 UTC — уже клиринг.
+MOEX_FIRST_HOUR = 4
+MOEX_LAST_HOUR = 20
+
+
+def moex_trades(ts):
+    ts = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    if ts.weekday() >= 5:
+        return False
+    return MOEX_FIRST_HOUR <= ts.hour <= MOEX_LAST_HOUR
+
+
+def market_open(now=None):
+    return moex_trades(now or datetime.now(timezone.utc))
+
+
 def extract_quotes(message):
     if isinstance(message, dict) and isinstance(message.get("payload"), str):
         try:
@@ -203,8 +221,10 @@ def save_quote(symbol, ts, price):
         return f"нет инструмента для {symbol or '?'}"
     hour = hour_floor(ts)
     now_hour = hour_floor(datetime.now(timezone.utc))
-    if now_hour > hour:
+    if now_hour > hour and moex_trades(now_hour):
         hour = now_hour
+    if not market_open() or not moex_trades(hour):
+        return f"биржа закрыта, {hour:%Y-%m-%d %H:%M} не пишу"
     candle = Candle.objects.filter(instrument=instrument, ts=hour).first()
     created = candle is None
     if created:
@@ -228,21 +248,28 @@ def save_bars(symbol, bars):
     instrument = find_instrument(symbol)
     if instrument is None:
         return 0, f"нет инструмента для {symbol or '?'}"
+    tradable = [bar for bar in bars if moex_trades(bar["ts"])]
     existing = set(
-        Candle.objects.filter(instrument=instrument, ts__in=[bar["ts"] for bar in bars]).values_list("ts", flat=True)
-    )
+        Candle.objects.filter(instrument=instrument, ts__in=[bar["ts"] for bar in tradable]).values_list("ts", flat=True)
+    ) if tradable else set()
+    if not market_open():
+        tradable = [bar for bar in tradable if bar["ts"] not in existing]
+        if not tradable:
+            return 0, "биржа закрыта, старые бары не трогаю"
+    if not tradable:
+        return 0, "вне торговых часов, не пишу"
     Candle.objects.bulk_create(
-        [Candle(instrument=instrument, **bar) for bar in bars],
+        [Candle(instrument=instrument, **bar) for bar in tradable],
         update_conflicts=True,
         unique_fields=["instrument", "ts"],
         update_fields=["open", "high", "low", "close", "volume"],
     )
     from strategy.rebuild import rebuild_spread
     spread_count = rebuild_spread()
-    fresh = sum(bar["ts"] not in existing for bar in bars)
-    return len(bars), (
-        f"новых {fresh}, обновлено {len(bars) - fresh}, баров спреда {spread_count}, "
-        f"последний {bars[-1]['ts']:%Y-%m-%d %H:%M}"
+    fresh = sum(bar["ts"] not in existing for bar in tradable)
+    return len(tradable), (
+        f"новых {fresh}, обновлено {len(tradable) - fresh}, баров спреда {spread_count}, "
+        f"последний {tradable[-1]['ts']:%Y-%m-%d %H:%M}"
     )
 
 

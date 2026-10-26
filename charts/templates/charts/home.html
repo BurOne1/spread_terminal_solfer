@@ -28,19 +28,28 @@
     .cursor { position: absolute; top: 0; bottom: 28px; width: 1px; background: #98a2b3; pointer-events: none; display: none; }
     .split { height: 8px; cursor: row-resize; background: transparent; }
     .split:hover { background: #d9e2ef; }
-    .side { position: sticky; top: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+    .side { position: sticky; top: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; max-height: calc(100vh - 24px); overflow: auto; }
     .side select, .side input[type="number"] { width: 100%; }
     .side h2 { margin: 0 0 4px; font-size: 15px; }
     .hint, .note { color: var(--muted); font-size: 12px; }
+    .hint { margin: 0 0 8px; }
     .group { margin: 12px 0 6px; color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
-    .level { display: grid; grid-template-columns: 8px 1fr auto auto; gap: 8px; align-items: center; padding: 8px; margin-bottom: 6px; border: 1px solid var(--line); border-radius: 10px; }
+    .fold { border: 1px solid var(--line); border-radius: 10px; margin: 8px 0; }
+    .fold summary { display: flex; align-items: center; gap: 6px; padding: 7px 8px; cursor: pointer; list-style: none; font-size: 12px; font-weight: 650; user-select: none; }
+    .fold summary::-webkit-details-marker { display: none; }
+    .fold summary .chev { color: var(--muted); font-size: 11px; transition: transform .12s ease; }
+    .fold[open] summary .chev { transform: rotate(90deg); }
+    .fold .badge { margin-left: auto; color: var(--muted); font-weight: 500; }
+    .fold-body { padding: 0 8px 8px; }
+    .level { display: grid; grid-template-columns: 8px 1fr auto auto; gap: 6px; align-items: center; padding: 4px 6px; margin-bottom: 4px; border: 1px solid var(--line); border-radius: 8px; }
     .level.armed { border-color: var(--blue); background: #f3f7ff; }
     .dot { width: 8px; height: 8px; border-radius: 50%; }
-    .level input { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+    .level input { border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
     .level button, .add, .side > button { border: 0; border-radius: 8px; padding: 6px 8px; cursor: pointer; }
     .pick { background: #eef3fb; color: var(--blue); }
     .drop { background: #f6f1f0; color: var(--red); }
-    .add, .side > button { width: 100%; margin-top: 8px; padding: 9px 10px; background: var(--ink); color: #fff; }
+    .add { width: 100%; margin-top: 4px; padding: 6px 8px; background: #eef1f5; color: var(--ink); font-size: 12px; }
+    .side > button { width: 100%; margin-top: 8px; padding: 9px 10px; background: var(--ink); color: #fff; }
     .side > button.ghost { background: #eef1f5; color: var(--ink); }
     .drawbar { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
     .drawbar button { width: 30px; height: 28px; display: grid; place-items: center; border: 1px solid transparent; background: transparent; color: #475467; border-radius: 7px; padding: 0; cursor: pointer; }
@@ -128,7 +137,11 @@
         <div class="split" data-above="carry" data-below="pnl"></div>
         <section class="card">
           <div class="card-head">
-            <div class="legend"><span><i class="swatch" style="background:#2f6fdb"></i>PNL контракта</span></div>
+            <div class="legend">
+              <span><i class="swatch" style="background:#2f6fdb"></i>нет позиции</span>
+              <span><i class="swatch" style="background:#168a4a"></i>лонг</span>
+              <span><i class="swatch" style="background:#e25b45"></i>шорт</span>
+            </div>
             <span class="count" id="pnl-status"></span>
           </div>
           <div class="plot"><div id="pnl" class="pane small"></div><div class="cursor" id="pnl-cursor"></div></div>
@@ -136,15 +149,37 @@
       </div>
       <aside class="side">
         <h2>Уровни</h2>
-        <p class="hint">Процент спота. Можно вписать или взять кликом по графику.</p>
-        <div class="group">Вход</div>
+        <p class="hint">Процент спота со знаком. Каждый блок сворачивается отдельно.</p>
         <select id="entry-mode"><option value="touch">при достижении уровня</option><option value="reverse">обратное пробитие</option></select>
         <label class="check"><input id="average" type="checkbox" checked> усреднять глубже</label>
-        <div id="entry-list"></div>
-        <button class="add" type="button" data-add="entry">+ вход</button>
-        <div class="group">Тейки</div>
-        <div id="take-list"></div>
-        <button class="add" type="button" data-add="take">+ тейк</button>
+        <details class="fold" data-fold="long-entry" open>
+          <summary><i class="dot" style="background:#168a4a"></i>Вход лонг<span class="badge" id="long-entry-count"></span><span class="chev">▸</span></summary>
+          <div class="fold-body">
+            <div id="long-entry-list"></div>
+            <button class="add" type="button" data-add="long-entry">+ уровень</button>
+          </div>
+        </details>
+        <details class="fold" data-fold="short-entry" open>
+          <summary><i class="dot" style="background:#e25b45"></i>Вход шорт<span class="badge" id="short-entry-count"></span><span class="chev">▸</span></summary>
+          <div class="fold-body">
+            <div id="short-entry-list"></div>
+            <button class="add" type="button" data-add="short-entry">+ уровень</button>
+          </div>
+        </details>
+        <details class="fold" data-fold="long-take">
+          <summary><i class="dot" style="background:#3d8bfd"></i>Тейк лонг<span class="badge" id="long-take-count"></span><span class="chev">▸</span></summary>
+          <div class="fold-body">
+            <div id="long-take-list"></div>
+            <button class="add" type="button" data-add="long-take">+ тейк</button>
+          </div>
+        </details>
+        <details class="fold" data-fold="short-take">
+          <summary><i class="dot" style="background:#c47b2b"></i>Тейк шорт<span class="badge" id="short-take-count"></span><span class="chev">▸</span></summary>
+          <div class="fold-body">
+            <div id="short-take-list"></div>
+            <button class="add" type="button" data-add="short-take">+ тейк</button>
+          </div>
+        </details>
         <button id="save-levels" type="button">Применить линии</button>
         <button id="recalc" class="ghost" type="button">Пересчитать стратегию</button>
         <p class="note" id="level-note">Хранятся у пары.</p>
@@ -184,7 +219,9 @@
     let candleSeries = null;
     const rateSeries = spreadChart.addSeries(LightweightCharts.LineSeries, { color: "#e25b45", lineWidth: 2, priceLineVisible: false });
     const carrySeries = carryChart.addSeries(LightweightCharts.LineSeries, { color: "#7c3aed", lineWidth: 2, priceLineVisible: false });
-    const equitySeries = pnlChart.addSeries(LightweightCharts.LineSeries, { color: "#2f6fdb", lineWidth: 2, priceLineVisible: false });
+    const equitySeries = pnlChart.addSeries(LightweightCharts.LineSeries, { color: "rgba(0,0,0,0)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    const pnlPieces = [];
+    const PNL_COLORS = { "": "#2f6fdb", long: "#168a4a", short: "#e25b45" };
     const rateMarkers = LightweightCharts.createSeriesMarkers(rateSeries, []);
     const equityMarkers = LightweightCharts.createSeriesMarkers(equitySeries, []);
     let drawings = null;
@@ -202,6 +239,38 @@
       const seen = new Map();
       rows.forEach((row) => seen.set(row.time, row));
       return [...seen.values()].sort((a, b) => a.time - b.time);
+    }
+    function sideOf(marker) {
+      if (!marker) return "";
+      if (marker[0] === "L") return "long";
+      if (marker[0] === "S") return "short";
+      return "";
+    }
+    function eventOf(marker) {
+      if (!marker) return "";
+      if (marker.includes("entry") || marker === "entry") return "entry";
+      if (marker.includes("exit") || marker === "exit") return "exit";
+      return "";
+    }
+    function pnlSegments(rows) {
+      const segments = [];
+      if (!rows.length) return segments;
+      const sideAt = (row) => sideOf(row.marker);
+      let start = 0;
+      for (let i = 1; i <= rows.length; i++) {
+        if (i < rows.length && sideAt(rows[i]) === sideAt(rows[start])) continue;
+        const data = [];
+        if (start > 0) data.push({ time: unix(rows[start - 1].t), value: rows[start - 1].equity });
+        for (let j = start; j < i; j++) data.push({ time: unix(rows[j].t), value: rows[j].equity });
+        segments.push({ side: sideAt(rows[start]), data, last: i === rows.length });
+        start = i;
+      }
+      return segments;
+    }
+    function clearPnlPieces() {
+      pnlPieces.splice(0).forEach((series) => {
+        try { pnlChart.removeSeries(series); } catch (error) { /* серия уже снята */ }
+      });
     }
     function clearLines() { priceLines.splice(0).forEach((row) => rateSeries.removePriceLine(row)); }
     function clearZ() { zLines.splice(0).forEach((row) => carrySeries.removePriceLine(row)); }
@@ -289,18 +358,31 @@
         priceLines.push(rateSeries.createPriceLine({ price: 0, color: "#555", lineWidth: 1, axisLabelVisible: true }));
         (levels.long || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: "#168a4a", lineWidth: 1, axisLabelVisible: true })));
         (levels.short || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: "#e25b45", lineWidth: 1, axisLabelVisible: true })));
-        (levels.tp || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: "#98a2b3", lineWidth: 1, lineStyle: 2, axisLabelVisible: true })));
-        const marks = new Map(pnl.filter((point) => point.marker).map((point) => [unix(point.t), point.marker]));
-        rateMarkers.setMarkers([...marks].map(([time, marker]) => ({
-          time, position: marker === "entry" ? "belowBar" : "aboveBar",
-          color: marker === "entry" ? "#168a4a" : "#e25b45", shape: "circle",
+        (levels.long_tp || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: "#3d8bfd", lineWidth: 1, lineStyle: 2, axisLabelVisible: true })));
+        (levels.short_tp || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: "#c47b2b", lineWidth: 1, lineStyle: 2, axisLabelVisible: true })));
+        const marks = new Map(pnl.filter((point) => eventOf(point.marker)).map((point) => [unix(point.t), point]));
+        rateMarkers.setMarkers([...marks].map(([time, point]) => ({
+          time, position: eventOf(point.marker) === "entry" ? "belowBar" : "aboveBar",
+          color: sideOf(point.marker) === "short" ? "#e25b45" : "#168a4a", shape: "circle",
         })));
         const equity = align(times, pnl.map((point) => ({ time: unix(point.t), value: point.equity })));
         pnlLine = equity.filter((point) => point.value !== undefined && point.value !== null);
         equitySeries.setData(equity);
-        equityMarkers.setMarkers(pnl.filter((point) => point.marker).map((point) => ({
-          time: unix(point.t), position: point.marker === "entry" ? "belowBar" : "aboveBar",
-          color: point.marker === "entry" ? "#168a4a" : "#e25b45", shape: "circle",
+        clearPnlPieces();
+        pnlSegments(pnl).forEach((segment) => {
+          const series = pnlChart.addSeries(LightweightCharts.LineSeries, {
+            color: PNL_COLORS[segment.side] || PNL_COLORS[""],
+            lineWidth: 2,
+            priceLineVisible: false,
+            lastValueVisible: segment.last,
+            crosshairMarkerVisible: false,
+          });
+          series.setData(segment.data);
+          pnlPieces.push(series);
+        });
+        equityMarkers.setMarkers(pnl.filter((point) => eventOf(point.marker)).map((point) => ({
+          time: unix(point.t), position: eventOf(point.marker) === "entry" ? "belowBar" : "aboveBar",
+          color: sideOf(point.marker) === "short" ? "#e25b45" : "#168a4a", shape: "circle",
         })));
         if (!equitySeries.__zero) { equitySeries.createPriceLine({ price: 0, color: "#555", lineWidth: 1, axisLabelVisible: true }); equitySeries.__zero = true; }
         if (pnl.length) pnlStatus.textContent = pnl[pnl.length - 1].contract + " · " + Math.round(pnl[pnl.length - 1].equity) + " ₽";
@@ -322,32 +404,59 @@
       }
     }
 
+    const LEVEL_COLORS = { "long-entry": "#168a4a", "short-entry": "#e25b45", "long-take": "#3d8bfd", "short-take": "#c47b2b" };
+    const LEVEL_DEFAULTS = { "long-entry": [-1, -1.5, -2], "short-entry": [1, 1.5, 2], "long-take": [0.25, 0], "short-take": [-0.25, 0] };
     function row(kind, value) {
       const node = document.createElement("div");
       node.className = "level";
       node.dataset.kind = kind;
-      node.innerHTML = `<i class="dot" style="background:${kind === "take" ? "#98a2b3" : "#168a4a"}"></i><input type="number" step="0.01" value="${value}"><button class="pick" type="button">клик</button><button class="drop" type="button">×</button>`;
+      node.innerHTML = `<i class="dot" style="background:${LEVEL_COLORS[kind] || "#98a2b3"}"></i><input type="number" step="0.01" value="${value}"><button class="pick" type="button">клик</button><button class="drop" type="button">×</button>`;
       node.querySelector(".pick").addEventListener("click", () => { document.querySelectorAll(".level").forEach((item) => item.classList.remove("armed")); node.classList.add("armed"); armed = node; if (drawings) drawings.setTool(null); markTool(""); });
-      node.querySelector(".drop").addEventListener("click", () => node.remove());
+      node.querySelector(".drop").addEventListener("click", () => { node.remove(); updateCounts(); });
       return node;
     }
-    function renderLevels(pcts, takes) {
-      const entries = document.getElementById("entry-list");
-      const takeList = document.getElementById("take-list");
-      entries.innerHTML = ""; takeList.innerHTML = "";
-      (pcts.length ? pcts : [1, 1.5, 2]).forEach((value) => entries.appendChild(row("entry", value)));
-      (takes.length ? takes : [0.25, 0]).forEach((value) => takeList.appendChild(row("take", value)));
+    function percents(rows) { return (rows || []).map((item) => +(item * 100).toFixed(4)); }
+    function updateCounts() {
+      ["long-entry", "short-entry", "long-take", "short-take"].forEach((kind) => {
+        const count = document.querySelectorAll(`.level[data-kind="${kind}"]`).length;
+        const badge = document.getElementById(kind + "-count");
+        if (badge) badge.textContent = count ? String(count) : "";
+      });
+    }
+    function renderLevels(source) {
+      const groups = [
+        ["long-entry", source.long_pcts],
+        ["short-entry", source.short_pcts],
+        ["long-take", source.long_tp_pcts],
+        ["short-take", source.short_tp_pcts],
+      ];
+      groups.forEach(([kind, values]) => {
+        const list = document.getElementById(kind + "-list");
+        list.innerHTML = "";
+        (values == null ? LEVEL_DEFAULTS[kind] : percents(values)).forEach((value) => list.appendChild(row(kind, value)));
+      });
+      updateCounts();
     }
     function collect(kind) { return [...document.querySelectorAll(`.level[data-kind="${kind}"] input`)].map((input) => input.value.trim()).filter(Boolean); }
+    function foldKey(kind) { return "spread-fold-" + kind; }
+    document.querySelectorAll(".fold").forEach((fold) => {
+      const saved = localStorage.getItem(foldKey(fold.dataset.fold));
+      if (saved === "0") fold.removeAttribute("open");
+      else if (saved === "1") fold.setAttribute("open", "");
+      fold.addEventListener("toggle", () => localStorage.setItem(foldKey(fold.dataset.fold), fold.open ? "1" : "0"));
+    });
     document.querySelectorAll("[data-add]").forEach((button) => button.addEventListener("click", () => {
-      document.getElementById(button.dataset.add === "entry" ? "entry-list" : "take-list").appendChild(row(button.dataset.add, ""));
+      const list = document.getElementById(button.dataset.add + "-list");
+      list.appendChild(row(button.dataset.add, ""));
+      const fold = list.closest(".fold");
+      if (fold) fold.open = true;
+      updateCounts();
     }));
     spreadChart.subscribeClick((param) => {
       if (!drawings || drawings.tool() || !armed || !param.point || !levels.spot) return;
       const price = rateSeries.coordinateToPrice(param.point.y);
       if (price === null) return;
-      const pct = price / levels.spot * 100;
-      armed.querySelector("input").value = (armed.dataset.kind === "take" ? pct : Math.abs(pct)).toFixed(3);
+      armed.querySelector("input").value = (price / levels.spot * 100).toFixed(3);
       armed.classList.remove("armed");
       armed = null;
     });
@@ -440,10 +549,17 @@
     function windowKey(code) { return "spread-window-" + code; }
     function loadWindow(code) { try { return JSON.parse(localStorage.getItem(windowKey(code)) || "{}"); } catch (error) { return {}; } }
     function saveWindow() { if (pairSelect) localStorage.setItem(windowKey(pairSelect.value), JSON.stringify({ from: fromSelect ? fromSelect.value : "", to: toSelect ? toSelect.value : "" })); }
-    function fillLevels(body) {
+    function copyLevelLines(body) {
       if (!body.levels) return;
-      levels.spot = body.levels.spot; levels.long = body.levels.long; levels.short = body.levels.short; levels.tp = body.levels.tp || [];
-      renderLevels((body.levels.pcts || []).map((item) => +(item * 100).toFixed(4)), (body.levels.tp_pcts || []).map((item) => +(item * 100).toFixed(4)));
+      levels.spot = body.levels.spot;
+      levels.long = body.levels.long || [];
+      levels.short = body.levels.short || [];
+      levels.long_tp = body.levels.long_tp || [];
+      levels.short_tp = body.levels.short_tp || [];
+    }
+    function fillLevels(body) {
+      copyLevelLines(body);
+      if (body.levels) renderLevels(body.levels);
     }
     function fillContracts(codes, start, end) {
       if (!fromSelect || !toSelect || !codes) return;
@@ -473,7 +589,7 @@
           window.pairRoot = body.root || "";
         }
         fillContracts(body.contracts, body.from, body.to);
-        if (body.levels) { levels.spot = body.levels.spot; levels.long = body.levels.long; levels.short = body.levels.short; levels.tp = body.levels.tp || []; }
+        if (body.levels) copyLevelLines(body);
         if (body.pair && body.pair !== lastLevelsPair) { fillLevels(body); lastLevelsPair = body.pair; }
         saveWindow();
         status.textContent = body.count + " баров · " + new Date().toLocaleTimeString("ru-RU", { hour12: false });
@@ -504,7 +620,7 @@
     document.getElementById("style").addEventListener("change", () => paint(false));
     document.getElementById("indicator").addEventListener("change", () => paint(false));
     document.getElementById("save-levels").addEventListener("click", async () => {
-      const response = await fetch("/api/levels/?" + query(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: collect("entry"), takes: collect("take") }) });
+      const response = await fetch("/api/levels/?" + query(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ long_entries: collect("long-entry"), short_entries: collect("short-entry"), long_takes: collect("long-take"), short_takes: collect("short-take") }) });
       document.getElementById("level-note").textContent = response.ok ? "линии сохранены" : "не сохранилось";
       refresh();
     });
@@ -657,7 +773,7 @@
     markTool("");
     loadDrawings();
     rememberDrawings();
-    renderLevels((levels.pcts || []).map((item) => +(item * 100).toFixed(4)), (levels.tp_pcts || []).map((item) => +(item * 100).toFixed(4)));
+    renderLevels(levels);
     paint(true);
     setInterval(refresh, 15000);
   </script>

@@ -2,6 +2,7 @@
 
 from datetime import date, datetime, timezone
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from rates.cbr import fetch_ruonia
@@ -27,20 +28,31 @@ class Command(BaseCommand):
         if end < start:
             raise CommandError("конец раньше начала")
 
-        ruonia = fetch_ruonia(start, end)
-        self.stdout.write(f"RUONIA {_save(ruonia, 'ruonia')} дней")
+        try:
+            ruonia = fetch_ruonia(start, end)
+            self.stdout.write(f"RUONIA {_save(ruonia, 'ruonia')} дней")
+        except Exception as exc:
+            self.stderr.write(f"ЦБ не ответил: {exc}. Старая RUONIA оставлена.")
 
-        if options["shibor_file"]:
-            shibor = [(day, rate) for day, rate in read_shibor_csv(options["shibor_file"]) if start <= day <= end]
-            origin = options["shibor_file"]
-        else:
-            shibor = fetch_shibor(start, end)
-            origin = "China Money"
-        self.stdout.write(f"SHIBOR {_save(shibor, 'shibor')} дней, источник {origin}")
+        try:
+            if options["shibor_file"]:
+                shibor = [(day, rate) for day, rate in read_shibor_csv(options["shibor_file"]) if start <= day <= end]
+                origin = options["shibor_file"]
+            else:
+                shibor = fetch_shibor(start, end)
+                origin = "China Money"
+            self.stdout.write(f"SHIBOR {_save(shibor, 'shibor')} дней, источник {origin}")
+        except Exception as exc:
+            self.stderr.write(f"SHIBOR не ответил: {exc}. Старый SHIBOR оставлен.")
 
-        if options["fred_file"]:
-            foreign = read_dfedtaru_csv(options["fred_file"], start, end)
-            origin = options["fred_file"]
+        fred_file = options["fred_file"]
+        if not fred_file:
+            bundled = settings.BASE_DIR / "DFEDTARU.csv"
+            if bundled.exists():
+                fred_file = str(bundled)
+        if fred_file:
+            foreign = read_dfedtaru_csv(fred_file, start, end)
+            origin = fred_file
             self.stdout.write(f"DFEDTARU {_save(foreign, 'dfedtaru')} дней, источник {origin}")
         else:
             try:
@@ -59,10 +71,13 @@ class Command(BaseCommand):
                 estr = fetch_estr(start, end)
                 origin = "ECB"
             except Exception as exc:
-                raise CommandError(
-                    f"ЕЦБ не ответил: {exc}. Скачайте CSV и запустите с --estr-file"
-                ) from exc
-        self.stdout.write(f"ESTR {_save(estr, 'estr')} дней, источник {origin}")
+                self.stderr.write(
+                    f"ЕЦБ не ответил: {exc}. Старая €STR оставлена. "
+                    "Для файла: python manage.py sync_rates --estr-file путь.csv"
+                )
+                estr = None
+        if estr is not None:
+            self.stdout.write(f"ESTR {_save(estr, 'estr')} дней, источник {origin}")
 
 
 def _save(pairs, field, extra=None):
