@@ -34,6 +34,25 @@ class Command(BaseCommand):
             if pair.venue == "bybit":
                 self.stdout.write(f"{pair.code}: Bybit, контракты заводит add_btc")
                 continue
+            if pair.foreign_source == "TRI":
+                self.stdout.write(f"{pair.code}: треугольник, свои только кварталы {pair.future_root}")
+                for row in quarter_points(pair.future_root, start, end):
+                    instrument, created = Instrument.objects.update_or_create(
+                        code=row["code"],
+                        defaults={
+                            "pair": pair,
+                            "kind": Instrument.Kind.FUTURE,
+                            "finam_symbol": future_symbol(row["secid"]),
+                            "lot": pair.lot,
+                            "listed_at": row["listed_at"],
+                            "roll_at": row["roll_at"],
+                        },
+                    )
+                    mark = "новый" if created else "окно"
+                    self.stdout.write(
+                        f"  {mark} {instrument.code} {row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}"
+                    )
+                continue
             perp, _ = Instrument.objects.update_or_create(
                 code=pair.perp_code,
                 defaults={

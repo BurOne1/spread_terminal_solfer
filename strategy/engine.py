@@ -171,6 +171,8 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
                     continue
                 price = position * (spread - avg) * close_n * unit
                 close_fee = close_n * (charge(bar["future"]) + charge(bar["perp"]))
+                if bar.get("third"):
+                    close_fee += close_n * charge(bar["third"])
                 open_fee = sum(future + perp for future, perp in entry_legs[:close_n])
                 fee = close_fee + open_fee
                 fund_share = open_fund * close_n / size
@@ -215,8 +217,9 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
             entry_ts = bar["ts"]
             entry_spread = spread
             used.add(key)
-            entry_legs.append((charge(bar["future"]), charge(bar["perp"])))
-            realized -= charge(bar["future"]) + charge(bar["perp"])
+            third = charge(bar["third"]) if bar.get("third") else 0
+            entry_legs.append((charge(bar["future"]) + third, charge(bar["perp"])))
+            realized -= charge(bar["future"]) + charge(bar["perp"]) + third
 
         if not blocked and wide and now is not None and not position:
             for index, pct in enumerate(long_pcts):
@@ -241,8 +244,9 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
                     size += 1
                     used.add((tag, index))
                     taken.append(pct)
-                    entry_legs.append((charge(bar["future"]), charge(bar["perp"])))
-                    realized -= charge(bar["future"]) + charge(bar["perp"])
+                    third = charge(bar["third"]) if bar.get("third") else 0
+                    entry_legs.append((charge(bar["future"]) + third, charge(bar["perp"])))
+                    realized -= charge(bar["future"]) + charge(bar["perp"]) + third
 
         if position and size:
             ts = bar["ts"]
@@ -269,7 +273,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
                     funded_day = day
 
         mark = 0.0
-        if position and size and now is not None:
+        if position and size and spread is not None:
             mark = position * (spread - avg) * size * unit
         held = "L" if position == 1 else "S" if position == -1 else ""
         if not held and trades and trades[-1]["exit"] == bar["ts"]:

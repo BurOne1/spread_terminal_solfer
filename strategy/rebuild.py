@@ -3,6 +3,8 @@
 Считает выбранную пару или все активные. Окно квартала — listed_at до roll_at.
 """
 
+from datetime import timezone
+
 from django.db import transaction
 
 from market.models import Candle, Instrument, Pair
@@ -20,8 +22,8 @@ def rebuild_spread(pair_code=""):
         pairs = pairs.filter(code=pair_code)
     total = 0
     for pair in pairs:
-        if pair.foreign_source == "CROSS":
-            total += _rebuild_cross(pair)
+        if pair.foreign_source == "TRI":
+            total += _rebuild_tri(pair)
         else:
             total += _rebuild_pair(pair)
     return total
@@ -97,107 +99,129 @@ def _rebuild_pair(pair):
     return len(points)
 
 
-def _closes(instrument):
+OZ_GRAMS = 31.1034768
+TRI_PERP = {"TRIGD": "GOLD", "TRISV": "SILVER"}
+
+
+def _bars(instrument):
+    """Час → close. Наличие бара — час этой ноги."""
     if instrument is None:
         return {}
     return dict(Candle.objects.filter(instrument=instrument).values_list("ts", "close"))
 
 
+def _common_hour(ts):
+    """Пересечение сессий FORTS: будни, 07:00–23:50 МСК = 04:00–20:00 UTC.
+
+    GD, SV, SI и вечные GLDRUBF/SLVRUBF торгуются в одном расписании
+    срочного рынка. Бар вне этого окна не общий.
+    """
+    ts = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    if ts.weekday() >= 5:
+        return False
+    return 4 <= ts.hour <= 20
+
+
 def _window_price(contracts, ts):
-    """Цена квартала, чьё окно накрывает ts. contracts отсортированы по roll_at."""
     for contract in contracts:
         left = contract["listed_at"]
         if left is not None and ts < left:
             continue
         if ts >= contract["roll_at"]:
             continue
-        price = contract["candles"].get(ts)
+        price = contract["bars"].get(ts)
         if price is not None:
             return price, contract
     return None, None
 
 
-def _rebuild_cross(pair):
-    """CR×USDCNY−SI. CR за 1 юань, SI за 1000 долларов, USDCNY — юаней за 1 доллар.
+def _rebuild_tri(pair):
+    """GD+SI−GLDRUBF или SV+SI−SLVRUBF.
 
-    raw = CR × USDCNY − SI / scale. scale из пары USD, иначе 1000.
-    CR и SI читаются из своих пар. USDCNY — свечи кросса, а если их нет,
-    то USDRUB / CNYRUB (спот, иначе вечный). USDCNY_TOM на Мосбирже почти не торгуется.
+    raw и spread_rate пишутся в рублях за грамм: правая шкала золота и
+    серебра одна и та же. spot — цена вечного металла в руб/грамм, от неё
+    стратегия считает уровни. dollar лежит в foreign_rate.
+    Бар только на пересечении часов и внутри общей сессии.
+    Склейка — самая ранняя из экспирации металла и склейки SI.
     """
-    cny = Pair.objects.filter(code="CNY").first()
+    metal_code = TRI_PERP.get(pair.code)
+    metal = Pair.objects.filter(code=metal_code).first() if metal_code else None
     usd = Pair.objects.filter(code="USD").first()
-    if cny is None or usd is None:
+    if metal is None or usd is None:
         return 0
-    scale = usd.future_scale or pair.future_scale or 1000
-    if scale == 1:
-        scale = 1000
-    cr_contracts = []
-    for instrument in Instrument.objects.filter(pair=cny, kind=Instrument.Kind.FUTURE).order_by("roll_at"):
-        if instrument.roll_at is None:
-            continue
-        candles = _closes(instrument)
-        if candles:
-            cr_contracts.append({
-                "id": instrument.id,
-                "code": instrument.code,
-                "listed_at": instrument.listed_at,
-                "roll_at": instrument.roll_at,
-                "candles": candles,
-            })
+    scale = 1000
+    if usd.future_scale and usd.future_scale > 1:
+        scale = usd.future_scale
+    perp = Instrument.objects.filter(pair=metal, code=metal.perp_code).first()
+    perp_bars = _bars(perp)
+    if not perp_bars:
+        return 0
     si_contracts = []
     for instrument in Instrument.objects.filter(pair=usd, kind=Instrument.Kind.FUTURE).order_by("roll_at"):
         if instrument.roll_at is None:
             continue
-        candles = _closes(instrument)
-        if candles:
+        bars = _bars(instrument)
+        if bars:
             si_contracts.append({
                 "listed_at": instrument.listed_at,
                 "roll_at": instrument.roll_at,
-                "candles": {ts: price / scale for ts, price in candles.items()},
+                "bars": {ts: price / scale for ts, price in bars.items()},
             })
-    if not cr_contracts or not si_contracts:
+    if not si_contracts:
         return 0
-    fx = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
-    usdcny = _closes(fx)
-    derived = False
-    if not usdcny:
-        usdrub = _pair_fx(usd)
-        cnyrub = _pair_fx(cny)
-        usdcny = {
-            ts: usdrub[ts] / cnyrub[ts]
-            for ts in usdrub.keys() & cnyrub.keys()
-            if cnyrub[ts]
-        }
-        derived = True
-    if not usdcny:
+    rates = [(row.date, row.ruonia) for row in RateDay.objects.order_by("date")]
+    metal_contracts = []
+    for instrument in Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE).order_by("roll_at"):
+        if instrument.roll_at is None:
+            continue
+        bars = _bars(instrument)
+        if bars:
+            metal_contracts.append({
+                "id": instrument.id,
+                "listed_at": instrument.listed_at,
+                "roll_at": instrument.roll_at,
+                "bars": bars,
+            })
+    if not metal_contracts:
         return 0
     rows = []
-    for contract in cr_contracts:
-        for ts in sorted(contract["candles"]):
+    for contract in metal_contracts:
+        for ts in sorted(contract["bars"]):
+            if not _common_hour(ts):
+                continue
             left = contract["listed_at"]
             if left is not None and ts < left:
                 continue
             if ts >= contract["roll_at"]:
                 continue
-            cr = contract["candles"][ts]
-            si, _si_contract = _window_price(si_contracts, ts)
-            dollar = usdcny.get(ts)
-            if si is None or dollar is None:
+            metal_usd = contract["bars"].get(ts)
+            perp_rub = perp_bars.get(ts)
+            dollar, si = _window_price(si_contracts, ts)
+            if metal_usd is None or perp_rub is None or dollar is None:
                 continue
-            raw = float(cr) * float(dollar) - float(si)
+            roll = contract["roll_at"]
+            if si is not None and si["roll_at"] < roll:
+                roll = si["roll_at"]
+            perp_gram = float(perp_rub)
+            raw_oz = float(metal_usd) * float(dollar) - perp_gram * OZ_GRAMS
+            raw = raw_oz / OZ_GRAMS
+            day = ts.astimezone(timezone.utc).date() if ts.tzinfo else ts.date()
+            days = max((roll.date() - day).days, 1)
+            ruonia = _asof_rate(rates, day)
+            fair = perp_gram * (ruonia or 0) / 100.0 * days / 365.0
             rows.append(SpreadBar(
                 pair=pair,
                 ts=ts,
                 contract_id=contract["id"],
-                future_close=money(cr),
-                perp_close=money(si),
-                spot=money(dollar),
+                future_close=money(float(metal_usd) * float(dollar) / OZ_GRAMS),
+                perp_close=money(perp_gram),
+                spot=money(perp_gram),
                 raw_spread=money(raw),
-                days_left=max((contract["roll_at"].date() - ts.date()).days, 1),
-                ruonia=None,
-                foreign_rate=None,
-                fair=money(raw),
-                spread_rate=money(raw),
+                days_left=days,
+                ruonia=None if ruonia is None else money(ruonia),
+                foreign_rate=money(dollar),
+                fair=money(fair),
+                spread_rate=money(raw - fair),
             ))
     if not rows:
         return 0
@@ -207,11 +231,13 @@ def _rebuild_cross(pair):
     return len(rows)
 
 
-def _pair_fx(pair):
-    """Спот пары, а если его нет — вечный. Для расчёта USDCNY = USDRUB / CNYRUB."""
-    spot = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
-    closes = _closes(spot)
-    if closes:
-        return closes
-    perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
-    return _closes(perp)
+def _asof_rate(rows, day):
+    """Последняя известная RUONIA на эту дату или раньше. Пустые дни не обнуляют."""
+    from bisect import bisect_right
+    dates = [item[0] for item in rows]
+    pos = bisect_right(dates, day) - 1
+    for index in range(pos, -1, -1):
+        value = rows[index][1]
+        if value is not None:
+            return float(value)
+    return None

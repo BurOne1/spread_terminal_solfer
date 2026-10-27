@@ -54,9 +54,12 @@ def live_symbols():
     now = datetime.now(timezone.utc)
     symbols = []
     for pair in Pair.objects.filter(active=True).exclude(venue="bybit"):
-        if pair.foreign_source == "CROSS":
-            # USDCNY_TOM на Мосбирже почти не торгуется. Кросс считается
-            # из свечей CNY и USD, их и так подписывает run_live.
+        if pair.foreign_source == "TRI":
+            # Вечный и SI уже подписаны парами GOLD/SILVER и USD.
+            for row in quarter_points(pair.future_root, now - timedelta(days=1), now + timedelta(days=1)):
+                if row["roll_at"] > now:
+                    symbols.append(f"{row['secid']}@{pair.mic}")
+                    break
             continue
         symbols.extend([pair.perp_symbol, pair.spot_symbol])
         for row in quarter_points(pair.future_root, now - timedelta(days=1), now + timedelta(days=1)):

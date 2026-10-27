@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>{% if pair %}{% if pair.foreign_source == "CROSS" %}{{ pair.title }}{% else %}{{ pair.future_root }} − {{ pair.perp_code }}{% endif %}{% else %}спред{% endif %}</title>
+  <title>{% if pair %}{% if pair.foreign_source == "TRI" %}{{ pair.title }}{% else %}{{ pair.future_root }} − {{ pair.perp_code }}{% endif %}{% else %}спред{% endif %}</title>
   <script src="https://unpkg.com/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://unpkg.com/lightweight-charts-drawing@0.6.2/dist/lightweight-charts-drawing.umd.cjs"></script>
   <style>
@@ -82,8 +82,8 @@
   <div class="page">
     <header>
       <div>
-        <h1 id="title">{% if pair %}{% if pair.foreign_source == "CROSS" %}{{ pair.title }}{% else %}{{ pair.future_root }} − {{ pair.perp_code }}{% endif %}{% else %}спред{% endif %}</h1>
-        <p class="sub" id="subtitle">{% if pair %}Спот {{ pair.spot_code }}, ставка {% if pair.foreign_source == "NONE" %}только RUONIA{% elif pair.foreign_source == "EWMA14" %}EWMA14 фандинга{% elif pair.foreign_source == "CROSS" %}CR × USDCNY − SI/1000{% else %}{{ pair.foreign_source }}{% endif %}, {{ pair.quote }}{% endif %}</p>
+        <h1 id="title">{% if pair %}{% if pair.foreign_source == "TRI" %}{{ pair.title }}{% else %}{{ pair.future_root }} − {{ pair.perp_code }}{% endif %}{% else %}спред{% endif %}</h1>
+        <p class="sub" id="subtitle">{% if pair %}{% if pair.foreign_source == "TRI" %}руб/грамм, RUONIA и фандинг вечного{% else %}Спот {{ pair.spot_code }}, ставка {% if pair.foreign_source == "NONE" %}только RUONIA{% elif pair.foreign_source == "EWMA14" %}EWMA14 фандинга{% else %}{{ pair.foreign_source }}{% endif %}{% endif %}, {{ pair.quote }}{% endif %}</p>
       </div>
       <div class="toolbar">
         {% if pairs %}
@@ -189,17 +189,19 @@
         <p class="note" id="level-note">Хранятся у пары.</p>
         <div class="group">Индикатор</div>
         <select id="indicator">
-          <option value="carry">фандинг − контанго</option>
+          <option value="carry">фандинг − контанго, % годовых</option>
+          <option value="carry_sum">фандинг − контанго, накопленный</option>
           <option value="zscore">z-score</option>
           <option value="off">скрыть</option>
         </select>
-        <p class="note" id="indicator-note">средний фандинг за дни до склейки × эти дни − сырой спред × 1000</p>
+        <p class="note" id="indicator-note">% годовых: фандинг × 365 − спред до нуля × 365 / дни. Без двух дней до склейки и двух после.</p>
       </aside>
     </div>
   </div>
   {{ points|json_script:"points-data" }}
   {{ pnl|json_script:"pnl-data" }}
   {{ funding|json_script:"funding-data" }}
+  <script>window.fundingScale = {{ funding_scale|default:1 }}; window.fundingKind = "{{ funding_kind|default:'ruble' }}";</script>
   {{ levels|json_script:"levels-data" }}
   <script>
     let points = JSON.parse(document.getElementById("points-data").textContent);
@@ -295,14 +297,38 @@
       }
       const days = funding.map((row) => row.d);
       const values = funding.map((row) => row.v);
+      const scale = Number(window.fundingScale || 1) || 1;
+      const kind = window.fundingKind || "ruble";
+      const quiet = 2 * 86400;
+      const summed = mode === "carry_sum";
+      let contract = "";
+      let rolled = 0;
       return rates.map((point) => {
+        const time = unix(point.t);
+        if (point.contract !== contract) {
+          contract = point.contract;
+          rolled = time;
+        }
+        const windowDays = Math.max(1, point.days || 1);
+        if (windowDays <= 2 || (rolled && time - rolled < quiet)) {
+          return { time };
+        }
         const day = point.t.slice(0, 10);
         let end = days.findIndex((item) => item > day);
         if (end < 0) end = days.length;
-        const windowDays = Math.max(1, point.days || 1);
         const slice = values.slice(Math.max(0, end - windowDays), end);
         const avg = slice.length ? slice.reduce((sum, item) => sum + item, 0) / slice.length : 0;
-        return { time: unix(point.t), value: avg * windowDays - point.raw * 1000 };
+        if (summed) {
+          const fund = kind === "rate" ? avg * 3 * windowDays * (point.price || 0) : avg / scale * windowDays;
+          return { time, value: fund - point.raw };
+        }
+        const price = Number(point.price) || 0;
+        if (!price) return { time };
+        const basis = point.raw / price * 365 / windowDays * 100;
+        const fundingAnn = kind === "rate"
+          ? avg * 3 * 365 * 100
+          : avg / scale / price * 365 * 100;
+        return { time, value: fundingAnn - basis };
       });
     }
     let spreadLine = [];
@@ -341,10 +367,18 @@
         spreadLine = rate.filter((point) => point.value !== undefined && point.value !== null);
         const mode = document.getElementById("indicator").value;
         document.getElementById("carry-card").style.display = mode === "off" ? "none" : "";
-        document.getElementById("indicator-title").textContent = mode === "zscore" ? "z-score spread_rate" : "фандинг − контанго";
-        document.getElementById("indicator-note").textContent = mode === "zscore"
-          ? "z-score за 60 баров, линии ±1.5"
-          : "средний фандинг за дни до склейки × эти дни − сырой спред × 1000";
+        const titles = {
+          zscore: "z-score spread_rate",
+          carry_sum: "фандинг − контанго, накопленный",
+          carry: "фандинг − контанго, % годовых",
+        };
+        const notes = {
+          zscore: "z-score за 60 баров, линии ±1.5",
+          carry_sum: "средний фандинг × дни до склейки − сырой спред, в единицах спреда. Без двух дней вокруг склейки",
+          carry: "оба в % годовых. Без двух дней до склейки и двух после",
+        };
+        document.getElementById("indicator-title").textContent = titles[mode] || titles.carry;
+        document.getElementById("indicator-note").textContent = notes[mode] || notes.carry;
         clearZ();
         if (mode !== "off") {
           const data = align(times, indicatorData());
@@ -356,7 +390,7 @@
             zLines.push(carrySeries.createPriceLine({ price: 0, color: "#555", lineWidth: 1, axisLabelVisible: true }));
           }
           const last = data.filter((point) => point.value !== undefined).at(-1);
-          if (last) document.getElementById("carry-status").textContent = last.value.toFixed(2);
+          if (last) document.getElementById("carry-status").textContent = last.value.toFixed(2) + (mode === "carry" ? " %" : "");
         } else {
           carryLine = [];
         }
@@ -617,6 +651,8 @@
         if (!response.ok) throw new Error(response.status);
         const body = await response.json();
         points = body.points; pnl = body.pnl || []; funding = body.funding || [];
+        window.fundingScale = body.funding_scale || window.fundingScale || 1;
+        window.fundingKind = body.funding_kind || window.fundingKind || "ruble";
         if (body.pair) {
           document.getElementById("title").textContent = body.title || body.pair;
           document.getElementById("subtitle").textContent = "Спот " + (body.spot || "") + ", ставка " + (body.rate || "") + (body.quote ? ", " + body.quote : "");
@@ -809,7 +845,7 @@
     rememberDrawings();
     renderLevels(levels);
     paint(true);
-    setInterval(refresh, 15000);
+    setInterval(refresh, 10000);
   </script>
 </body>
 </html>

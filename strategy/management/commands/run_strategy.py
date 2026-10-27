@@ -5,14 +5,11 @@
 """
 
 import time
-from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 
 from market.models import Pair
-from rates.models import FundingDay
-from strategy.engine import pair_levels, run
-from strategy.models import EquityPoint, PaperTrade, SpreadBar
+from strategy.models import PaperTrade, SpreadBar
 
 
 class Command(BaseCommand):
@@ -44,58 +41,12 @@ class Command(BaseCommand):
             time.sleep(15)
 
     def _pass(self, pair):
-        bars = [
-            {
-                "ts": bar.ts,
-                "contract": bar.contract.code,
-                "raw": float(bar.raw_spread),
-                "rate": None if bar.spread_rate is None else float(bar.spread_rate),
-                "spot": float(bar.spot),
-                "fair": None if bar.fair is None else float(bar.fair),
-                "future": float(bar.future_close),
-                "perp": float(bar.perp_close),
-            }
-            for bar in SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("ts")
-        ]
-        from rates.funding import funding_field
-        if pair.foreign_source == "EWMA14":
-            from rates.models import FundingPoint
-            funding = [
-                (ts, float(rate))
-                for ts, rate in FundingPoint.objects.filter(pair=pair).order_by("ts").values_list("ts", "rate")
-            ]
-            mode = "interval"
-        else:
-            field = funding_field(pair)
-            funding = [
-                (day, float(value))
-                for day, value in FundingDay.objects.order_by("date").values_list("date", field)
-                if value is not None
-            ]
-            mode = "daily"
-        long_pcts, short_pcts, long_tp, short_tp = pair_levels(pair)
-        return run(
-            bars, funding,
-            notional=pair.lot or 1000,
-            funding_mode=mode,
-            long_pcts=long_pcts,
-            short_pcts=short_pcts,
-            long_tp=long_tp,
-            short_tp=short_tp,
-        )
+        from strategy.runner import pass_pair
+        return pass_pair(pair)
 
     def _store(self, pair, points):
-        EquityPoint.objects.filter(pair=pair).delete()
-        EquityPoint.objects.bulk_create([
-            EquityPoint(
-                pair=pair,
-                ts=point["t"],
-                contract=point["contract"],
-                equity=Decimal(f"{point['equity']:.2f}"),
-                marker=point["marker"],
-            )
-            for point in points
-        ], batch_size=1000)
+        from strategy.runner import store_points
+        store_points(pair, points)
 
     def _save_live(self, trade):
         PaperTrade.objects.create(

@@ -59,7 +59,7 @@ def _points(pair, start="", end=""):
         candle = {"o": raw, "h": raw, "l": raw, "c": raw}
         future = future_ohlc.get(bar.ts)
         perp_bar = perp_ohlc.get(bar.ts)
-        if future and perp_bar:
+        if pair.foreign_source != "TRI" and future and perp_bar:
             opened = future[0] - perp_bar[0]
             closed = future[3] - perp_bar[3]
             high = max(future[1] - perp_bar[2], future[2] - perp_bar[1], opened, closed)
@@ -71,6 +71,7 @@ def _points(pair, start="", end=""):
             "raw": raw,
             "rate": None if bar.spread_rate is None else float(bar.spread_rate),
             "days": bar.days_left,
+            "price": float(bar.spot or bar.perp_close or 0),
             "candle": candle,
         })
     return rows
@@ -109,12 +110,7 @@ def _levels(pair):
     if pair is None:
         return empty
     long_pcts, short_pcts, long_tp, short_tp = pair_levels(pair)
-    spot = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
-    if spot is None:
-        spot = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
-    last = None
-    if spot is not None:
-        last = Candle.objects.filter(instrument=spot).order_by("-ts").values_list("close", flat=True).first()
+    last = _level_spot(pair)
     payload = {
         "long_pcts": long_pcts,
         "short_pcts": short_pcts,
@@ -122,7 +118,7 @@ def _levels(pair):
         "short_tp_pcts": short_tp,
         "pcts": long_pcts,
         "tp_pcts": long_tp,
-        "spot": None if last is None else float(last),
+        "spot": last,
     }
     if last is None:
         payload.update({"long": [], "short": [], "long_tp": [], "short_tp": [], "tp": []})
@@ -138,6 +134,24 @@ def _levels(pair):
     return payload
 
 
+def _level_spot(pair):
+    """Цена, от которой уровни — проценты. У треугольника это вечный металл, руб/грамм."""
+    if pair.foreign_source == "TRI":
+        from strategy.rebuild import TRI_PERP
+        metal = Pair.objects.filter(code=TRI_PERP.get(pair.code, "")).first()
+        if metal is None:
+            return None
+        perp = Instrument.objects.filter(pair=metal, code=metal.perp_code).first()
+    else:
+        perp = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
+        if perp is None:
+            perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
+    if perp is None:
+        return None
+    last = Candle.objects.filter(instrument=perp).order_by("-ts").values_list("close", flat=True).first()
+    return None if last is None else float(last)
+
+
 def _funding(pair):
     if pair is not None and pair.foreign_source == "EWMA14":
         from rates.models import FundingPoint
@@ -147,12 +161,35 @@ def _funding(pair):
         ]
     from rates.models import FundingDay
     from rates.funding import funding_field
-    field = funding_field(pair)
+    if pair is not None and pair.foreign_source == "TRI":
+        from strategy.rebuild import TRI_PERP
+        metal = Pair.objects.filter(code=TRI_PERP.get(pair.code, "")).first()
+        field = funding_field(metal)
+    else:
+        field = funding_field(pair)
     return [
         {"d": day.isoformat(), "v": float(value)}
         for day, value in FundingDay.objects.order_by("date").values_list("date", field)
         if value is not None
     ]
+
+
+def _funding_scale(pair):
+    """Во сколько единиц спреда записан один фандинг.
+
+    Валюта — за контракт 1000, золото — за грамм, серебро — за 100 грамм.
+    Треугольник берёт шкалу своего металла, чтобы фандинг и контанго
+    были в одних рублях за грамм.
+    """
+    if pair is None:
+        return 1000
+    if pair.foreign_source == "TRI":
+        return 100 if pair.code == "TRISV" else 1
+    if pair.code == "SILVER":
+        return 100
+    if pair.code == "GOLD":
+        return 1
+    return pair.lot or 1000
 
 
 def home(request):
@@ -177,6 +214,8 @@ def home(request):
         "points": points,
         "pnl": pnl,
         "funding": funding,
+        "funding_scale": _funding_scale(pair),
+        "funding_kind": "rate" if pair is not None and pair.foreign_source == "EWMA14" else "ruble",
         "levels": _levels(pair),
         "count": len(points),
     })
@@ -185,8 +224,8 @@ def home(request):
 def _rate_label(pair):
     if pair is None:
         return ""
-    if pair.foreign_source == "NONE":
-        return "только RUONIA"
+    if pair.foreign_source == "TRI":
+        return "треугольник, RUONIA и фандинг вечного"
     if pair.foreign_source == "EWMA14":
         return "EWMA14 фандинга"
     return pair.foreign_source
@@ -194,6 +233,8 @@ def _rate_label(pair):
 
 def spread_json(request):
     pair = _pair(request.GET.get("pair", ""))
+    from strategy.runner import refresh_pnl
+    refresh_pnl(pair)
     contracts = _contracts(pair)
     start = request.GET.get("from", "")
     end = request.GET.get("to", "")
@@ -205,7 +246,9 @@ def spread_json(request):
     funding = _funding(pair)
     return JsonResponse({
         "pair": "" if pair is None else pair.code,
-        "title": "" if pair is None else f"{pair.future_root} − {pair.perp_code}",
+        "title": "" if pair is None else (
+            pair.title if pair.foreign_source == "TRI" else f"{pair.future_root} − {pair.perp_code}"
+        ),
         "spot": "" if pair is None else pair.spot_code,
         "rate": _rate_label(pair),
         "quote": "" if pair is None else pair.quote,
@@ -216,6 +259,8 @@ def spread_json(request):
         "count": len(points),
         "points": points,
         "funding": funding,
+        "funding_scale": _funding_scale(pair),
+        "funding_kind": "rate" if pair is not None and pair.foreign_source == "EWMA14" else "ruble",
         "pnl": _pnl(pair, start, end),
         "levels": _levels(pair),
     })
@@ -246,55 +291,12 @@ def recalc(request):
     pair = _pair(request.GET.get("pair", ""))
     if pair is None:
         return JsonResponse({"error": "нет пары"}, status=404)
-    from decimal import Decimal
-    from rates.models import FundingDay
-    from strategy.engine import pair_levels, run
-    bars = [
-        {
-            "ts": bar.ts, "contract": bar.contract.code,
-            "raw": float(bar.raw_spread),
-            "rate": None if bar.spread_rate is None else float(bar.spread_rate),
-            "spot": float(bar.spot),
-            "fair": None if bar.fair is None else float(bar.fair),
-            "future": float(bar.future_close), "perp": float(bar.perp_close),
-        }
-        for bar in SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("ts")
-    ]
-    from rates.funding import funding_field
-    funding_mode = "daily"
-    if pair.foreign_source == "EWMA14":
-        from rates.models import FundingPoint
-        funding = [
-            (ts, float(rate))
-            for ts, rate in FundingPoint.objects.filter(pair=pair).order_by("ts").values_list("ts", "rate")
-        ]
-        funding_mode = "interval"
-    else:
-        field = funding_field(pair)
-        funding = [
-            (day, float(value))
-            for day, value in FundingDay.objects.order_by("date").values_list("date", field)
-            if value is not None
-        ]
-    long_pcts, short_pcts, long_tp, short_tp = pair_levels(pair)
+    from strategy.runner import pass_pair, store_points
     body = json.loads(request.body or "{}")
-    points, trades = run(
-        bars, funding,
+    points, trades = pass_pair(
+        pair,
         entry_mode=body.get("entry", "touch"),
         average=bool(body.get("average", True)),
-        notional=pair.lot or 1000,
-        funding_mode=funding_mode,
-        long_pcts=long_pcts,
-        short_pcts=short_pcts,
-        long_tp=long_tp,
-        short_tp=short_tp,
     )
-    EquityPoint.objects.filter(pair=pair).delete()
-    EquityPoint.objects.bulk_create([
-        EquityPoint(
-            pair=pair, ts=point["t"], contract=point["contract"],
-            equity=Decimal(f"{point['equity']:.2f}"), marker=point["marker"],
-        )
-        for point in points
-    ], batch_size=1000)
+    store_points(pair, points)
     return JsonResponse({"ok": True, "trades": len(trades), "pnl": points})

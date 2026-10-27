@@ -93,11 +93,16 @@ class Command(BaseCommand):
 
 
 def _targets(pair, start, end):
-    if pair.foreign_source == "CROSS":
-        fx = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
-        if fx is None or not fx.finam_symbol:
-            return []
-        return [(fx, False)]
+    if pair.foreign_source == "TRI":
+        targets = []
+        quarters = Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE).order_by("roll_at")
+        for instrument in quarters:
+            if not instrument.finam_symbol or instrument.roll_at is None:
+                continue
+            opened = instrument.listed_at or start
+            if opened < end and instrument.roll_at > start:
+                targets.append((instrument, True))
+        return targets
     targets = []
     perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
     if perp is None or not perp.finam_symbol:
