@@ -7,6 +7,7 @@ Finam отдаёт TIME_FRAME_H1 примерно за 30 дней. Окна с�
 
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
@@ -45,7 +46,11 @@ class Command(BaseCommand):
             raise CommandError("активных пар нет. Для евро сначала python manage.py add_eur")
 
         total = 0
-        with FinamClient(settings.FINAM_API_SECRET, settings.FINAM_BASE_URL) as client:
+        try:
+            client = FinamClient(settings.FINAM_API_SECRET, settings.FINAM_BASE_URL)
+        except Exception as exc:
+            raise CommandError(f"Finam не открылся: {exc}") from exc
+        try:
             for pair in pairs:
                 targets = _targets(pair, start, end)
                 if not targets:
@@ -58,6 +63,8 @@ class Command(BaseCommand):
                     got = self._instrument_bars(client, instrument, start, end, optional)
                     total += got
                     self.stdout.write(f"  {instrument.code}: {got} свечей")
+        finally:
+            client.close()
         self.stdout.write(f"итого {total}")
 
     def _instrument_bars(self, client, instrument, start, end, optional):
@@ -75,11 +82,22 @@ class Command(BaseCommand):
                     self.stdout.write(f"  {instrument.finam_symbol}: {exc}")
                     return count
                 raise CommandError(str(exc)) from exc
+            except (httpx.TimeoutException, httpx.NetworkError, OSError) as exc:
+                self.stderr.write(
+                    f"  {instrument.finam_symbol}: сеть не ответила ({exc.__class__.__name__}), пропуск. "
+                    "С этой машины Finam недоступен, свечи грузите на ВМ."
+                )
+                return count
             count += _save(instrument, bars)
         return count
 
 
 def _targets(pair, start, end):
+    if pair.foreign_source == "CROSS":
+        fx = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
+        if fx is None or not fx.finam_symbol:
+            return []
+        return [(fx, False)]
     targets = []
     perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
     if perp is None or not perp.finam_symbol:

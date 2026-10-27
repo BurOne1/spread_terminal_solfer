@@ -54,6 +54,10 @@ def live_symbols():
     now = datetime.now(timezone.utc)
     symbols = []
     for pair in Pair.objects.filter(active=True).exclude(venue="bybit"):
+        if pair.foreign_source == "CROSS":
+            # USDCNY_TOM на Мосбирже почти не торгуется. Кросс считается
+            # из свечей CNY и USD, их и так подписывает run_live.
+            continue
         symbols.extend([pair.perp_symbol, pair.spot_symbol])
         for row in quarter_points(pair.future_root, now - timedelta(days=1), now + timedelta(days=1)):
             if row["roll_at"] > now:
@@ -451,7 +455,13 @@ async def run_forever(log):
                 log(f"проверка разрывов не удалась: {exc}")
             client = FinamClient(settings.FINAM_API_SECRET, settings.FINAM_BASE_URL)
             try:
-                token = client.token()
+                while True:
+                    try:
+                        token = client.token()
+                        break
+                    except Exception as exc:
+                        log(f"JWT не получен: {exc}. повтор через 15 с")
+                        await asyncio.sleep(15)
             finally:
                 client.close()
             try:

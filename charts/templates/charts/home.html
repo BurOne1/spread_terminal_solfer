@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <title>{% if pair %}{{ pair.future_root }} − {{ pair.perp_code }}{% else %}спред{% endif %}</title>
+  <title>{% if pair %}{% if pair.foreign_source == "CROSS" %}{{ pair.title }}{% else %}{{ pair.future_root }} − {{ pair.perp_code }}{% endif %}{% else %}спред{% endif %}</title>
   <script src="https://unpkg.com/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://unpkg.com/lightweight-charts-drawing@0.6.2/dist/lightweight-charts-drawing.umd.cjs"></script>
   <style>
@@ -26,8 +26,11 @@
     .pane { height: clamp(280px, 46vh, 520px); }
     .pane.small { height: clamp(140px, 20vh, 220px); }
     .cursor { position: absolute; top: 0; bottom: 28px; width: 1px; background: #98a2b3; pointer-events: none; display: none; }
-    .split { height: 8px; cursor: row-resize; background: transparent; }
+    .split { height: 10px; cursor: row-resize; background: transparent; position: relative; }
     .split:hover { background: #d9e2ef; }
+    .split::after { content: ""; position: absolute; left: 50%; top: 3px; width: 36px; height: 4px; margin-left: -18px; border-radius: 3px; background: #c5d0de; }
+    .split[data-edge] { height: 16px; margin: 2px 0 8px; }
+    .split[data-edge]::after { top: 6px; background: #98a2b3; }
     .side { position: sticky; top: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; max-height: calc(100vh - 24px); overflow: auto; }
     .side select, .side input[type="number"] { width: 100%; }
     .side h2 { margin: 0 0 4px; font-size: 15px; }
@@ -79,8 +82,8 @@
   <div class="page">
     <header>
       <div>
-        <h1 id="title">{% if pair %}{{ pair.future_root }} − {{ pair.perp_code }}{% else %}спред{% endif %}</h1>
-        <p class="sub" id="subtitle">{% if pair %}Спот {{ pair.spot_code }}, ставка {% if pair.foreign_source == "NONE" %}только RUONIA{% elif pair.foreign_source == "EWMA14" %}EWMA14 фандинга{% else %}{{ pair.foreign_source }}{% endif %}, {{ pair.quote }}{% endif %}</p>
+        <h1 id="title">{% if pair %}{% if pair.foreign_source == "CROSS" %}{{ pair.title }}{% else %}{{ pair.future_root }} − {{ pair.perp_code }}{% endif %}{% else %}спред{% endif %}</h1>
+        <p class="sub" id="subtitle">{% if pair %}Спот {{ pair.spot_code }}, ставка {% if pair.foreign_source == "NONE" %}только RUONIA{% elif pair.foreign_source == "EWMA14" %}EWMA14 фандинга{% elif pair.foreign_source == "CROSS" %}CR × USDCNY − SI/1000{% else %}{{ pair.foreign_source }}{% endif %}, {{ pair.quote }}{% endif %}</p>
       </div>
       <div class="toolbar">
         {% if pairs %}
@@ -146,6 +149,7 @@
           </div>
           <div class="plot"><div id="pnl" class="pane small"></div><div class="cursor" id="pnl-cursor"></div></div>
         </section>
+        <div class="split" data-edge="pnl" title="потянуть вниз, чтобы растянуть PNL"></div>
       </div>
       <aside class="side">
         <h2>Уровни</h2>
@@ -207,19 +211,21 @@
     const look = {
       layout: { background: { color: "#fff" }, textColor: "#667085", fontFamily: "Segoe UI, sans-serif" },
       grid: { vertLines: { color: "#f0f3f7" }, horzLines: { color: "#f0f3f7" } },
-      rightPriceScale: { borderColor: "#e6ebf1", minimumWidth: 72 },
+      rightPriceScale: { borderColor: "#e6ebf1", minimumWidth: 78 },
+      localization: { priceFormatter: (price) => Number.isFinite(price) ? price.toFixed(3) : "" },
       timeScale: { borderColor: "#e6ebf1", timeVisible: true, secondsVisible: false, minBarSpacing: 0.001, fixLeftEdge: false, fixRightEdge: false, rightOffset: 10, shiftVisibleRangeOnNewBar: false },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
       kineticScroll: { mouse: false, touch: false },
     };
+    const priceFormat = { type: "price", precision: 3, minMove: 0.001 };
     const spreadChart = LightweightCharts.createChart(document.getElementById("chart"), { ...look, height: 420 });
     const carryChart = LightweightCharts.createChart(document.getElementById("carry"), { ...look, height: 180 });
     const pnlChart = LightweightCharts.createChart(document.getElementById("pnl"), { ...look, height: 180 });
-    const rawSeries = spreadChart.addSeries(LightweightCharts.LineSeries, { color: "#2f6fdb", lineWidth: 2, priceLineVisible: false });
+    const rawSeries = spreadChart.addSeries(LightweightCharts.LineSeries, { color: "#2f6fdb", lineWidth: 2, priceLineVisible: false, priceFormat });
     let candleSeries = null;
-    const rateSeries = spreadChart.addSeries(LightweightCharts.LineSeries, { color: "#e25b45", lineWidth: 2, priceLineVisible: false });
-    const carrySeries = carryChart.addSeries(LightweightCharts.LineSeries, { color: "#7c3aed", lineWidth: 2, priceLineVisible: false });
-    const equitySeries = pnlChart.addSeries(LightweightCharts.LineSeries, { color: "rgba(0,0,0,0)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    const rateSeries = spreadChart.addSeries(LightweightCharts.LineSeries, { color: "#e25b45", lineWidth: 2, priceLineVisible: false, priceFormat });
+    const carrySeries = carryChart.addSeries(LightweightCharts.LineSeries, { color: "#7c3aed", lineWidth: 2, priceLineVisible: false, priceFormat });
+    const equitySeries = pnlChart.addSeries(LightweightCharts.LineSeries, { color: "rgba(0,0,0,0)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, priceFormat });
     const pnlPieces = [];
     const PNL_COLORS = { "": "#2f6fdb", long: "#168a4a", short: "#e25b45" };
     const rateMarkers = LightweightCharts.createSeriesMarkers(rateSeries, []);
@@ -325,7 +331,7 @@
       try {
         if (style === "candle") {
           rawSeries.setData([]);
-          if (!candleSeries) candleSeries = spreadChart.addSeries(LightweightCharts.CandlestickSeries, { upColor: "#168a4a", downColor: "#e25b45", borderVisible: false, wickUpColor: "#168a4a", wickDownColor: "#e25b45" });
+          if (!candleSeries) candleSeries = spreadChart.addSeries(LightweightCharts.CandlestickSeries, { upColor: "#168a4a", downColor: "#e25b45", borderVisible: false, wickUpColor: "#168a4a", wickDownColor: "#e25b45", priceFormat });
           candleSeries.setData(align(times, points.filter((point) => point.candle).map((point) => ({ time: unix(point.t), open: point.candle.o, high: point.candle.h, low: point.candle.l, close: point.candle.c }))));
         } else {
           if (candleSeries) candleSeries.setData([]);
@@ -376,6 +382,7 @@
             priceLineVisible: false,
             lastValueVisible: segment.last,
             crosshairMarkerVisible: false,
+            priceFormat,
           });
           series.setData(segment.data);
           pnlPieces.push(series);
@@ -506,6 +513,28 @@
     charts.forEach(([chart]) => chart.timeScale().subscribeVisibleLogicalRangeChange(() => syncRange(chart)));
     document.querySelectorAll(".split").forEach((handle) => {
       handle.addEventListener("mousedown", (event) => {
+        if (handle.dataset.edge === "pnl") {
+          event.preventDefault();
+          const pane = document.getElementById("pnl");
+          const start = event.clientY;
+          const startH = pane.clientHeight;
+          document.body.style.cursor = "row-resize";
+          document.body.style.userSelect = "none";
+          function dragEdge(move) {
+            pane.style.height = Math.max(100, startH + (move.clientY - start)) + "px";
+            pnlChart.applyOptions({ height: pane.clientHeight });
+          }
+          function stopEdge() {
+            window.removeEventListener("mousemove", dragEdge);
+            window.removeEventListener("mouseup", stopEdge);
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+            localStorage.setItem("spread-pnl-height", pane.style.height);
+          }
+          window.addEventListener("mousemove", dragEdge);
+          window.addEventListener("mouseup", stopEdge);
+          return;
+        }
         const above = document.getElementById(handle.dataset.above);
         const below = document.getElementById(handle.dataset.below);
         const start = event.clientY;
@@ -524,6 +553,11 @@
         window.addEventListener("mouseup", stop);
       });
     });
+    const savedPnl = localStorage.getItem("spread-pnl-height");
+    if (savedPnl) {
+      document.getElementById("pnl").style.height = savedPnl;
+      pnlChart.applyOptions({ height: document.getElementById("pnl").clientHeight });
+    }
     new ResizeObserver(() => {
       spreadChart.applyOptions({ width: document.getElementById("chart").clientWidth, height: document.getElementById("chart").clientHeight });
       carryChart.applyOptions({ width: document.getElementById("carry").clientWidth, height: document.getElementById("carry").clientHeight });
