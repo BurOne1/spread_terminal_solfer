@@ -35,6 +35,9 @@ class Command(BaseCommand):
                 self.stdout.write(f"{pair.code}: Bybit, контракты заводит add_btc")
                 continue
             if pair.foreign_source == "TRI":
+                if pair.code == "TRIGL":
+                    self.stdout.write("TRIGL: контракты чужие, GD из TRIGD, SI из USD, GL из GOLD")
+                    continue
                 self.stdout.write(f"{pair.code}: треугольник, свои только кварталы {pair.future_root}")
                 for row in quarter_points(pair.future_root, start, end):
                     instrument, created = Instrument.objects.update_or_create(

@@ -55,6 +55,8 @@ def live_symbols():
     symbols = []
     for pair in Pair.objects.filter(active=True).exclude(venue="bybit"):
         if pair.foreign_source == "TRI":
+            if pair.code == "TRIGL":
+                continue
             # Вечный и SI уже подписаны парами GOLD/SILVER и USD.
             for row in quarter_points(pair.future_root, now - timedelta(days=1), now + timedelta(days=1)):
                 if row["roll_at"] > now:

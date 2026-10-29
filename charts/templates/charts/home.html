@@ -83,7 +83,7 @@
     <header>
       <div>
         <h1 id="title">{% if pair %}{% if pair.foreign_source == "TRI" %}{{ pair.title }}{% else %}{{ pair.future_root }} − {{ pair.perp_code }}{% endif %}{% else %}спред{% endif %}</h1>
-        <p class="sub" id="subtitle">{% if pair %}{% if pair.foreign_source == "TRI" %}руб/грамм, RUONIA и фандинг вечного{% else %}Спот {{ pair.spot_code }}, ставка {% if pair.foreign_source == "NONE" %}только RUONIA{% elif pair.foreign_source == "EWMA14" %}EWMA14 фандинга{% else %}{{ pair.foreign_source }}{% endif %}{% endif %}, {{ pair.quote }}{% endif %}</p>
+        <p class="sub" id="subtitle">{% if pair %}{% if pair.code == "TRIGL" %}руб/грамм, ноги чистятся отдельно{% elif pair.foreign_source == "TRI" %}руб/грамм, RUONIA и фандинг вечного{% else %}Спот {{ pair.spot_code }}, ставка {% if pair.foreign_source == "NONE" %}только RUONIA{% elif pair.foreign_source == "EWMA14" %}EWMA14 фандинга{% else %}{{ pair.foreign_source }}{% endif %}{% endif %}, {{ pair.quote }}{% endif %}</p>
       </div>
       <div class="toolbar">
         {% if pairs %}
@@ -845,7 +845,7 @@
     rememberDrawings();
     renderLevels(levels);
     paint(true);
-    setInterval(refresh, 10000);
+    setInterval(refresh, 15000);
   </script>
 </body>
 </html>

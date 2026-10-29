@@ -32,6 +32,16 @@ SPECS = (
         "metal_pair": "SILVER",
         "oz": 10,
     },
+    {
+        "code": "TRIGL",
+        "title": "GD + SI − GL",
+        "future_root": "GL",
+        "perp_code": "GL",
+        "perp_symbol": "",
+        "metal_pair": "GOLD",
+        "oz": 1,
+        "borrow": True,
+    },
 )
 
 
@@ -66,8 +76,11 @@ class Command(BaseCommand):
             mark = "создана" if created else "обновлена"
             self.stdout.write(
                 f"пара {pair.code} {mark}: {spec['title']}, "
-                f"{spec['oz']} унц. в контракте, SI и вечный из {spec['metal_pair']}/USD"
+                f"{spec['oz']} унц. в контракте"
             )
+            if spec.get("borrow"):
+                self.stdout.write("  контракты не свои: GD из TRIGD, SI из USD, GL из GOLD")
+                continue
             call_command("ensure_contracts", pair=pair.code)
         self.stdout.write("Дальше: python manage.py sync_bars --pair TRIGD")
         self.stdout.write("и python manage.py sync_bars --pair TRISV")

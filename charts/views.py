@@ -18,8 +18,11 @@ def _pair(code):
 def _contracts(pair):
     if pair is None:
         return []
+    owner = pair
+    if pair.code == "TRIGL":
+        owner = Pair.objects.filter(code="GOLD").first() or pair
     return list(
-        Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE, roll_at__isnull=False)
+        Instrument.objects.filter(pair=owner, kind=Instrument.Kind.FUTURE, roll_at__isnull=False)
         .order_by("roll_at")
         .values_list("code", flat=True)
     )
@@ -162,6 +165,8 @@ def _funding(pair):
     from rates.models import FundingDay
     from rates.funding import funding_field
     if pair is not None and pair.foreign_source == "TRI":
+        if pair.code == "TRIGL":
+            return []
         from strategy.rebuild import TRI_PERP
         metal = Pair.objects.filter(code=TRI_PERP.get(pair.code, "")).first()
         field = funding_field(metal)
@@ -225,7 +230,7 @@ def _rate_label(pair):
     if pair is None:
         return ""
     if pair.foreign_source == "TRI":
-        return "треугольник, RUONIA и фандинг вечного"
+        return "треугольник, ноги чистятся отдельно" if pair.code == "TRIGL" else "треугольник, RUONIA и фандинг вечного"
     if pair.foreign_source == "EWMA14":
         return "EWMA14 фандинга"
     return pair.foreign_source

@@ -41,6 +41,8 @@ def funding_of(pair):
     from rates.models import FundingDay
     if pair.foreign_source == "TRI":
         from strategy.rebuild import OZ_GRAMS, TRI_PERP
+        if pair.code == "TRIGL":
+            return [], "daily"
         metal = Pair.objects.filter(code=TRI_PERP.get(pair.code, "")).first()
         field = funding_field(metal)
         ounces = pair.lot or 1

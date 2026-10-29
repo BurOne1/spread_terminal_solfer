@@ -3,6 +3,7 @@
 Считает выбранную пару или все активные. Окно квартала — listed_at до roll_at.
 """
 
+import threading
 from datetime import timezone
 
 from django.db import transaction
@@ -11,7 +12,6 @@ from market.models import Candle, Instrument, Pair
 from rates.models import RateDay
 from strategy.build import build_points, money
 from strategy.models import SpreadBar
-import threading
 
 _lock = threading.Lock()
 
@@ -100,7 +100,7 @@ def _rebuild_pair(pair):
 
 
 OZ_GRAMS = 31.1034768
-TRI_PERP = {"TRIGD": "GOLD", "TRISV": "SILVER"}
+TRI_PERP = {"TRIGD": "GOLD", "TRISV": "SILVER", "TRIGL": "GOLD"}
 
 
 def _bars(instrument):
@@ -111,11 +111,7 @@ def _bars(instrument):
 
 
 def _common_hour(ts):
-    """Пересечение сессий FORTS: будни, 07:00–23:50 МСК = 04:00–20:00 UTC.
-
-    GD, SV, SI и вечные GLDRUBF/SLVRUBF торгуются в одном расписании
-    срочного рынка. Бар вне этого окна не общий.
-    """
+    """Пересечение сессий FORTS: будни, 07:00–23:50 МСК = 04:00–20:00 UTC."""
     ts = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
     if ts.weekday() >= 5:
         return False
@@ -135,55 +131,77 @@ def _window_price(contracts, ts):
     return None, None
 
 
-def _rebuild_tri(pair):
-    """GD+SI−GLDRUBF или SV+SI−SLVRUBF.
+def _days(roll, ts):
+    day = ts.astimezone(timezone.utc).date() if ts.tzinfo else ts.date()
+    return max((roll.date() - day).days, 1), day
 
-    raw и spread_rate пишутся в рублях за грамм: правая шкала золота и
-    серебра одна и та же. spot — цена вечного металла в руб/грамм, от неё
-    стратегия считает уровни. dollar лежит в foreign_rate.
-    Бар только на пересечении часов и внутри общей сессии.
-    Склейка — самая ранняя из экспирации металла и склейки SI.
-    """
-    metal_code = TRI_PERP.get(pair.code)
-    metal = Pair.objects.filter(code=metal_code).first() if metal_code else None
-    usd = Pair.objects.filter(code="USD").first()
-    if metal is None or usd is None:
-        return 0
-    scale = 1000
-    if usd.future_scale and usd.future_scale > 1:
-        scale = usd.future_scale
-    perp = Instrument.objects.filter(pair=metal, code=metal.perp_code).first()
-    perp_bars = _bars(perp)
-    if not perp_bars:
-        return 0
-    si_contracts = []
+
+def _leg(price, rate, days):
+    """Цена ноги минус её собственный кэрри. Ставка в процентах годовых."""
+    return float(price) - float(price) * (rate or 0) / 100.0 * days / 365.0
+
+
+def _rates():
+    return [
+        (row.date, row.ruonia, row.dfedtaru)
+        for row in RateDay.objects.order_by("date")
+    ]
+
+
+def _si_contracts(usd):
+    scale = usd.future_scale if usd.future_scale and usd.future_scale > 1 else 1000
+    rows = []
     for instrument in Instrument.objects.filter(pair=usd, kind=Instrument.Kind.FUTURE).order_by("roll_at"):
         if instrument.roll_at is None:
             continue
         bars = _bars(instrument)
         if bars:
-            si_contracts.append({
+            rows.append({
                 "listed_at": instrument.listed_at,
                 "roll_at": instrument.roll_at,
                 "bars": {ts: price / scale for ts, price in bars.items()},
             })
-    if not si_contracts:
-        return 0
-    rates = [(row.date, row.ruonia) for row in RateDay.objects.order_by("date")]
-    metal_contracts = []
+    return rows
+
+
+def _future_contracts(pair):
+    rows = []
     for instrument in Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE).order_by("roll_at"):
         if instrument.roll_at is None:
             continue
         bars = _bars(instrument)
         if bars:
-            metal_contracts.append({
+            rows.append({
                 "id": instrument.id,
                 "listed_at": instrument.listed_at,
                 "roll_at": instrument.roll_at,
                 "bars": bars,
             })
-    if not metal_contracts:
+    return rows
+
+
+def _rebuild_tri(pair):
+    """GD+SI−GLDRUBF, SV+SI−SLVRUBF или GD+SI−GL.
+
+    Каждая нога чистится отдельно, потом собирается:
+    SI — на (RUONIA − ставка ФРС) и свой срок,
+    рублёвая нога — на RUONIA и свой срок,
+    долларовый металл — на ставку ФРС и свой срок.
+    raw остаётся грязным. Склейка — самая ранняя из ног.
+    """
+    if pair.code == "TRIGL":
+        return _rebuild_trigl(pair)
+    metal = Pair.objects.filter(code=TRI_PERP.get(pair.code, "")).first()
+    usd = Pair.objects.filter(code="USD").first()
+    if metal is None or usd is None:
         return 0
+    perp = Instrument.objects.filter(pair=metal, code=metal.perp_code).first()
+    perp_bars = _bars(perp)
+    si_contracts = _si_contracts(usd)
+    metal_contracts = _future_contracts(pair)
+    if not perp_bars or not si_contracts or not metal_contracts:
+        return 0
+    rates = _rates()
     rows = []
     for contract in metal_contracts:
         for ts in sorted(contract["bars"]):
@@ -202,13 +220,13 @@ def _rebuild_tri(pair):
             roll = contract["roll_at"]
             if si is not None and si["roll_at"] < roll:
                 roll = si["roll_at"]
-            perp_gram = float(perp_rub)
-            raw_oz = float(metal_usd) * float(dollar) - perp_gram * OZ_GRAMS
-            raw = raw_oz / OZ_GRAMS
+            days = _days(roll, ts)[0]
             day = ts.astimezone(timezone.utc).date() if ts.tzinfo else ts.date()
-            days = max((roll.date() - day).days, 1)
-            ruonia = _asof_rate(rates, day)
-            fair = perp_gram * (ruonia or 0) / 100.0 * days / 365.0
+            ruonia, fed = _asof_rates(rates, day)
+            perp_gram = float(perp_rub)
+            raw = (float(metal_usd) * float(dollar) - perp_gram * OZ_GRAMS) / OZ_GRAMS
+            fair = perp_gram * ((ruonia or 0) + (fed or 0)) / 100.0 * days / 365.0
+            cleaned = raw - fair
             rows.append(SpreadBar(
                 pair=pair,
                 ts=ts,
@@ -217,27 +235,95 @@ def _rebuild_tri(pair):
                 perp_close=money(perp_gram),
                 spot=money(perp_gram),
                 raw_spread=money(raw),
-                days_left=days,
+                days_left=_days(roll, ts)[0],
                 ruonia=None if ruonia is None else money(ruonia),
                 foreign_rate=money(dollar),
-                fair=money(fair),
-                spread_rate=money(raw - fair),
+                fair=money(raw - cleaned),
+                spread_rate=money(cleaned),
             ))
+    return _store(pair, rows)
+
+
+def _rebuild_trigl(pair):
+    """GD+SI−GL. Все три ноги квартальные и уже в базе."""
+    gold = Pair.objects.filter(code="GOLD").first()
+    gd = Pair.objects.filter(code="TRIGD").first()
+    usd = Pair.objects.filter(code="USD").first()
+    if gold is None or gd is None or usd is None:
+        return 0
+    gl_contracts = _future_contracts(gold)
+    gd_contracts = _future_contracts(gd)
+    si_contracts = _si_contracts(usd)
+    if not gl_contracts or not gd_contracts or not si_contracts:
+        return 0
+    rates = _rates()
+    rows = []
+    for gl in gl_contracts:
+        for ts in sorted(gl["bars"]):
+            if not _common_hour(ts):
+                continue
+            left = gl["listed_at"]
+            if left is not None and ts < left:
+                continue
+            if ts >= gl["roll_at"]:
+                continue
+            gl_rub = gl["bars"].get(ts)
+            gd_usd, gd_contract = _window_price(gd_contracts, ts)
+            dollar, si = _window_price(si_contracts, ts)
+            if gl_rub is None or gd_usd is None or dollar is None:
+                continue
+            roll = gl["roll_at"]
+            if gd_contract is not None and gd_contract["roll_at"] < roll:
+                roll = gd_contract["roll_at"]
+            if si is not None and si["roll_at"] < roll:
+                roll = si["roll_at"]
+            days = _days(roll, ts)[0]
+            day = ts.astimezone(timezone.utc).date() if ts.tzinfo else ts.date()
+            ruonia, fed = _asof_rates(rates, day)
+            raw = (float(gd_usd) * float(dollar) - float(gl_rub) * OZ_GRAMS) / OZ_GRAMS
+            fair = float(gl_rub) * ((ruonia or 0) + (fed or 0)) / 100.0 * days / 365.0
+            cleaned = raw - fair
+            rows.append(SpreadBar(
+                pair=pair,
+                ts=ts,
+                contract_id=gl["id"],
+                future_close=money(float(gd_usd) * float(dollar) / OZ_GRAMS),
+                perp_close=money(gl_rub),
+                spot=money(gl_rub),
+                raw_spread=money(raw),
+                days_left=_days(roll, ts)[0],
+                ruonia=None if ruonia is None else money(ruonia),
+                foreign_rate=money(dollar),
+                fair=money(raw - cleaned),
+                spread_rate=money(cleaned),
+            ))
+    return _store(pair, rows)
+
+
+def _store(pair, rows):
     if not rows:
         return 0
+    by_ts = {}
+    for row in rows:
+        by_ts[row.ts] = row
+    rows = [by_ts[ts] for ts in sorted(by_ts)]
     with _lock, transaction.atomic():
         SpreadBar.objects.filter(pair=pair).delete()
         SpreadBar.objects.bulk_create(rows, batch_size=500)
     return len(rows)
 
 
-def _asof_rate(rows, day):
-    """Последняя известная RUONIA на эту дату или раньше. Пустые дни не обнуляют."""
+def _asof_rates(rows, day):
+    """Последние известные RUONIA и ставка ФРС на эту дату или раньше."""
     from bisect import bisect_right
     dates = [item[0] for item in rows]
     pos = bisect_right(dates, day) - 1
+    ruonia = fed = None
     for index in range(pos, -1, -1):
-        value = rows[index][1]
-        if value is not None:
-            return float(value)
-    return None
+        if ruonia is None and rows[index][1] is not None:
+            ruonia = float(rows[index][1])
+        if fed is None and rows[index][2] is not None:
+            fed = float(rows[index][2])
+        if ruonia is not None and fed is not None:
+            break
+    return ruonia, fed
