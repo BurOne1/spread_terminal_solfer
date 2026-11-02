@@ -5,12 +5,22 @@
 ничего не пишет. Без параметров берутся уровни, сохранённые у пары.
 """
 
+import hashlib
+import time
+
+from django.db.models import Count, Max
 from django.http import JsonResponse
 from django.shortcuts import render
+from django.views.decorators.http import condition
 
 from market.models import Candle, Instrument, Pair
 from strategy.models import SpreadBar
-from strategy.runner import BASES, priced
+from strategy.runner import BASES, priced, spread_rows
+
+# Ответ /api/spread/ без изменений в барах отдаётся как 304 без пересчёта.
+# Раз в столько секунд он всё равно пересчитывается: ставки, фандинг и
+# уровни пары в админке меняются без новых баров.
+ETAG_TTL = 600
 
 
 def _pair(code):
@@ -21,16 +31,28 @@ def _pair(code):
 
 
 def _contracts(pair):
+    """Кварталы, чьи окна делят ряд пары. У календаря и секондов это фронты базы."""
     if pair is None:
         return []
     owner = pair
-    if pair.code == "TRIGL":
-        owner = Pair.objects.filter(code="GOLD").first() or pair
+    if pair.quarters_code != pair.code:
+        owner = Pair.objects.filter(code=pair.quarters_code).first() or pair
     return list(
         Instrument.objects.filter(pair=owner, kind=Instrument.Kind.FUTURE, roll_at__isnull=False)
         .order_by("roll_at")
         .values_list("code", flat=True)
     )
+
+
+def _labels(pair, codes):
+    """Подписи окон у календаря и секондов: Z2026/H2027 — фронт и второй квартал."""
+    if pair is None or not pair.base:
+        return {}
+    root = pair.future_root
+
+    def short(code):
+        return code[len(root):] if root and code.startswith(root) else code
+    return {code: f"{short(code)}/{short(second)}" for code, second in zip(codes, codes[1:])}
 
 
 def _window(codes, start, end):
@@ -52,30 +74,36 @@ def _ohlc(instrument, since, scale=1):
     }
 
 
-def _points(pair, start="", end="", basis="close"):
+def _points(pair, start="", end="", basis="close", rows=None):
+    """rows — spread_rows пары, если уже прочитаны."""
     if pair is None:
         return []
     codes = _window(_contracts(pair), start, end)
-    bars = list(
-        SpreadBar.objects.filter(pair=pair, contract__code__in=codes).select_related("contract").order_by("ts")
-    )
+    allowed = set(codes)
+    bars = [bar for bar in (spread_rows(pair) if rows is None else rows) if bar.contract__code in allowed]
     if not bars:
         return []
     since = bars[0].ts
     perp_ohlc = {}
     future_ohlc = {}
-    if pair.foreign_source != "TRI":
+    legs = {}
+    if pair.calendar:
+        legs = _calendar_legs(pair, codes, since)
+    elif pair.foreign_source != "TRI":
         scale = pair.future_scale or 1
         perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
         if perp is not None:
             perp_ohlc = _ohlc(perp, since)
         for instrument in Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE, code__in=codes):
             future_ohlc.update(_ohlc(instrument, since, scale))
-    rows = []
+    points = []
     for bar in bars:
         raw, rate = priced(bar, basis)
         future = future_ohlc.get(bar.ts)
         perp_bar = perp_ohlc.get(bar.ts)
+        if legs:
+            near, far = legs.get(bar.contract__code, ({}, {}))
+            perp_bar, future = near.get(bar.ts), far.get(bar.ts)
         if future and perp_bar:
             opened = future[0] - perp_bar[0]
             closed = future[3] - perp_bar[3]
@@ -85,16 +113,33 @@ def _points(pair, start="", end="", basis="close"):
             closed = float(bar.raw_spread)
             opened = closed if bar.raw_open is None else float(bar.raw_open)
             high, low = max(opened, closed), min(opened, closed)
-        rows.append({
+        points.append({
             "t": bar.ts.isoformat(),
-            "contract": bar.contract.code,
+            "contract": bar.contract__code,
             "raw": raw,
             "rate": rate,
             "days": bar.days_left,
             "price": float(bar.spot or bar.perp_close or 0),
             "candle": {"o": opened, "h": high, "l": low, "c": closed},
         })
-    return rows
+    return points
+
+
+def _calendar_legs(pair, codes, since):
+    """Фронт → (свечи фронта, свечи второго квартала) в единицах базы."""
+    base = Pair.objects.filter(code=pair.base).first()
+    if base is None:
+        return {}
+    scale = base.future_scale or 1
+    quarters = list(
+        Instrument.objects.filter(pair=base, kind=Instrument.Kind.FUTURE, roll_at__isnull=False).order_by("roll_at")
+    )
+    wanted = set(codes)
+    return {
+        front.code: (_ohlc(front, since, scale), _ohlc(second, since, scale))
+        for front, second in zip(quarters, quarters[1:])
+        if front.code in wanted
+    }
 
 
 def _percents(request, key):
@@ -131,11 +176,11 @@ def _settings(request):
     }
 
 
-def _strategy(pair, request, codes):
+def _strategy(pair, request, codes, rows=None):
     """PNL, число сделок и открытая позиция для выбранного окна контрактов."""
     from strategy.runner import pass_pair
     options = _settings(request)
-    points, trades, opened = pass_pair(pair, levels=_user_levels(request, pair), **options)
+    points, trades, opened = pass_pair(pair, levels=_user_levels(request, pair), rows=rows, **options)
     allowed = set(codes)
     pnl = [point for point in points if point["contract"] in allowed]
     stamps = {point["t"] for point in pnl}
@@ -188,10 +233,17 @@ def _levels(pair, chosen=None):
 
 
 def _level_spot(pair):
-    """Цена, от которой уровни — проценты. У треугольника это вечный металл, руб/грамм."""
+    """Цена, от которой уровни — проценты.
+
+    У треугольника это вечный металл, руб/грамм. У календаря — спот
+    последнего бара: спот базы или, у GD и SV, фронт.
+    """
+    if pair.calendar:
+        last = SpreadBar.objects.filter(pair=pair).order_by("-ts").values_list("spot", flat=True).first()
+        return None if last is None else float(last)
     if pair.foreign_source == "TRI":
         from strategy.rebuild import TRI_PERP
-        metal = Pair.objects.filter(code=TRI_PERP.get(pair.code, "")).first()
+        metal = Pair.objects.filter(code=TRI_PERP.get(pair.tri_code, "")).first()
         if metal is None:
             return None
         perp = Instrument.objects.filter(pair=metal, code=metal.perp_code).first()
@@ -214,11 +266,13 @@ def _funding(pair):
         ]
     from rates.models import FundingDay
     from rates.funding import funding_field
+    if pair is not None and pair.calendar:
+        return []
     if pair is not None and pair.foreign_source == "TRI":
-        if pair.code == "TRIGL":
+        if pair.tri_code == "TRIGL":
             return []
         from strategy.rebuild import TRI_PERP
-        metal = Pair.objects.filter(code=TRI_PERP.get(pair.code, "")).first()
+        metal = Pair.objects.filter(code=TRI_PERP.get(pair.tri_code, "")).first()
         field = funding_field(metal)
     else:
         field = funding_field(pair)
@@ -238,8 +292,10 @@ def _funding_scale(pair):
     """
     if pair is None:
         return 1000
+    if pair.calendar:
+        return 1
     if pair.foreign_source == "TRI":
-        return 100 if pair.code == "TRISV" else 1
+        return 100 if pair.tri_code == "TRISV" else 1
     if pair.code == "SILVER":
         return 100
     if pair.code == "GOLD":
@@ -276,13 +332,28 @@ def home(request):
         "funding_kind": "rate" if pair is not None and pair.foreign_source == "EWMA14" else "ruble",
         "levels": _levels(pair),
         "count": 0,
+        "title": _title(pair),
+        "subtitle": _subtitle(pair),
     })
 
 
 def _title(pair):
     if pair is None:
         return ""
-    return pair.title if pair.foreign_source == "TRI" else f"{pair.future_root} − {pair.perp_code}"
+    if pair.foreign_source == "TRI" or pair.calendar:
+        return pair.title
+    return f"{pair.future_root} − {pair.perp_code}"
+
+
+def _subtitle(pair):
+    if pair is None:
+        return ""
+    if pair.foreign_source == "TRI":
+        return f"руб/грамм, {_rate_label(pair)}"
+    if pair.calendar:
+        return f"{_rate_label(pair)}, {pair.quote}"
+    rate = "только RUONIA" if pair.foreign_source == "NONE" else _rate_label(pair)
+    return f"Спот {pair.spot_code}, ставка {rate}, {pair.quote}"
 
 
 def watchlist_json(request):
@@ -293,14 +364,19 @@ def watchlist_json(request):
     for pair in Pair.objects.filter(active=True).order_by("code"):
         bars = SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("-ts")
         last = bars.first()
-        item = {"code": pair.code, "title": _title(pair), "name": pair.title, "venue": pair.venue}
+        labels = _labels(pair, _contracts(pair)) if last is not None and pair.base else {}
+        # second — пары на вторых кварталах: календари и треугольники с base.
+        item = {
+            "code": pair.code, "title": _title(pair), "name": pair.title, "venue": pair.venue,
+            "group": "second" if pair.base else "front",
+        }
         if last is not None:
             raw, rate = priced(last, basis)
             before = bars.filter(ts__lte=last.ts - timedelta(days=1)).first()
             old_rate = None if before is None else priced(before, basis)[1]
             item.update({
                 "t": last.ts.isoformat(),
-                "contract": last.contract.code,
+                "contract": labels.get(last.contract.code, last.contract.code),
                 "raw": raw,
                 "rate": rate,
                 "days": last.days_left,
@@ -314,30 +390,68 @@ def _rate_label(pair):
     if pair is None:
         return ""
     if pair.foreign_source == "TRI":
-        return "треугольник, ноги чистятся отдельно" if pair.code == "TRIGL" else "треугольник, RUONIA и фандинг вечного"
+        seconds = " на секондах" if pair.base else ""
+        if pair.tri_code == "TRIGL":
+            return f"треугольник{seconds}, ноги чистятся отдельно"
+        return f"треугольник{seconds}, RUONIA и фандинг вечного"
+    if pair.calendar:
+        base = Pair.objects.filter(code=pair.base).first()
+        if base is None or base.foreign_source == "TRI":
+            return "секонд − фронт, ставка ФРС"
+        foreign = "" if base.foreign_source == "NONE" else f" − {base.foreign_source}"
+        return f"секонд − фронт, RUONIA{foreign}"
     if pair.foreign_source == "EWMA14":
         return "EWMA14 фандинга"
     return pair.foreign_source
 
 
-def spread_json(request):
+def _spread_etag(request):
+    """Версия ответа: пара, настройки из запроса, бары пары и фандинг.
+
+    Пересчёт хвоста удаляет и заново вставляет бары, поэтому любое
+    изменение ряда двигает число или последний id.
+    """
+    from rates.models import FundingDay
     pair = _pair(request.GET.get("pair", ""))
+    if pair is None:
+        return None
+    bars = SpreadBar.objects.filter(pair=pair).aggregate(n=Count("id"), last=Max("id"))
+    funding = FundingDay.objects.aggregate(n=Count("id"), last=Max("date"))
+    key = "|".join(str(item) for item in (
+        pair.code, request.GET.urlencode(), bars["n"], bars["last"], funding["n"], funding["last"],
+        int(time.time() // ETAG_TTL),
+    ))
+    request.spread_version = hashlib.md5(key.encode()).hexdigest()
+    return request.spread_version
+
+
+@condition(etag_func=_spread_etag)
+def spread_json(request):
+    code = request.GET.get("pair", "")
+    pair = _pair(code)
+    if code and (pair is None or pair.code != code):
+        # Не подменять молча первой парой: пользователь увидел бы чужой спред.
+        return JsonResponse({"error": f"пары {code} нет среди активных"}, status=404)
     contracts = _contracts(pair)
     start, end = _range(request, contracts)
     options = _settings(request)
-    points = _points(pair, start, end, options["basis"])
+    rows = None if pair is None else spread_rows(pair)
+    points = _points(pair, start, end, options["basis"], rows)
     pnl, trades, opened = [], 0, None
     if pair is not None:
-        pnl, trades, opened = _strategy(pair, request, _window(contracts, start, end))
-    return JsonResponse({
+        pnl, trades, opened = _strategy(pair, request, _window(contracts, start, end), rows)
+    response = JsonResponse({
+        "version": getattr(request, "spread_version", ""),
         "pair": "" if pair is None else pair.code,
         "title": _title(pair),
+        "subtitle": _subtitle(pair),
         "venue": "" if pair is None else pair.venue,
         "spot": "" if pair is None else pair.spot_code,
         "rate": _rate_label(pair),
         "quote": "" if pair is None else pair.quote,
         "root": "" if pair is None else pair.future_root,
         "contracts": contracts,
+        "labels": _labels(pair, contracts),
         "from": start,
         "to": end,
         "basis": options["basis"],
@@ -352,3 +466,6 @@ def spread_json(request):
         "levels": _levels(pair, None if pair is None else _user_levels(request, pair)),
         "pair_levels": _levels(pair),
     })
+    # Браузер переспрашивает с If-None-Match и без изменений получает 304.
+    response["Cache-Control"] = "no-cache"
+    return response

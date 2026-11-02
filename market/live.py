@@ -7,25 +7,32 @@ JWT живёт около 15 минут, поэтому раз в 11 минут 
 Таймфрейм только H1: часовые свечи, расписание и спред считаются по часу.
 Пока час идёт, свечу строят котировки. При каждом переоткрытии сокета
 последний час берётся REST-ом заново, и свечу заменяет бар биржи.
-Спред не пересчитывается на каждый тик: пара помечается, а раз в
-FLUSH_SECONDS пересчитывается хвост помеченных пар.
+
+На каждый тик база не трогается. Котировки копятся в памяти свечой
+текущего часа, бары сокета — последним снимком по символу. Раз в
+FLUSH_SECONDS всё пишется одной пачкой, и пересчитываются хвосты
+задетых пар. В лог идут новые часы и ошибки, не каждая котировка.
 """
 
 import asyncio
 import json
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import websockets
 from django.conf import settings
 from django.db import close_old_connections
 
-from market.finam import PERP_SYMBOL, SPOT_SYMBOL, FinamClient, FinamError, parse_decimal
+from market.finam import PERP_SYMBOL, SPOT_SYMBOL, FinamClient, FinamError, future_symbol, parse_decimal
 from market.models import Candle, Instrument, Pair
 from market.roll import quarter_points
 
 WS_URL = "wss://api.finam.ru/ws"
 JWT_REFRESH = 11 * 60
 FLUSH_SECONDS = 5
+# Сводку пересчёта печатать не чаще, чем раз в столько секунд.
+LOG_EVERY = 60
 # Котировка старше этого — снимок при подписке (после ночи, выходных, праздника).
 STALE_QUOTE = timedelta(hours=1)
 BAR_STEP = {
@@ -57,27 +64,62 @@ def depth_of(frame):
     return BAR_DEPTH.get(frame, timedelta(days=30))
 
 
+def quarter_symbols(owner, now, count):
+    """Символы ближайших count кварталов, что ещё не склеились: фронт, секонд.
+
+    Недостающий квартал заводится в базе, чтобы после склейки секонд
+    следующего окна уже был, даже если ensure_contracts давно не запускали.
+    """
+    if owner is None:
+        return []
+    rows = [
+        row for row in quarter_points(owner.future_root, now - timedelta(days=1), now + timedelta(days=400))
+        if row["roll_at"] > now
+    ][:count]
+    for row in rows:
+        Instrument.objects.get_or_create(
+            code=row["code"],
+            defaults={
+                "pair": owner,
+                "kind": Instrument.Kind.FUTURE,
+                "finam_symbol": future_symbol(row["secid"]),
+                "lot": owner.lot,
+                "listed_at": row["listed_at"],
+                "roll_at": row["roll_at"],
+            },
+        )
+    return [f"{row['secid']}@{owner.mic}" for row in rows]
+
+
 def live_symbols():
+    """Символы сокета. Символ пересчитывается при каждом переоткрытии, раз в 11 минут:
+    после склейки фронт и секонд сами сдвигаются на следующие кварталы.
+    """
     now = datetime.now(timezone.utc)
+    pairs = {pair.code: pair for pair in Pair.objects.filter(active=True).exclude(venue="bybit")}
+
+    def owner(code):
+        return pairs.get(code) or Pair.objects.filter(code=code).first()
+
     symbols = []
-    for pair in Pair.objects.filter(active=True).exclude(venue="bybit"):
+    for pair in pairs.values():
+        if pair.calendar:
+            symbols.extend(quarter_symbols(owner(pair.base), now, 2))
+            continue
         if pair.foreign_source == "TRI":
-            if pair.code == "TRIGL":
-                continue
             # Вечный и SI уже подписаны парами GOLD/SILVER и USD.
-            for row in quarter_points(pair.future_root, now - timedelta(days=1), now + timedelta(days=1)):
-                if row["roll_at"] > now:
-                    symbols.append(f"{row['secid']}@{pair.mic}")
-                    break
+            if pair.base:
+                legs = ["TRIGD", "USD", "GOLD"] if pair.tri_code == "TRIGL" else [pair.tri_code, "USD"]
+                for code in legs:
+                    symbols.extend(quarter_symbols(owner(code), now, 2)[1:])
+            elif pair.code != "TRIGL":
+                symbols.extend(quarter_symbols(pair, now, 1))
             continue
         symbols.extend([pair.perp_symbol, pair.spot_symbol])
-        for row in quarter_points(pair.future_root, now - timedelta(days=1), now + timedelta(days=1)):
-            if row["roll_at"] > now:
-                symbols.append(f"{row['secid']}@{pair.mic}")
-                break
+        symbols.extend(quarter_symbols(pair, now, 1))
     if not symbols:
         symbols = [PERP_SYMBOL, SPOT_SYMBOL]
-    return list(dict.fromkeys(symbols))
+    return list(dict.fromkeys(symbol for symbol in symbols if symbol))
 
 
 def find_instrument(symbol):
@@ -237,11 +279,20 @@ def extract_quotes(message):
     return rows
 
 
-def save_quote(symbol, ts, price):
-    close_old_connections()
-    instrument = find_instrument(symbol)
-    if instrument is None:
-        return f"нет инструмента для {symbol or '?'}"
+# Свеча текущего часа из котировок: (id инструмента, час) → [open, high, low, close].
+_book = {}
+_book_pairs = {}
+_book_dirty = set()
+# Бары сокета: символ → {час: бар}, последний снимок до записи.
+_socket_bars = {}
+_book_lock = threading.Lock()
+
+
+def book_quote(instrument, ts, price):
+    """Котировка в свечу часа в памяти. Пишет flush_book, не этот вызов.
+
+    Возвращает текст для лога или None, если это обычный тик внутри часа.
+    """
     now = datetime.now(timezone.utc)
     if not market_open(now):
         return f"биржа закрыта, {hour_floor(now):%Y-%m-%d %H:%M} не пишу"
@@ -250,21 +301,90 @@ def save_quote(symbol, ts, price):
     # Тик, пришедший уже в новом часу, открывает новую свечу: так бар
     # появляется сразу с наступлением часа, а не с первой сделкой.
     hour = hour_floor(now)
-    candle = Candle.objects.filter(instrument=instrument, ts=hour).first()
-    created = candle is None
-    if created:
-        Candle.objects.create(
-            instrument=instrument, ts=hour,
-            open=price, high=price, low=price, close=price, volume=0,
-        )
-    else:
-        candle.high = max(candle.high, price)
-        candle.low = min(candle.low, price)
-        candle.close = price
-        candle.save(update_fields=["high", "low", "close"])
-    _mark(instrument, hour)
-    mark = "новый час" if created else "обновлён"
-    return f"{mark} {hour:%Y-%m-%d %H:%M} close={price}"
+    key = (instrument.id, hour)
+    with _book_lock:
+        row = _book.get(key)
+        if row is None:
+            _book[key] = [price, price, price, price]
+            if instrument.pair is not None:
+                _book_pairs[instrument.id] = instrument.pair.code
+        else:
+            row[1] = max(row[1], price)
+            row[2] = min(row[2], price)
+            row[3] = price
+        _book_dirty.add(key)
+    if row is None:
+        return f"новый час {hour:%Y-%m-%d %H:%M} close={price}"
+    return None
+
+
+def save_quote(symbol, ts, price):
+    """Котировка по символу. Для сокета символы разрешаются заранее, см. _socket."""
+    close_old_connections()
+    instrument = find_instrument(symbol)
+    if instrument is None:
+        return f"нет инструмента для {symbol or '?'}"
+    return book_quote(instrument, ts, price) or f"обновлён {hour_floor(datetime.now(timezone.utc)):%Y-%m-%d %H:%M}"
+
+
+def book_bars(symbol, bars):
+    with _book_lock:
+        _socket_bars.setdefault(symbol, {}).update({bar["ts"]: bar for bar in bars})
+
+
+def flush_book(log=None):
+    """Бары сокета и свечи котировок — в базу пачкой. Вернуть число записанных свечей.
+
+    Бар сокета пишется как есть. Свеча котировок сливается с тем, что
+    уже в базе: open и объём — базы (их ставит бар биржи), high и low —
+    крайние из двух, close — последняя котировка.
+    """
+    with _book_lock:
+        socket_bars = dict(_socket_bars)
+        _socket_bars.clear()
+        keys = list(_book_dirty)
+        _book_dirty.clear()
+        quotes = {key: tuple(_book[key]) for key in keys}
+        pair_of = dict(_book_pairs)
+        current = hour_floor(datetime.now(timezone.utc))
+        for key in [key for key in _book if key[1] < current]:
+            del _book[key]
+    if not socket_bars and not quotes:
+        return 0
+    close_old_connections()
+    written = 0
+    for symbol, rows in socket_bars.items():
+        count, detail = save_bars(symbol, [rows[ts] for ts in sorted(rows)])
+        written += count
+        if log is not None and count and not detail.startswith("новых 0,"):
+            log(f"{symbol}: {detail}")
+    if not quotes:
+        return written
+    ids = {instrument_id for instrument_id, _hour in quotes}
+    hours = {hour for _instrument_id, hour in quotes}
+    existing = {
+        (row.instrument_id, row.ts): row
+        for row in Candle.objects.filter(instrument_id__in=ids, ts__in=hours)
+    }
+    candles = []
+    for (instrument_id, hour), (open_, high, low, close) in quotes.items():
+        old = existing.get((instrument_id, hour))
+        if old is not None:
+            open_, high, low = old.open, max(high, old.high), min(low, old.low)
+        candles.append(Candle(
+            instrument_id=instrument_id, ts=hour, open=open_, high=high, low=low, close=close,
+            volume=old.volume if old is not None else 0,
+        ))
+    Candle.objects.bulk_create(
+        candles,
+        update_conflicts=True,
+        unique_fields=["instrument", "ts"],
+        update_fields=["open", "high", "low", "close", "volume"],
+    )
+    from strategy.rebuild import mark_dirty
+    for instrument_id, hour in quotes:
+        mark_dirty(pair_of.get(instrument_id, ""), hour)
+    return written + len(candles)
 
 
 def save_bars(symbol, bars):
@@ -338,7 +458,20 @@ def fill_gaps(symbols, frame, log):
                 log(f"{symbol}: {detail}")
 
 
+def _resolve(symbols):
+    close_old_connections()
+    return {symbol: find_instrument(symbol) for symbol in symbols}
+
+
 async def _socket(symbols, frame, token, log):
+    # Инструменты разрешаются один раз на сессию: на тик базы нет.
+    known = await asyncio.to_thread(_resolve, symbols)
+
+    async def instrument_of(symbol):
+        if symbol not in known:
+            known.update(await asyncio.to_thread(_resolve, [symbol]))
+        return known[symbol]
+
     headers = {"Authorization": f"Bearer {token}"}
     async with websockets.connect(WS_URL, additional_headers=headers, ping_interval=20, ping_timeout=60) as socket:
         for symbol in symbols:
@@ -374,12 +507,12 @@ async def _socket(symbols, frame, token, log):
             if quotes:
                 for quote in quotes:
                     symbol = quote["symbol"] or message_symbol(message)
-                    try:
-                        detail = await asyncio.to_thread(save_quote, symbol, quote["ts"], quote["price"])
-                    except Exception as exc:
-                        log(f"котировка не записалась {symbol or '?'}: {exc}")
+                    instrument = await instrument_of(symbol)
+                    if instrument is None:
                         continue
-                    log(f"{symbol or '?'}: {detail}")
+                    detail = book_quote(instrument, quote["ts"], quote["price"])
+                    if detail and detail.startswith("новый час"):
+                        log(f"{symbol}: {detail}")
                 continue
             if message.get("subscription_type") == "QUOTES":
                 continue
@@ -394,12 +527,10 @@ async def _socket(symbols, frame, token, log):
                 bars = bars[-1:]
             if not symbol and len(symbols) == 1:
                 symbol = symbols[0]
-            try:
-                _, detail = await asyncio.to_thread(save_bars, symbol, bars)
-            except Exception as exc:
-                log(f"запись не удалась {symbol or '?'}: {exc}")
+            if await instrument_of(symbol) is None:
+                log(f"нет инструмента для {symbol or '?'}")
                 continue
-            log(f"записано {symbol or '?'}: {detail}")
+            book_bars(symbol, bars)
 
 
 async def _rates(log):
@@ -444,20 +575,28 @@ async def _funding(log):
 
 
 async def _flush(log):
+    """Раз в FLUSH_SECONDS: свечи из памяти в базу, потом хвосты задетых пар."""
+    pending = {}
+    logged = time.monotonic()
     while True:
         await asyncio.sleep(FLUSH_SECONDS)
         try:
-            done = await asyncio.to_thread(_flush_now)
+            done = await asyncio.to_thread(_flush_now, log)
         except Exception as exc:
             log(f"пересчёт спреда не удался: {exc}")
             continue
-        if done:
-            log("пересчёт спреда: " + ", ".join(f"{code} {count}" for code, count in done.items()))
+        for code, count in done.items():
+            pending[code] = pending.get(code, 0) + count
+        if pending and time.monotonic() - logged >= LOG_EVERY:
+            log("пересчёт спреда за минуту: " + ", ".join(f"{code} {count}" for code, count in sorted(pending.items())))
+            pending = {}
+            logged = time.monotonic()
 
 
-def _flush_now():
+def _flush_now(log=None):
     close_old_connections()
     from strategy.rebuild import flush_dirty
+    flush_book(log)
     return flush_dirty()
 
 
@@ -508,3 +647,8 @@ async def run_forever(log):
         rates.cancel()
         funding.cancel()
         flush.cancel()
+        # Последние секунды котировок не теряются при остановке.
+        try:
+            await asyncio.to_thread(_flush_now, log)
+        except Exception as exc:
+            log(f"последняя запись не удалась: {exc}")

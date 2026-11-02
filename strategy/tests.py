@@ -156,3 +156,122 @@ class RebuildTests(TestCase):
 
 def date_of(ts):
     return ts.astimezone(UTC).date()
+
+
+# Склейка SiZ2026 — третий четверг декабря, 17.12.2026 20:50 UTC.
+BEFORE_ROLL = datetime(2026, 12, 16, 10, 0, tzinfo=UTC)
+AFTER_ROLL = datetime(2026, 12, 18, 10, 0, tzinfo=UTC)
+
+
+def make_quarters(pair, root, prices):
+    """Кварталы U2026…M2027 с окнами склеек. prices: {буква и год: [(час, open, close)]}."""
+    from market.roll import quarter_points
+    rows = quarter_points(root, datetime(2026, 7, 1, tzinfo=UTC), datetime(2027, 4, 1, tzinfo=UTC))
+    found = {}
+    for row in rows:
+        found[row["code"]] = Instrument.objects.create(
+            pair=pair, code=row["code"], finam_symbol=row["secid"] + "@RTSX", kind="future",
+            listed_at=row["listed_at"], roll_at=row["roll_at"],
+        )
+    for code, items in prices.items():
+        for ts, opened, closed in items:
+            candle(found[root + code], ts, Decimal(opened), Decimal(closed))
+    return found
+
+
+def make_usd():
+    """USD с кварталами Si и календарь SICAL. Секонд − фронт: 2.3 до склейки, 2.2 после."""
+    usd = Pair.objects.create(
+        code="USD", title="доллар", future_root="Si", perp_code="USDRUBF", perp_symbol="USDRUBF@RTSX",
+        spot_code="USDRUB_TOM", spot_symbol="USD000UTSTOM@MISX", foreign_source="DFEDTARU", future_scale=1000,
+    )
+    spot = Instrument.objects.create(pair=usd, code="USDRUB_TOM", finam_symbol="USD000UTSTOM@MISX", kind="spot")
+    for ts in (BEFORE_ROLL, AFTER_ROLL):
+        candle(spot, ts, Decimal("94"), Decimal("95"))
+    RateDay.objects.create(date=date_of(BEFORE_ROLL) - timedelta(days=3), ruonia=Decimal("16"), dfedtaru=Decimal("4"))
+    quarters = make_quarters(usd, "Si", {
+        "Z2026": [(BEFORE_ROLL, "95000", "95500")],
+        "H2027": [(BEFORE_ROLL, "97000", "97800"), (AFTER_ROLL, "97100", "97900")],
+        "M2027": [(AFTER_ROLL, "99000", "100100")],
+    })
+    calendar = Pair.objects.create(
+        code="SICAL", title="Si: секонд − фронт", base="USD", future_root="Si", perp_code="", perp_symbol="",
+        spot_code="USDRUB_TOM", spot_symbol="", foreign_source="CAL", future_scale=1000,
+    )
+    return usd, calendar, quarters
+
+
+class CalendarTests(TestCase):
+    def setUp(self):
+        rebuild._dirty.clear()
+        self.usd, self.pair, self.quarters = make_usd()
+
+    def test_second_minus_front_and_switch_after_roll(self):
+        self.assertEqual(rebuild.rebuild_spread("SICAL"), 2)
+        before = SpreadBar.objects.get(pair=self.pair, ts=BEFORE_ROLL)
+        after = SpreadBar.objects.get(pair=self.pair, ts=AFTER_ROLL)
+        self.assertEqual(before.contract.code, "SiZ2026")
+        self.assertEqual(after.contract.code, "SiH2027")
+        self.assertAlmostEqual(float(before.raw_spread), 2.3, places=6)
+        self.assertAlmostEqual(float(before.raw_open), 2.0, places=6)
+        self.assertAlmostEqual(float(after.raw_spread), 2.2, places=6)
+        self.assertEqual(before.days_left, 1)
+        tenor = (date_of(self.quarters["SiH2027"].roll_at) - date_of(self.quarters["SiZ2026"].roll_at)).days
+        self.assertEqual(tenor, 91)
+        self.assertAlmostEqual(float(before.fair), 95 * (16 - 4) / 100 * tenor / 365, places=5)
+        self.assertAlmostEqual(float(before.spread_rate), 2.3 - float(before.fair), places=5)
+        self.assertAlmostEqual(float(before.rate_open), 2.0 - 94 * 0.12 * tenor / 365, places=5)
+
+    def test_tail_and_flush_follow_base(self):
+        rebuild.rebuild_spread("SICAL")
+        candle(self.quarters["SiM2027"], AFTER_ROLL, Decimal("99000"), Decimal("100300"))
+        rebuild.mark_dirty("USD", AFTER_ROLL)
+        done = rebuild.flush_dirty()
+        self.assertEqual(done["SICAL"], 1)
+        self.assertEqual(SpreadBar.objects.filter(pair=self.pair).count(), 2)
+        self.assertAlmostEqual(float(SpreadBar.objects.get(pair=self.pair, ts=AFTER_ROLL).raw_spread), 2.4, places=6)
+
+    def test_strategy_runs_without_funding(self):
+        from strategy.runner import funding_of, pass_pair
+        rebuild.rebuild_spread("SICAL")
+        self.assertEqual(funding_of(self.pair), ([], "daily"))
+        points, _trades, _opened = pass_pair(self.pair)
+        self.assertEqual([point["contract"] for point in points], ["SiZ2026", "SiH2027"])
+
+
+class TriangleSecondsTests(TestCase):
+    def test_gold_triangle_on_seconds(self):
+        make_usd()
+        gold = Pair.objects.create(
+            code="GOLD", title="золото", future_root="GL", perp_code="GLDRUBF", perp_symbol="GLDRUBF@RTSX",
+            spot_code="GLDRUBF", spot_symbol="GLDRUBF@RTSX", foreign_source="NONE", lot=1,
+        )
+        perp = Instrument.objects.create(pair=gold, code="GLDRUBF", finam_symbol="GLDRUBF@RTSX", kind="perp")
+        candle(perp, BEFORE_ROLL, Decimal("9000"), Decimal("9100"))
+        tri = Pair.objects.create(
+            code="TRIGD", title="GD + SI − GLDRUBF", future_root="GD", perp_code="GLDRUBF", perp_symbol="",
+            spot_code="SI", spot_symbol="", foreign_source="TRI", lot=1,
+        )
+        make_quarters(tri, "GD", {
+            "Z2026": [(BEFORE_ROLL, "2900", "2950")],
+            "H2027": [(BEFORE_ROLL, "2930", "2990")],
+        })
+        seconds = Pair.objects.create(
+            code="TRIGD2", title="GD2 + SI2 − GLDRUBF", base="TRIGD", future_root="GD", perp_code="GLDRUBF",
+            perp_symbol="", spot_code="SI", spot_symbol="", foreign_source="TRI", lot=1,
+        )
+        self.assertEqual(rebuild.rebuild_spread("TRIGD2"), 1)
+        bar = SpreadBar.objects.get(pair=seconds, ts=BEFORE_ROLL)
+        self.assertEqual(bar.contract.code, "GDZ2026")
+        self.assertEqual(bar.days_left, 1)
+        days = (datetime(2027, 3, 18).date() - date_of(BEFORE_ROLL)).days
+        raw, fair, cleaned = rebuild._tri_values(2990, 97.8, 9100, 16.0, 4.0, days)
+        self.assertAlmostEqual(float(bar.raw_spread), raw, places=5)
+        self.assertAlmostEqual(float(bar.fair), fair, places=5)
+        self.assertAlmostEqual(float(bar.spread_rate), cleaned, places=5)
+        rebuild.rebuild_spread("TRIGD")
+        front = SpreadBar.objects.get(pair=tri, ts=BEFORE_ROLL)
+        self.assertAlmostEqual(float(front.raw_spread), rebuild._tri_values(2950, 95.5, 9100, 16.0, 4.0, 1)[0], places=5)
+        rebuild._dirty.clear()
+        rebuild.mark_dirty("USD", BEFORE_ROLL)
+        self.assertIn("TRIGD2", rebuild.flush_dirty())

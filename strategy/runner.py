@@ -10,6 +10,10 @@ from strategy.engine import pair_levels, run
 from strategy.models import SpreadBar
 
 BASES = ("close", "open", "mid")
+ROW_FIELDS = (
+    "ts", "contract__code", "raw_spread", "spread_rate", "raw_open", "rate_open",
+    "days_left", "spot", "fair", "future_close", "perp_close",
+)
 
 
 def priced(bar, basis="close"):
@@ -30,13 +34,19 @@ def priced(bar, basis="close"):
     return (raw + raw_open) / 2, mid_rate
 
 
-def bars_of(pair, basis="close"):
-    rows = []
-    for bar in SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("ts"):
+def spread_rows(pair):
+    """Бары пары кортежами по порядку времени. Модель на каждый бар заметно дороже."""
+    return list(SpreadBar.objects.filter(pair=pair).order_by("ts").values_list(*ROW_FIELDS, named=True))
+
+
+def bars_of(pair, basis="close", rows=None):
+    """rows — уже прочитанные spread_rows, чтобы не читать бары второй раз."""
+    out = []
+    for bar in spread_rows(pair) if rows is None else rows:
         raw, rate = priced(bar, basis)
         row = {
             "ts": bar.ts,
-            "contract": bar.contract.code,
+            "contract": bar.contract__code,
             "raw": raw,
             "rate": rate,
             "spot": float(bar.spot),
@@ -46,8 +56,8 @@ def bars_of(pair, basis="close"):
         }
         if pair.foreign_source == "TRI":
             row["third"] = float(bar.future_close)
-        rows.append(row)
-    return rows
+        out.append(row)
+    return out
 
 
 def funding_of(pair):
@@ -56,14 +66,17 @@ def funding_of(pair):
     В базе золото — рубли на контракт 1 грамм, серебро — на контракт 100 граммов.
     Контракт TRIGD это 1 унция, TRISV — 10 унций.
     Лонг спреда шортит вечный, поэтому знак тот же, что у обычной пары.
+    У календаря обе ноги квартальные, фандинга нет.
     """
     from rates.funding import funding_field
     from rates.models import FundingDay
+    if pair.calendar:
+        return [], "daily"
     if pair.foreign_source == "TRI":
         from strategy.rebuild import OZ_GRAMS, TRI_PERP
-        if pair.code == "TRIGL":
+        if pair.tri_code == "TRIGL":
             return [], "daily"
-        metal = Pair.objects.filter(code=TRI_PERP.get(pair.code, "")).first()
+        metal = Pair.objects.filter(code=TRI_PERP.get(pair.tri_code, "")).first()
         field = funding_field(metal)
         ounces = pair.lot or 1
         per_gram = 100 if field == "swaprate_silver" else 1
@@ -97,7 +110,7 @@ def notional_of(pair):
     return pair.lot or 1000
 
 
-def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close"):
+def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close", rows=None):
     """levels: (лонг, шорт, тейки лонга, тейки шорта) в долях спота со знаком.
 
     Пусто — уровни, сохранённые у пары, они же значения по умолчанию.
@@ -106,7 +119,7 @@ def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close"
     funding, mode = funding_of(pair)
     long_pcts, short_pcts, long_tp, short_tp = levels or pair_levels(pair)
     return run(
-        bars_of(pair, basis), funding,
+        bars_of(pair, basis, rows), funding,
         entry_mode=entry_mode,
         average=average,
         notional=notional_of(pair),

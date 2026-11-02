@@ -6,20 +6,25 @@
 
 Живые потоки не пересчитывают на каждый тик: они зовут mark_dirty,
 а flush_dirty раз в несколько секунд пересчитывает хвосты отмеченных пар.
+
+Календарь (foreign_source CAL) — секонд минус фронт кварталов базы.
+Треугольник с base — тот же треугольник, но все квартальные ноги вторые.
+Окно и склейка у обоих — фронта: в третий четверг после склейки SiZ2026
+пара переходит с SiZ2026/SiH2027 на SiH2027/SiM2027.
 """
 
 import threading
-from bisect import bisect_right
 from datetime import timedelta, timezone
 
 from django.db import transaction
 
 from market.models import Candle, Instrument, Pair
 from rates.models import RateDay
-from strategy.build import build_points, money
+from strategy.build import build_points, money, stepper
 from strategy.models import SpreadBar
 
 LOOKBACK = timedelta(days=7)
+RATE_LOOKBACK = timedelta(days=30)
 
 _lock = threading.Lock()
 _dirty = {}
@@ -34,6 +39,8 @@ def rebuild_spread(pair_code="", since=None):
     for pair in pairs:
         if pair.foreign_source == "TRI":
             total += _rebuild_tri(pair, since)
+        elif pair.calendar:
+            total += _rebuild_calendar(pair, since)
         else:
             total += _rebuild_pair(pair, since)
     return total
@@ -56,15 +63,27 @@ def mark_dirty(pair_code, since):
         _dirty[pair_code] = since if old is None or since < old else old
 
 
+def _dependencies():
+    """Пара → пары, чьи свечи её меняют. Календари и секонды — из базы."""
+    deps = dict(TRI_DEPS)
+    rows = Pair.objects.filter(active=True).exclude(base="").values_list("code", "base", "foreign_source")
+    for code, base, source in rows:
+        deps[code] = TRI_DEPS.get(base, (base,)) if source == "TRI" else (base,)
+    return deps
+
+
 def flush_dirty():
-    """Пересчитать хвосты отмеченных пар и их треугольников. Вернуть {код: баров}."""
+    """Пересчитать хвосты отмеченных пар и всех, кто из них собран. Вернуть {код: баров}."""
     with _dirty_lock:
         batch = dict(_dirty)
         _dirty.clear()
+    if not batch:
+        return {}
+    deps = _dependencies()
     for code, since in list(batch.items()):
-        for tri, deps in TRI_DEPS.items():
-            if code in deps:
-                batch[tri] = min(batch.get(tri, since), since)
+        for follower, needs in deps.items():
+            if code in needs:
+                batch[follower] = min(batch.get(follower, since), since)
     done = {}
     for code, since in sorted(batch.items()):
         try:
@@ -92,6 +111,83 @@ def _ohlc(instrument, load_from):
     return {ts: (open_, close) for ts, open_, close in rows.values_list("ts", "open", "close")}
 
 
+def _ohlc_many(instruments, load_from):
+    """{id инструмента: {час: (open, close)}} одним запросом."""
+    found = {instrument.id: {} for instrument in instruments}
+    if not found:
+        return found
+    rows = Candle.objects.filter(instrument_id__in=list(found))
+    if load_from is not None:
+        rows = rows.filter(ts__gte=load_from)
+    for instrument_id, ts, open_, close in rows.values_list("instrument_id", "ts", "open", "close"):
+        found[instrument_id][ts] = (open_, close)
+    return found
+
+
+def _quarters(pair, load_from, scale=1):
+    """Кварталы пары по порядку склейки, бары (open, close) / scale.
+
+    Кварталы без баров тоже в списке: по соседству ищется секонд.
+    С хвостом пропускаются только склеенные до load_from, порядок не рвётся.
+    """
+    if pair is None:
+        return []
+    instruments = Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE, roll_at__isnull=False)
+    if load_from is not None:
+        instruments = instruments.filter(roll_at__gt=load_from)
+    instruments = list(instruments.order_by("roll_at"))
+    bars = _ohlc_many(instruments, load_from)
+    return [
+        {
+            "id": instrument.id,
+            "code": instrument.code,
+            "listed_at": instrument.listed_at,
+            "roll_at": instrument.roll_at,
+            "expires": instrument.roll_at,
+            "bars": bars[instrument.id] if scale == 1 else {
+                ts: (open_ / scale, close / scale) for ts, (open_, close) in bars[instrument.id].items()
+            },
+        }
+        for instrument in instruments
+    ]
+
+
+def _seconds(quarters):
+    """Вторые контракты в окнах фронта.
+
+    Окно, id и код — фронта, цены и экспирация — следующего квартала.
+    front — бары самого фронта, они нужны календарю.
+    """
+    return [
+        {
+            **second,
+            "id": front["id"],
+            "code": front["code"],
+            "listed_at": front["listed_at"],
+            "roll_at": front["roll_at"],
+            "front": front["bars"],
+        }
+        for front, second in zip(quarters, quarters[1:])
+    ]
+
+
+def _traded(quarters):
+    return [row for row in quarters if row["bars"]]
+
+
+def _stepper(rows):
+    """Последнее непустое значение на ключ или раньше, во float. rows по порядку ключа."""
+    return stepper([(key, float(value)) for key, value in rows if value is not None])
+
+
+def _rate_rows(load_from):
+    """Ставки с запасом назад: в праздники берётся последняя известная."""
+    rows = RateDay.objects.order_by("date")
+    if load_from is not None:
+        rows = rows.filter(date__gte=load_from.date() - RATE_LOOKBACK)
+    return list(rows)
+
+
 def _side(rows, index, scale=1):
     return {ts: prices[index] / scale for ts, prices in rows.items()}
 
@@ -107,15 +203,7 @@ def _rebuild_pair(pair, since=None):
         return 0
     spot = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
     spot_rows = _ohlc(spot, load_from) if spot is not None else {}
-    futures = []
-    for instrument in Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE).order_by("roll_at"):
-        if instrument.roll_at is None:
-            continue
-        if since is not None and instrument.roll_at <= load_from:
-            continue
-        candles = _ohlc(instrument, load_from)
-        if candles:
-            futures.append((instrument, candles))
+    futures = _traded(_quarters(pair, load_from, scale))
     if not futures:
         return 0
     funding = None
@@ -125,27 +213,23 @@ def _rebuild_pair(pair, since=None):
         funding = list(
             FundingPoint.objects.filter(pair=pair).order_by("ts").values_list("ts", "rate")
         )
-    elif pair.foreign_source == "NONE":
-        rates = [(row.date, row.ruonia, 0) for row in RateDay.objects.order_by("date")]
     else:
-        field = {"DFEDTARU": "dfedtaru", "ESTR": "estr"}.get(pair.foreign_source, "shibor")
-        rates = [
-            (row.date, row.ruonia, getattr(row, field))
-            for row in RateDay.objects.order_by("date")
-        ]
+        rates = _pair_rates(pair.foreign_source, _rate_rows(load_from))
 
     def points_at(index):
         contracts = [
             {
-                "id": instrument.id,
-                "code": instrument.code,
-                "listed_at": instrument.listed_at,
-                "roll_at": instrument.roll_at,
-                "candles": _side(candles, index, scale),
+                "id": row["id"],
+                "code": row["code"],
+                "listed_at": row["listed_at"],
+                "roll_at": row["roll_at"],
+                "candles": _side(row["bars"], index),
             }
-            for instrument, candles in futures
+            for row in futures
         ]
-        points = build_points(_side(perp_rows, index), contracts, rates, _side(spot_rows, index), funding=funding)
+        points = build_points(
+            _side(perp_rows, index), contracts, rates, _side(spot_rows, index), funding=funding, since=since,
+        )
         return {item["ts"]: item for item in points}
 
     closes = points_at(1)
@@ -175,7 +259,91 @@ def _rebuild_pair(pair, since=None):
     return _store(pair, rows, since)
 
 
+def _pair_rates(source, rate_days):
+    """(дата, рублёвая ставка, иностранная) для fair = спот · (r − r_foreign) · t / 365."""
+    if source == "NONE":
+        return [(row.date, row.ruonia, 0) for row in rate_days]
+    field = {"DFEDTARU": "dfedtaru", "ESTR": "estr"}.get(source, "shibor")
+    return [(row.date, row.ruonia, getattr(row, field)) for row in rate_days]
+
+
+def _rebuild_calendar(pair, since=None):
+    """Секонд минус фронт кварталов базы, в единицах базы.
+
+    fair = спот · (r − r_foreign) / 100 · (t секонда − t фронта) / 365:
+    разница двух форвардов от одного спота. Спот — спот базы, его нет — фронт.
+    У долларовых GD и SV рублёвой ноги нет: r — ставка ФРС, r_foreign = 0,
+    спот — фронт, спред в долларах. В поле ruonia бара лежит r.
+    days_left — дни до склейки фронта, когда пара перейдёт на следующие кварталы.
+    Час без бара одной из ног пропускается, как у остальных пар.
+    """
+    base = Pair.objects.filter(code=pair.base).first()
+    if base is None:
+        return 0
+    load_from = _load_from(since)
+    windows = [
+        row for row in _seconds(_quarters(base, load_from, base.future_scale or 1))
+        if row["front"] and row["bars"]
+    ]
+    if not windows:
+        return 0
+    rate_days = _rate_rows(load_from)
+    spot_rows = {}
+    if base.foreign_source == "TRI":
+        domestic = _stepper([(row.date, row.dfedtaru) for row in rate_days])
+        foreign = _stepper([(row.date, 0) for row in rate_days])
+    else:
+        rates = _pair_rates(base.foreign_source, rate_days)
+        domestic = _stepper([(day, value) for day, value, _other in rates])
+        foreign = _stepper([(day, value) for day, _value, value in rates])
+        spot = Instrument.objects.filter(pair=base, code=base.spot_code).first()
+        spot_rows = _ohlc(spot, load_from)
+    spots = [_stepper(sorted(_side(spot_rows, index).items())) for index in (0, 1)]
+    rows = []
+    for window in windows:
+        roll, expires = window["roll_at"], window["expires"]
+        tenor = max((expires.date() - roll.date()).days, 1)
+        for ts in sorted(window["front"]):
+            if since is not None and ts < since:
+                continue
+            if window["listed_at"] is not None and ts < window["listed_at"]:
+                continue
+            if ts >= roll:
+                continue
+            far = window["bars"].get(ts)
+            if far is None:
+                continue
+            near = window["front"][ts]
+            day = ts.astimezone(timezone.utc).date()
+            r, r_foreign = domestic(day), foreign(day)
+            values = []
+            for index in (0, 1):
+                raw = float(far[index]) - float(near[index])
+                spot = spots[index](ts) or float(near[index])
+                fair = None if r is None or r_foreign is None else spot * (r - r_foreign) / 100.0 * tenor / 365.0
+                values.append((raw, spot, fair, None if fair is None else raw - fair))
+            (raw_open, _spot_open, _fair_open, rate_open), (raw, spot, fair, rate) = values
+            rows.append(SpreadBar(
+                pair=pair,
+                ts=ts,
+                contract_id=window["id"],
+                future_close=money(float(far[1])),
+                perp_close=money(float(near[1])),
+                spot=money(spot),
+                raw_spread=money(raw),
+                days_left=_days(roll, ts)[0],
+                ruonia=money(r),
+                foreign_rate=money(r_foreign),
+                fair=money(fair),
+                spread_rate=money(rate),
+                raw_open=money(raw_open),
+                rate_open=money(rate_open),
+            ))
+    return _store(pair, rows, since)
+
+
 OZ_GRAMS = 31.1034768
+# Чей вечный в треугольнике. Ключ — pair.tri_code: у секондов это база.
 TRI_PERP = {"TRIGD": "GOLD", "TRISV": "SILVER", "TRIGL": "GOLD"}
 
 
@@ -205,43 +373,25 @@ def _days(roll, ts):
     return max((roll.date() - day).days, 1), day
 
 
-def _rates():
-    return [
-        (row.date, row.ruonia, row.dfedtaru)
-        for row in RateDay.objects.order_by("date")
-    ]
+def _tri_rates(load_from):
+    """RUONIA и ставка ФРС на дату, последние известные."""
+    rate_days = _rate_rows(load_from)
+    return (
+        _stepper([(row.date, row.ruonia) for row in rate_days]),
+        _stepper([(row.date, row.dfedtaru) for row in rate_days]),
+    )
 
 
 def _si_contracts(usd, load_from):
     scale = usd.future_scale if usd.future_scale and usd.future_scale > 1 else 1000
-    rows = []
-    for instrument in Instrument.objects.filter(pair=usd, kind=Instrument.Kind.FUTURE).order_by("roll_at"):
-        if instrument.roll_at is None:
-            continue
-        bars = _ohlc(instrument, load_from)
-        if bars:
-            rows.append({
-                "listed_at": instrument.listed_at,
-                "roll_at": instrument.roll_at,
-                "bars": {ts: (open_ / scale, close / scale) for ts, (open_, close) in bars.items()},
-            })
-    return rows
+    return _quarters(usd, load_from, scale)
 
 
-def _future_contracts(pair, load_from):
-    rows = []
-    for instrument in Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE).order_by("roll_at"):
-        if instrument.roll_at is None:
-            continue
-        bars = _ohlc(instrument, load_from)
-        if bars:
-            rows.append({
-                "id": instrument.id,
-                "listed_at": instrument.listed_at,
-                "roll_at": instrument.roll_at,
-                "bars": bars,
-            })
-    return rows
+def _legs(pair, *quarters):
+    """Квартальные ноги треугольника: свои или, у пары с base, вторые."""
+    if pair.base:
+        quarters = [_seconds(rows) for rows in quarters]
+    return [_traded(rows) for rows in quarters]
 
 
 def _tri_values(metal_usd, dollar, perp_rub, ruonia, fed, days):
@@ -254,11 +404,15 @@ def _tri_values(metal_usd, dollar, perp_rub, ruonia, fed, days):
     return raw, fair, raw - fair
 
 
-def _tri_row(pair, ts, contract_id, roll, rates, metal_usd, dollar, perp_rub):
-    """SpreadBar треугольника. Цены ног — пары (open, close)."""
+def _tri_row(pair, ts, contract_id, roll, rates, metal_usd, dollar, perp_rub, window_roll=None):
+    """SpreadBar треугольника. Цены ног — пары (open, close).
+
+    roll — ближайшая экспирация ног, по ней срок в fair. window_roll —
+    склейка окна для days_left. У секондов это склейка фронта, она раньше.
+    """
     days = _days(roll, ts)[0]
     day = ts.astimezone(timezone.utc).date() if ts.tzinfo else ts.date()
-    ruonia, fed = _asof_rates(rates, day)
+    ruonia, fed = rates[0](day), rates[1](day)
     raw, fair, cleaned = _tri_values(metal_usd[1], dollar[1], perp_rub[1], ruonia, fed, days)
     raw_open, _fair_open, cleaned_open = _tri_values(metal_usd[0], dollar[0], perp_rub[0], ruonia, fed, days)
     return SpreadBar(
@@ -269,7 +423,7 @@ def _tri_row(pair, ts, contract_id, roll, rates, metal_usd, dollar, perp_rub):
         perp_close=money(float(perp_rub[1])),
         spot=money(float(perp_rub[1])),
         raw_spread=money(raw),
-        days_left=days,
+        days_left=_days(window_roll or roll, ts)[0],
         ruonia=None if ruonia is None else money(ruonia),
         foreign_rate=money(dollar[1]),
         fair=money(fair),
@@ -280,26 +434,26 @@ def _tri_row(pair, ts, contract_id, roll, rates, metal_usd, dollar, perp_rub):
 
 
 def _rebuild_tri(pair, since=None):
-    """GD+SI−GLDRUBF, SV+SI−SLVRUBF или GD+SI−GL.
+    """GD+SI−GLDRUBF, SV+SI−SLVRUBF или GD+SI−GL. С base — на вторых кварталах.
 
     SI — на (RUONIA − ставка ФРС) и свой срок, металл — на ставку ФРС,
     рублёвая нога — на RUONIA. raw остаётся грязным. Склейка — самая ранняя из ног.
     foreign_rate у треугольника хранит курс SI, а не ставку.
     """
-    if pair.code == "TRIGL":
+    if pair.tri_code == "TRIGL":
         return _rebuild_trigl(pair, since)
     load_from = _load_from(since)
-    metal = Pair.objects.filter(code=TRI_PERP.get(pair.code, "")).first()
+    metal = Pair.objects.filter(code=TRI_PERP.get(pair.tri_code, "")).first()
     usd = Pair.objects.filter(code="USD").first()
-    if metal is None or usd is None:
+    owner = Pair.objects.filter(code=pair.tri_code).first()
+    if metal is None or usd is None or owner is None:
         return 0
     perp = Instrument.objects.filter(pair=metal, code=metal.perp_code).first()
     perp_bars = _ohlc(perp, load_from)
-    si_contracts = _si_contracts(usd, load_from)
-    metal_contracts = _future_contracts(pair, load_from)
+    si_contracts, metal_contracts = _legs(pair, _si_contracts(usd, load_from), _quarters(owner, load_from))
     if not perp_bars or not si_contracts or not metal_contracts:
         return 0
-    rates = _rates()
+    rates = _tri_rates(load_from)
     rows = []
     for contract in metal_contracts:
         for ts in sorted(contract["bars"]):
@@ -317,27 +471,29 @@ def _rebuild_tri(pair, since=None):
             dollar, si = _window_price(si_contracts, ts)
             if metal_usd is None or perp_rub is None or dollar is None:
                 continue
-            roll = contract["roll_at"]
-            if si is not None and si["roll_at"] < roll:
-                roll = si["roll_at"]
-            rows.append(_tri_row(pair, ts, contract["id"], roll, rates, metal_usd, dollar, perp_rub))
+            roll = contract["expires"]
+            if si is not None and si["expires"] < roll:
+                roll = si["expires"]
+            rows.append(_tri_row(
+                pair, ts, contract["id"], roll, rates, metal_usd, dollar, perp_rub, contract["roll_at"],
+            ))
     return _store(pair, rows, since)
 
 
 def _rebuild_trigl(pair, since=None):
-    """GD+SI−GL. Все три ноги квартальные и уже в базе."""
+    """GD+SI−GL. Все три ноги квартальные и уже в базе. С base — все вторые."""
     load_from = _load_from(since)
     gold = Pair.objects.filter(code="GOLD").first()
     gd = Pair.objects.filter(code="TRIGD").first()
     usd = Pair.objects.filter(code="USD").first()
     if gold is None or gd is None or usd is None:
         return 0
-    gl_contracts = _future_contracts(gold, load_from)
-    gd_contracts = _future_contracts(gd, load_from)
-    si_contracts = _si_contracts(usd, load_from)
+    gl_contracts, gd_contracts, si_contracts = _legs(
+        pair, _quarters(gold, load_from), _quarters(gd, load_from), _si_contracts(usd, load_from),
+    )
     if not gl_contracts or not gd_contracts or not si_contracts:
         return 0
-    rates = _rates()
+    rates = _tri_rates(load_from)
     rows = []
     for gl in gl_contracts:
         for ts in sorted(gl["bars"]):
@@ -355,12 +511,12 @@ def _rebuild_trigl(pair, since=None):
             dollar, si = _window_price(si_contracts, ts)
             if gl_rub is None or gd_usd is None or dollar is None:
                 continue
-            roll = gl["roll_at"]
-            if gd_contract is not None and gd_contract["roll_at"] < roll:
-                roll = gd_contract["roll_at"]
-            if si is not None and si["roll_at"] < roll:
-                roll = si["roll_at"]
-            rows.append(_tri_row(pair, ts, gl["id"], roll, rates, gd_usd, dollar, gl_rub))
+            roll = gl["expires"]
+            if gd_contract is not None and gd_contract["expires"] < roll:
+                roll = gd_contract["expires"]
+            if si is not None and si["expires"] < roll:
+                roll = si["expires"]
+            rows.append(_tri_row(pair, ts, gl["id"], roll, rates, gd_usd, dollar, gl_rub, gl["roll_at"]))
     return _store(pair, rows, since)
 
 
@@ -379,18 +535,3 @@ def _store(pair, rows, since=None):
         stale.delete()
         SpreadBar.objects.bulk_create(rows, batch_size=500)
     return len(rows)
-
-
-def _asof_rates(rows, day):
-    """Последние известные RUONIA и ставка ФРС на эту дату или раньше."""
-    dates = [item[0] for item in rows]
-    pos = bisect_right(dates, day) - 1
-    ruonia = fed = None
-    for index in range(pos, -1, -1):
-        if ruonia is None and rows[index][1] is not None:
-            ruonia = float(rows[index][1])
-        if fed is None and rows[index][2] is not None:
-            fed = float(rows[index][2])
-        if ruonia is not None and fed is not None:
-            break
-    return ruonia, fed

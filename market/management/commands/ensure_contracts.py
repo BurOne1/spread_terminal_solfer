@@ -34,7 +34,13 @@ class Command(BaseCommand):
             if pair.venue == "bybit":
                 self.stdout.write(f"{pair.code}: Bybit, контракты заводит add_btc")
                 continue
+            if pair.calendar:
+                self.stdout.write(f"{pair.code}: календарь, кварталы пары {pair.base}")
+                continue
             if pair.foreign_source == "TRI":
+                if pair.base:
+                    self.stdout.write(f"{pair.code}: вторые кварталы ног {pair.base}")
+                    continue
                 if pair.code == "TRIGL":
                     self.stdout.write("TRIGL: контракты чужие, GD из TRIGD, SI из USD, GL из GOLD")
                     continue

@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% if pair %}{% if pair.foreign_source == "TRI" %}{{ pair.title }}{% else %}{{ pair.future_root }} − {{ pair.perp_code }}{% endif %}{% else %}спред{% endif %}</title>
+  <title>{{ title|default:"спред" }}</title>
   <script>try { document.documentElement.dataset.theme = localStorage.getItem("spread-theme") || "dark"; } catch (error) { /* хранилище недоступно */ }</script>
   <script>try { if (localStorage.getItem("spread-side") === "0") document.documentElement.classList.add("side-closed"); } catch (error) { /* хранилище недоступно */ }</script>
   <script src="https://unpkg.com/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://unpkg.com/lightweight-charts-drawing@0.6.2/dist/lightweight-charts-drawing.umd.cjs"></script>
   <style>
     :root[data-theme="dark"] {
-      --bg: #131722; --panel: #1e222d; --raised: #2a2e39; --hover: #2a2e39; --line: #2a2e39; --line-strong: #363a45;
+      --bg: #131722; --panel: #1e222d; --raised: #2a2e39; --hover: #2a2e39; --line: #2a2e39; --line-strong: #363a45; --pane-sep: #5d606b;
       --ink: #d1d4dc; --muted: #787b86; --accent: #2962ff; --accent-soft: rgba(41, 98, 255, .18);
       --green: #089981; --red: #f23645; --blue: #2962ff; --orange: #ff9800; --violet: #9c6ade; --take: #4d8dff;
       --grid: rgba(42, 46, 57, .6); --cross: #758696; --shadow: 0 8px 24px rgba(0, 0, 0, .45);
     }
     :root[data-theme="light"] {
-      --bg: #ffffff; --panel: #ffffff; --raised: #f0f3fa; --hover: #f0f3fa; --line: #e0e3eb; --line-strong: #d1d4dc;
+      --bg: #ffffff; --panel: #ffffff; --raised: #f0f3fa; --hover: #f0f3fa; --line: #e0e3eb; --line-strong: #d1d4dc; --pane-sep: #9598a1;
       --ink: #131722; --muted: #787b86; --accent: #2962ff; --accent-soft: rgba(41, 98, 255, .1);
       --green: #089981; --red: #f23645; --blue: #2962ff; --orange: #f57c00; --violet: #7e57c2; --take: #2962ff;
       --grid: #f0f3fa; --cross: #9598a1; --shadow: 0 8px 24px rgba(19, 23, 34, .14);
@@ -121,6 +121,7 @@
     .wl-list { flex: 1; min-height: 0; overflow-y: auto; }
     .wl-row { width: 100%; min-height: 44px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
     .wl-row:hover { background: var(--hover); }
+    .wl-group { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; padding: 6px 12px; background: var(--raised); color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
     .wl-row.on { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
     .wl-name { min-width: 0; }
     .wl-name b { display: block; font-weight: 600; }
@@ -158,8 +159,8 @@
 <body>
   <header class="topbar" id="topbar">
     <div class="title">
-      <b id="title">{% if pair %}{% if pair.foreign_source == "TRI" %}{{ pair.title }}{% else %}{{ pair.future_root }} − {{ pair.perp_code }}{% endif %}{% else %}спред{% endif %}</b>
-      <span id="subtitle">{% if pair %}{% if pair.code == "TRIGL" %}руб/грамм, ноги чистятся отдельно{% elif pair.foreign_source == "TRI" %}руб/грамм, RUONIA и фандинг вечного{% else %}Спот {{ pair.spot_code }}, ставка {% if pair.foreign_source == "NONE" %}только RUONIA{% elif pair.foreign_source == "EWMA14" %}EWMA14 фандинга{% else %}{{ pair.foreign_source }}{% endif %}{% endif %}, {{ pair.quote }}{% endif %}</span>
+      <b id="title">{{ title|default:"спред" }}</b>
+      <span id="subtitle">{{ subtitle }}</span>
     </div>
     {% if pairs %}
       <select id="pair" class="tb" title="Пара">{% for item in pairs %}<option value="{{ item.code }}" {% if pair and item.code == pair.code %}selected{% endif %}>{{ item.code }} · {{ item.title }}</option>{% endfor %}</select>
@@ -225,7 +226,7 @@
       <button type="button" class="tb" id="side-close" title="Скрыть панель"><svg viewBox="0 0 18 18"><path d="M5 5l8 8M13 5l-8 8"/></svg></button>
     </div>
     <div class="view" data-view="watchlist" id="watchlist">
-      <div class="wl-head"><span>Пара</span><span title="spread_rate последнего бара">rate</span><span title="Сырой спред последнего бара">raw</span><span title="Изменение spread_rate за сутки">Δ сутки</span></div>
+      <div class="wl-head"><span>Пара</span><span title="spread_rate последнего бара">rate</span><span title="Сырой спред последнего бара">raw</span><span title="spread_rate последнего бара минус spread_rate бара сутки назад, в единицах спреда">Δ сутки</span></div>
       <div class="wl-list" id="wl-list"></div>
       <div class="wl-foot note" id="wl-note">Цена часа — как на графике.</div>
     </div>
@@ -312,7 +313,8 @@
       return {
         layout: {
           background: { color: css("--bg") }, textColor: css("--muted"), fontFamily: "-apple-system, Segoe UI, Roboto, sans-serif", fontSize: 11,
-          panes: { separatorColor: line, separatorHoverColor: css("--accent-soft"), enableResize: true },
+          // Разделитель панелей контрастнее сетки, при наведении — синий, за него тянут высоту.
+          panes: { separatorColor: css("--pane-sep"), separatorHoverColor: css("--accent"), enableResize: true },
           attributionLogo: false,
         },
         grid: { vertLines: { color: css("--grid") }, horzLines: { color: css("--grid") } },
@@ -600,7 +602,7 @@
       } finally {
         painting = false;
       }
-      placeLegends();
+      placeLegendsSoon();
       showLegends(null);
     }
 
@@ -625,7 +627,7 @@
       const top = document.getElementById("legend-0");
       top.replaceChildren(span(document.getElementById("title").textContent, "b"));
       if (point) {
-        top.append(span(point.contract));
+        top.append(span(contractLabel(point.contract)));
         if (styleSelect.value === "candle" && point.candle) {
           top.append(pair("O", fmt(point.candle.o)), pair("H", fmt(point.candle.h)), pair("L", fmt(point.candle.l)), pair("C", fmt(point.candle.c), point.candle.c >= point.candle.o ? colors.up : colors.down));
         } else {
@@ -646,9 +648,9 @@
       const sideColor = side === "long" ? colors.long : side === "short" ? colors.short : colors.raw;
       document.getElementById("legend-2").replaceChildren(
         span("PnL"),
-        span(row ? Math.round(row.equity).toLocaleString("ru-RU") + " ₽" : "—", "v"),
+        span(row ? Math.round(row.equity).toLocaleString("ru-RU") + " " + money() : "—", "v"),
         span(sideText, "v", sideColor),
-        ...(row ? [span(row.contract)] : []),
+        ...(row ? [span(contractLabel(row.contract))] : []),
       );
     }
     function placeLegends() {
@@ -664,9 +666,14 @@
         node.style.top = (element.getBoundingClientRect().top - base + 6) + "px";
       });
     }
+    // Высоты панелей библиотека раскладывает в следующем кадре: ставим сейчас и ещё раз после него.
+    function placeLegendsSoon() {
+      placeLegends();
+      requestAnimationFrame(() => requestAnimationFrame(placeLegends));
+    }
     chart.subscribeCrosshairMove((param) => { if (!painting) showLegends(param && param.time !== undefined ? param.time : null); });
     new ResizeObserver(() => {
-      placeLegends();
+      placeLegendsSoon();
       if (pendingFit !== null) requestAnimationFrame(() => { if (pendingFit !== null) { showReal(pendingFit); fitPrices(); } });
     }).observe(wrap);
     wrap.addEventListener("mouseup", () => setTimeout(placeLegends, 0));
@@ -733,6 +740,11 @@
     const root = "{{ pair.future_root|default:'' }}";
     window.pairRoot = root;
     function shortCode(code) { return window.pairRoot && code.startsWith(window.pairRoot) ? code.slice(window.pairRoot.length) : code; }
+    // У календаря и секондов окно подписано парой кварталов: Z2026/H2027.
+    window.contractLabels = {};
+    window.pairQuote = "{{ pair.quote|default:'RUB' }}";
+    function contractLabel(code) { return window.contractLabels[code] || code; }
+    function money() { return window.pairQuote === "RUB" ? "₽" : window.pairQuote; }
     const pairSelect = document.getElementById("pair");
     const fromSelect = document.getElementById("from");
     const toSelect = document.getElementById("to");
@@ -770,7 +782,7 @@
       const open = body.position;
       if (!open) return trades + ", позиции нет";
       const side = open.side === "LONG" ? "лонг" : "шорт";
-      return trades + ", открыт " + side + " " + open.n + " ед., по рынку " + Math.round(open.price).toLocaleString("ru-RU") + " ₽";
+      return trades + ", открыт " + side + " " + open.n + " ед., по рынку " + Math.round(open.price).toLocaleString("ru-RU") + " " + money();
     }
     function windowKey(code) { return "spread-window-" + code; }
     function loadWindow(code) { return readStore(windowKey(code), {}) || {}; }
@@ -792,7 +804,7 @@
       for (const select of [fromSelect, toSelect]) {
         const current = select === fromSelect ? start : end;
         select.innerHTML = "";
-        codes.forEach((code) => { const option = document.createElement("option"); option.value = code; option.textContent = shortCode(code); if (code === current) option.selected = true; select.appendChild(option); });
+        codes.forEach((code) => { const option = document.createElement("option"); option.value = code; option.textContent = window.contractLabels[code] || shortCode(code); if (code === current) option.selected = true; select.appendChild(option); });
       }
     }
     let lastLevelsPair = "";
@@ -802,28 +814,45 @@
       });
     }
     function fitAll() { showReal(lastCount); fitPrices(); }
+    let lastVersion = "";
     async function refresh(fitPrice = false) {
       try {
-        const response = await fetch("/api/spread/?" + query(), { cache: "no-store" });
+        // no-cache: браузер переспрашивает с ETag, без изменений сервер отвечает 304.
+        const response = await fetch("/api/spread/?" + query(), { cache: "no-cache" });
+        if (response.status === 404) {
+          status.textContent = (await response.json()).error || "пары нет";
+          statusWrap.className = "tb lost";
+          return;
+        }
         if (!response.ok) throw new Error(response.status);
         const body = await response.json();
+        const stamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
+        if (!fitPrice && body.version && body.version === lastVersion) {
+          status.textContent = body.count + " баров · " + stamp;
+          statusWrap.className = "tb live";
+          if (sideOpen() && sideView === "watchlist") refreshWatchlist();
+          return;
+        }
+        lastVersion = body.version || "";
         points = body.points; pnl = body.pnl || []; funding = body.funding || [];
         window.fundingScale = body.funding_scale || window.fundingScale || 1;
         window.fundingKind = body.funding_kind || window.fundingKind || "ruble";
         if (body.pair) {
           document.getElementById("title").textContent = body.title || body.pair;
-          document.getElementById("subtitle").textContent = "Спот " + (body.spot || "") + ", ставка " + (body.rate || "") + (body.quote ? ", " + body.quote : "");
+          document.getElementById("subtitle").textContent = body.subtitle || "";
           document.title = body.title || body.pair;
           window.pairRoot = body.root || "";
           window.pairVenue = body.venue || "finam";
+          window.pairQuote = body.quote || "RUB";
         }
+        window.contractLabels = body.labels || {};
         fillContracts(body.contracts, body.from, body.to);
         if (body.levels) copyLevelLines(body);
         if (body.pair && body.pair !== lastLevelsPair) { fillLevels(body); lastLevelsPair = body.pair; }
         document.getElementById("strategy-note").textContent = strategyNote(body);
         document.getElementById("level-note").textContent = "Уровни и настройки хранятся в этом браузере.";
         saveWindow();
-        status.textContent = body.count + " баров · " + new Date().toLocaleTimeString("ru-RU", { hour12: false });
+        status.textContent = body.count + " баров · " + stamp;
         statusWrap.className = "tb live";
         statusWrap.title = "данные обновляются раз в 15 с";
         paint(fitPrice);
@@ -927,11 +956,22 @@
         const response = await fetch("/api/watchlist/?basis=" + encodeURIComponent(basisSelect.value), { cache: "no-store" });
         if (!response.ok) throw new Error(response.status);
         watchRows = (await response.json()).pairs || [];
+        watchRows.forEach((item) => addPairOption(item.code, item.name));
         renderWatchlist();
         document.getElementById("wl-note").textContent = "Обновлено " + new Date().toLocaleTimeString("ru-RU", { hour12: false }) + ". Цена часа — как на графике.";
       } catch (error) {
         document.getElementById("wl-note").textContent = "Список не обновился";
       }
+    }
+    // Пара, заведённая после загрузки страницы, есть в списке спредов, но не
+    // в выпадающем списке. Без пункта select.value молча становится пустым,
+    // и сервер открыл бы первую пару вместо выбранной.
+    function addPairOption(code, title) {
+      if (!pairSelect || !code || [...pairSelect.options].some((option) => option.value === code)) return;
+      const option = document.createElement("option");
+      option.value = code;
+      option.textContent = code + " · " + (title || code);
+      pairSelect.insertBefore(option, [...pairSelect.options].find((item) => item.value > code) || null);
     }
     function cell(text, cls) {
       const node = document.createElement("span");
@@ -939,34 +979,48 @@
       node.textContent = text;
       return node;
     }
+    // Две группы: front — пары на ближнем квартале, second — календари и треугольники на секондах.
+    const WATCH_GROUPS = [["front", "Front"], ["second", "Second"]];
     function renderWatchlist() {
+      const nodes = [];
+      WATCH_GROUPS.forEach(([key, title]) => {
+        const rows = watchRows.filter((item) => (item.group || "front") === key);
+        if (!rows.length) return;
+        const head = document.createElement("div");
+        head.className = "wl-group";
+        head.append(cell(title, ""), cell(String(rows.length), ""));
+        nodes.push(head, ...rows.map(watchRow));
+      });
+      document.getElementById("wl-list").replaceChildren(...nodes);
+    }
+    function watchRow(item) {
       const current = currentPair();
-      document.getElementById("wl-list").replaceChildren(...watchRows.map((item) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "wl-row" + (item.code === current ? " on" : "");
-        button.dataset.code = item.code;
-        button.title = item.title + (item.t ? ", последний бар " + item.t.slice(0, 16).replace("T", " ") + " UTC" : "");
-        const name = document.createElement("span");
-        name.className = "wl-name";
-        const code = document.createElement("b");
-        code.textContent = item.code;
-        const detail = document.createElement("span");
-        detail.textContent = item.contract ? item.title + " · " + item.contract + " · " + item.days + " дн." : item.title + " · нет баров";
-        name.append(code, detail);
-        const change = item.change;
-        button.append(
-          name,
-          cell(fmt(item.rate), item.rate === null || item.rate === undefined ? "dim" : ""),
-          cell(fmt(item.raw), "dim"),
-          cell(change === null || change === undefined ? "—" : (change > 0 ? "+" : "") + change.toFixed(3), change > 0 ? "up" : change < 0 ? "down" : "dim"),
-        );
-        return button;
-      }));
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "wl-row" + (item.code === current ? " on" : "");
+      button.dataset.code = item.code;
+      button.title = item.title + (item.t ? ", последний бар " + item.t.slice(0, 16).replace("T", " ") + " UTC" : "");
+      const name = document.createElement("span");
+      name.className = "wl-name";
+      const code = document.createElement("b");
+      code.textContent = item.code;
+      const detail = document.createElement("span");
+      detail.textContent = item.contract ? item.title + " · " + item.contract + " · " + item.days + " дн." : item.title + " · нет баров";
+      name.append(code, detail);
+      const change = item.change;
+      button.append(
+        name,
+        cell(fmt(item.rate), item.rate === null || item.rate === undefined ? "dim" : ""),
+        cell(fmt(item.raw), "dim"),
+        cell(change === null || change === undefined ? "—" : (change > 0 ? "+" : "") + change.toFixed(3), change > 0 ? "up" : change < 0 ? "down" : "dim"),
+      );
+      return button;
     }
     document.getElementById("wl-list").addEventListener("click", (event) => {
       const row = event.target.closest(".wl-row");
       if (!row || !pairSelect || row.dataset.code === pairSelect.value) return;
+      const item = watchRows.find((entry) => entry.code === row.dataset.code);
+      addPairOption(row.dataset.code, item ? item.name : "");
       pairSelect.value = row.dataset.code;
       pairSelect.dispatchEvent(new Event("change"));
       renderWatchlist();
@@ -1144,7 +1198,9 @@
     renderLevels(readStore(levelKey(), null) || levels);
     paint(true);
     refresh(true);
-    setInterval(refresh, 15000);
+    // Скрытая вкладка сервер не опрашивает, при возврате данные берутся сразу.
+    setInterval(() => { if (!document.hidden) refresh(); }, 15000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
   </script>
 </body>
 </html>

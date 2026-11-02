@@ -3,6 +3,8 @@
 Finam отдаёт TIME_FRAME_H1 примерно за 30 дней. Окна старше этого часто пустые.
 Уже записанные свечи не удаляются, повторный запуск обновляет те же часы.
 Неизвестный тикер пропускается, остальные инструменты пары всё равно пишутся.
+Календарю и треугольнику на секондах квартал нужен на окно раньше своего:
+там он второй. Инструмент, уже загруженный другой парой, второй раз не грузится.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -46,6 +48,7 @@ class Command(BaseCommand):
             raise CommandError("активных пар нет. Для евро сначала python manage.py add_eur")
 
         total = 0
+        loaded = set()
         try:
             client = FinamClient(settings.FINAM_API_SECRET, settings.FINAM_BASE_URL)
         except Exception as exc:
@@ -60,6 +63,9 @@ class Command(BaseCommand):
                     f"{pair.code}: " + ", ".join(f"{item.code} ({item.finam_symbol})" for item, _optional in targets)
                 )
                 for instrument, optional in targets:
+                    if instrument.id in loaded:
+                        continue
+                    loaded.add(instrument.id)
                     got = self._instrument_bars(client, instrument, start, end, optional)
                     total += got
                     self.stdout.write(f"  {instrument.code}: {got} свечей")
@@ -92,17 +98,35 @@ class Command(BaseCommand):
         return count
 
 
+def _quarters(owner, start, end, early=False):
+    """Кварталы, чьё окно задевает [start, end). early — с окна предыдущего, там он секонд."""
+    if owner is None:
+        return []
+    targets = []
+    previous = None
+    quarters = Instrument.objects.filter(pair=owner, kind=Instrument.Kind.FUTURE, roll_at__isnull=False)
+    for instrument in quarters.order_by("roll_at"):
+        opened = instrument.listed_at or start
+        if early and previous is not None and previous.listed_at is not None:
+            opened = previous.listed_at
+        previous = instrument
+        if instrument.finam_symbol and opened < end and instrument.roll_at > start:
+            targets.append((instrument, True))
+    return targets
+
+
+def _owner(code):
+    return Pair.objects.filter(code=code).first()
+
+
 def _targets(pair, start, end):
+    if pair.calendar:
+        return _quarters(_owner(pair.base), start, end, early=True)
     if pair.foreign_source == "TRI":
-        targets = []
-        quarters = Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE).order_by("roll_at")
-        for instrument in quarters:
-            if not instrument.finam_symbol or instrument.roll_at is None:
-                continue
-            opened = instrument.listed_at or start
-            if opened < end and instrument.roll_at > start:
-                targets.append((instrument, True))
-        return targets
+        if pair.base:
+            legs = ["TRIGD", "USD", "GOLD"] if pair.tri_code == "TRIGL" else [pair.tri_code, "USD"]
+            return [target for code in legs for target in _quarters(_owner(code), start, end, early=True)]
+        return _quarters(pair, start, end)
     targets = []
     perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
     if perp is None or not perp.finam_symbol:
@@ -112,14 +136,7 @@ def _targets(pair, start, end):
         spot = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
         if spot is not None and spot.finam_symbol and spot.finam_symbol != perp.finam_symbol:
             targets.append((spot, True))
-    quarters = Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE).order_by("roll_at")
-    for instrument in quarters:
-        if not instrument.finam_symbol or instrument.roll_at is None:
-            continue
-        opened = instrument.listed_at or start
-        if opened < end and instrument.roll_at > start:
-            targets.append((instrument, True))
-    return targets
+    return targets + _quarters(pair, start, end)
 
 
 def _save(instrument, bars):

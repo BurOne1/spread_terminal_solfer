@@ -23,6 +23,10 @@ class Pair(models.Model):
     quote = models.CharField(max_length=8, default="RUB")
     lot = models.PositiveIntegerField(default=1000)
     future_scale = models.PositiveIntegerField(default=1)
+    # Чьи кварталы берёт пара. Календарь (foreign_source CAL) — секонд минус
+    # фронт базы, треугольник на секондах — тот же треугольник базы на вторых
+    # контрактах. Пусто — пара на своих инструментах.
+    base = models.CharField(max_length=8, blank=True)
     long_levels = models.JSONField(default=list)
     short_levels = models.JSONField(default=list)
     long_tp = models.JSONField(default=list)
@@ -36,6 +40,21 @@ class Pair(models.Model):
 
     def __str__(self):
         return self.code
+
+    @property
+    def calendar(self):
+        return self.foreign_source == "CAL"
+
+    @property
+    def tri_code(self):
+        """TRIGD, TRISV или TRIGL. У треугольника на секондах — его база."""
+        return self.base or self.code
+
+    @property
+    def quarters_code(self):
+        """Пара, чьи кварталы задают окна. У TRIGL свои ноги чужие, окна — GL из GOLD."""
+        code = self.base or self.code
+        return "GOLD" if code == "TRIGL" else code
 
 
 class Instrument(models.Model):
