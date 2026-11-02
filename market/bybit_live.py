@@ -53,7 +53,7 @@ def save_bars(instrument, bars, pair_code):
         update_fields=["open", "high", "low", "close", "volume"],
     )
     from strategy.rebuild import rebuild_spread
-    count = rebuild_spread(pair_code)
+    count = rebuild_spread(pair_code, since=min(bar["ts"] for bar in bars))
     return f"{instrument.code}: {len(bars)} свечей, баров спреда {count}, последний {bars[-1]['ts']:%Y-%m-%d %H:%M}"
 
 
@@ -156,8 +156,6 @@ def live_targets():
 
 
 def _dec(value):
-    from decimal import Decimal
-    return Decimal(str(value or 0))
     from decimal import Decimal
     return Decimal(str(value or 0))
 

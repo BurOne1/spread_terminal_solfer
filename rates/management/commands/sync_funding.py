@@ -1,4 +1,4 @@
-"""Догружает фандинг CNYRUBF с Мосбиржи."""
+"""Догружает фандинг вечных фьючерсов с Мосбиржи: валюта, золото, серебро."""
 
 from django.core.management.base import BaseCommand
 
@@ -6,7 +6,7 @@ from rates.funding import fill_funding
 
 
 class Command(BaseCommand):
-    help = "Добирает недостающий фандинг CNYRUBF с ISS Мосбиржи."
+    help = "Добирает недостающий фандинг вечных с ISS Мосбиржи."
 
     def handle(self, *args, **options):
         result = fill_funding()

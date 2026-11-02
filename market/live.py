@@ -1,10 +1,14 @@
 """Живой поток Finam: сначала догрузка разрывов, потом WebSocket.
 
-Таймфрейм берётся из BAR_TIMEFRAME, поэтому M1/M5/H1 меняются одной переменной.
-При старте и после обрыва сокета смотрим последние свечи в базе. Если между ними
-или до текущего времени дыра больше полутора баров — добираем её REST-ом.
-Дальше держим wss://api.finam.ru/ws и пишем каждый пришедший бар.
+При старте и после обрыва сокета смотрим последнюю свечу в базе и добираем
+REST-ом всё от часа перед ней до текущего времени. Дальше держим wss://api.finam.ru/ws и пишем каждый пришедший бар.
 JWT живёт около 15 минут, поэтому раз в 11 минут сокет переоткрывается.
+
+Таймфрейм только H1: часовые свечи, расписание и спред считаются по часу.
+Пока час идёт, свечу строят котировки. При каждом переоткрытии сокета
+последний час берётся REST-ом заново, и свечу заменяет бар биржи.
+Спред не пересчитывается на каждый тик: пара помечается, а раз в
+FLUSH_SECONDS пересчитывается хвост помеченных пар.
 """
 
 import asyncio
@@ -21,6 +25,9 @@ from market.roll import quarter_points
 
 WS_URL = "wss://api.finam.ru/ws"
 JWT_REFRESH = 11 * 60
+FLUSH_SECONDS = 5
+# Котировка старше этого — снимок при подписке (после ночи, выходных, праздника).
+STALE_QUOTE = timedelta(hours=1)
 BAR_STEP = {
     "TIME_FRAME_M1": timedelta(minutes=1),
     "TIME_FRAME_M5": timedelta(minutes=5),
@@ -76,11 +83,18 @@ def live_symbols():
 def find_instrument(symbol):
     if not symbol:
         return None
-    instrument = Instrument.objects.filter(finam_symbol__iexact=symbol).first()
+    found = Instrument.objects.select_related("pair")
+    instrument = found.filter(finam_symbol__iexact=symbol).first()
     if instrument is not None:
         return instrument
     code = symbol.split("@", 1)[0]
-    return Instrument.objects.filter(code__iexact=code).first()
+    return found.filter(code__iexact=code).first()
+
+
+def _mark(instrument, since):
+    from strategy.rebuild import mark_dirty
+    if instrument.pair is not None:
+        mark_dirty(instrument.pair.code, since)
 
 
 def parse_any_timestamp(value):
@@ -228,12 +242,14 @@ def save_quote(symbol, ts, price):
     instrument = find_instrument(symbol)
     if instrument is None:
         return f"нет инструмента для {symbol or '?'}"
-    hour = hour_floor(ts)
-    now_hour = hour_floor(datetime.now(timezone.utc))
-    if now_hour > hour and moex_trades(now_hour):
-        hour = now_hour
-    if not market_open() or not moex_trades(hour):
-        return f"биржа закрыта, {hour:%Y-%m-%d %H:%M} не пишу"
+    now = datetime.now(timezone.utc)
+    if not market_open(now):
+        return f"биржа закрыта, {hour_floor(now):%Y-%m-%d %H:%M} не пишу"
+    if now - ts > STALE_QUOTE:
+        return f"старая котировка {ts:%Y-%m-%d %H:%M}, не пишу"
+    # Тик, пришедший уже в новом часу, открывает новую свечу: так бар
+    # появляется сразу с наступлением часа, а не с первой сделкой.
+    hour = hour_floor(now)
     candle = Candle.objects.filter(instrument=instrument, ts=hour).first()
     created = candle is None
     if created:
@@ -246,10 +262,9 @@ def save_quote(symbol, ts, price):
         candle.low = min(candle.low, price)
         candle.close = price
         candle.save(update_fields=["high", "low", "close"])
-    from strategy.rebuild import rebuild_spread
-    spread_count = rebuild_spread()
+    _mark(instrument, hour)
     mark = "новый час" if created else "обновлён"
-    return f"{mark} {hour:%Y-%m-%d %H:%M} close={price} баров спреда {spread_count}"
+    return f"{mark} {hour:%Y-%m-%d %H:%M} close={price}"
 
 
 def save_bars(symbol, bars):
@@ -273,26 +288,24 @@ def save_bars(symbol, bars):
         unique_fields=["instrument", "ts"],
         update_fields=["open", "high", "low", "close", "volume"],
     )
-    from strategy.rebuild import rebuild_spread
-    spread_count = rebuild_spread()
+    _mark(instrument, min(bar["ts"] for bar in tradable))
     fresh = sum(bar["ts"] not in existing for bar in tradable)
     return len(tradable), (
-        f"новых {fresh}, обновлено {len(tradable) - fresh}, баров спреда {spread_count}, "
+        f"новых {fresh}, обновлено {len(tradable) - fresh}, "
         f"последний {tradable[-1]['ts']:%Y-%m-%d %H:%M}"
     )
 
 
 def gap_windows(times, step, now, depth):
-    """Только хвост: от последней свечи до сейчас.
+    """Только хвост: от часа перед последней свечой до сейчас.
 
-    Ночь и выходные длиннее полутора баров, но это не дыра. Внутренние
-    пропуски добирает sync_bars, не каждый запуск сокета.
+    Последние свечи берутся заново всегда: пока час шёл, её строили
+    котировки, а теперь её заменит бар биржи. Внутренние пропуски
+    добирает sync_bars, не каждый запуск сокета.
     """
     if not times:
         return [(now - depth, now)]
-    if now - times[-1] > step * 1.5:
-        return [(times[-1], now)]
-    return []
+    return [(times[-1] - step, now)]
 
 
 def fill_gaps(symbols, frame, log):
@@ -311,13 +324,8 @@ def fill_gaps(symbols, frame, log):
                 .order_by("ts")
                 .values_list("ts", flat=True)
             )
-            windows = gap_windows(times, step, now, depth)
-            if not windows:
-                last = times[-1].astimezone(timezone.utc)
-                log(f"{symbol}: разрывов нет, последняя свеча {last:%Y-%m-%d %H:%M}")
-                continue
-            for start, end in windows:
-                log(f"{symbol}: разрыв {start:%Y-%m-%d %H:%M} → {end:%Y-%m-%d %H:%M}")
+            for start, end in gap_windows(times, step, now, depth):
+                log(f"{symbol}: догрузка {start:%Y-%m-%d %H:%M} → {end:%Y-%m-%d %H:%M}")
                 try:
                     bars = client.bars(symbol, start, end, frame)
                 except FinamError as exc:
@@ -435,6 +443,24 @@ async def _funding(log):
         await asyncio.sleep((target - now).total_seconds())
 
 
+async def _flush(log):
+    while True:
+        await asyncio.sleep(FLUSH_SECONDS)
+        try:
+            done = await asyncio.to_thread(_flush_now)
+        except Exception as exc:
+            log(f"пересчёт спреда не удался: {exc}")
+            continue
+        if done:
+            log("пересчёт спреда: " + ", ".join(f"{code} {count}" for code, count in done.items()))
+
+
+def _flush_now():
+    close_old_connections()
+    from strategy.rebuild import flush_dirty
+    return flush_dirty()
+
+
 def _sync_recent():
     from rates.sync import sync_recent
     return sync_recent()
@@ -450,6 +476,7 @@ async def run_forever(log):
     log(f"таймфрейм {frame}, шаг {step_of(frame)}")
     rates = asyncio.create_task(_rates(log))
     funding = asyncio.create_task(_funding(log))
+    flush = asyncio.create_task(_flush(log))
     try:
         while True:
             symbols = await asyncio.to_thread(live_symbols)
@@ -480,3 +507,4 @@ async def run_forever(log):
     finally:
         rates.cancel()
         funding.cancel()
+        flush.cancel()

@@ -102,4 +102,5 @@ FINAM_BASE_URL = os.environ.get("FINAM_BASE_URL", "https://api.finam.ru")
 
 # SHIBOR — как в текущем strategies.py. RUSFARCNY подставим, если выберете его.
 FOREIGN_RATE_SOURCE = os.environ.get("FOREIGN_RATE_SOURCE", "SHIBOR")
+# Поддерживается только TIME_FRAME_H1: расписание, склейка и спред считаются по часу.
 BAR_TIMEFRAME = os.environ.get("BAR_TIMEFRAME", "TIME_FRAME_H1")

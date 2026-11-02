@@ -27,6 +27,7 @@ class FundingDay(models.Model):
     swaprate_usd = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
     swaprate_eur = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
     swaprate_gold = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    swaprate_silver = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
     source = models.CharField(max_length=32, default="moex")
 
     class Meta:

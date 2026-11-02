@@ -1,24 +1,44 @@
-"""Общий проход стратегии: бары из базы, уровни пары, запись PNL.
+"""Общий проход стратегии: бары из базы, уровни и настройки от вызывающего.
 
 И веб-график, и run_strategy зовут одно и то же, чтобы марка
-открытой позиции считалась одинаково и обновлялась с новыми барами.
+открытой позиции считалась одинаково. PNL в базу не пишется:
+у каждого пользователя свои уровни, график считает его на лету.
 """
-
-from decimal import Decimal
 
 from market.models import Pair
 from strategy.engine import pair_levels, run
-from strategy.models import EquityPoint, SpreadBar
+from strategy.models import SpreadBar
+
+BASES = ("close", "open", "mid")
 
 
-def bars_of(pair):
+def priced(bar, basis="close"):
+    """Сырой спред и spread_rate бара по закрытию, открытию или (O+C)/2.
+
+    Внутри часа срок и ставки одни и те же, поэтому середина
+    spread_rate — точное среднее открытия и закрытия.
+    """
+    raw = float(bar.raw_spread)
+    rate = None if bar.spread_rate is None else float(bar.spread_rate)
+    if basis not in ("open", "mid") or bar.raw_open is None:
+        return raw, rate
+    raw_open = float(bar.raw_open)
+    rate_open = None if bar.rate_open is None else float(bar.rate_open)
+    if basis == "open":
+        return raw_open, rate_open
+    mid_rate = None if rate is None or rate_open is None else (rate + rate_open) / 2
+    return (raw + raw_open) / 2, mid_rate
+
+
+def bars_of(pair, basis="close"):
     rows = []
     for bar in SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("ts"):
+        raw, rate = priced(bar, basis)
         row = {
             "ts": bar.ts,
             "contract": bar.contract.code,
-            "raw": float(bar.raw_spread),
-            "rate": None if bar.spread_rate is None else float(bar.spread_rate),
+            "raw": raw,
+            "rate": rate,
             "spot": float(bar.spot),
             "fair": None if bar.fair is None else float(bar.fair),
             "future": float(bar.future_close),
@@ -33,7 +53,7 @@ def bars_of(pair):
 def funding_of(pair):
     """Ставки фандинга. У треугольника — фандинг вечного металла на один контракт.
 
-    В базе золото — рубли за грамм, серебро — за 100 грамм.
+    В базе золото — рубли на контракт 1 грамм, серебро — на контракт 100 граммов.
     Контракт TRIGD это 1 унция, TRISV — 10 унций.
     Лонг спреда шортит вечный, поэтому знак тот же, что у обычной пары.
     """
@@ -77,11 +97,16 @@ def notional_of(pair):
     return pair.lot or 1000
 
 
-def pass_pair(pair, entry_mode="touch", average=True):
+def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close"):
+    """levels: (лонг, шорт, тейки лонга, тейки шорта) в долях спота со знаком.
+
+    Пусто — уровни, сохранённые у пары, они же значения по умолчанию.
+    Возвращает точки PNL, закрытые сделки и открытую позицию или None.
+    """
     funding, mode = funding_of(pair)
-    long_pcts, short_pcts, long_tp, short_tp = pair_levels(pair)
+    long_pcts, short_pcts, long_tp, short_tp = levels or pair_levels(pair)
     return run(
-        bars_of(pair), funding,
+        bars_of(pair, basis), funding,
         entry_mode=entry_mode,
         average=average,
         notional=notional_of(pair),
@@ -91,29 +116,3 @@ def pass_pair(pair, entry_mode="touch", average=True):
         long_tp=long_tp,
         short_tp=short_tp,
     )
-
-
-def store_points(pair, points):
-    EquityPoint.objects.filter(pair=pair).delete()
-    EquityPoint.objects.bulk_create([
-        EquityPoint(
-            pair=pair,
-            ts=point["t"],
-            contract=point["contract"],
-            equity=Decimal(f"{point['equity']:.2f}"),
-            marker=point["marker"],
-        )
-        for point in points
-    ], batch_size=1000)
-
-
-def refresh_pnl(pair):
-    """Пересчёт, если появились бары новее последней точки PNL."""
-    if pair is None:
-        return
-    last_bar = SpreadBar.objects.filter(pair=pair).order_by("-ts").values_list("ts", flat=True).first()
-    last_pnl = EquityPoint.objects.filter(pair=pair).order_by("-ts").values_list("ts", flat=True).first()
-    if last_bar is None or last_pnl == last_bar:
-        return
-    points, _trades = pass_pair(pair)
-    store_points(pair, points)

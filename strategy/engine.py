@@ -138,8 +138,8 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
         long_tp = tuple(float(item) for item in long_tp)
         short_tp = tuple(float(item) for item in (short_tp or []))
     rolls = [i for i in range(1, len(bars)) if bars[i]["contract"] != bars[i - 1]["contract"]]
+    # Последний бар позицию не закрывает: она остаётся открытой и считается по рынку.
     close_at = {i - NO_TRADE_BARS for i in rolls if i - NO_TRADE_BARS > 0}
-    close_at.add(len(bars) - 1)
     quiet = set()
     for i in rolls:
         quiet.update(range(max(0, i - NO_TRADE_BARS), min(len(bars), i + NO_TRADE_BARS + 1)))
@@ -190,6 +190,10 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
                     "fund": fund_share,
                     "fee": fee,
                     "notional": notional,
+                    "entry_spread": avg,
+                    "exit_spread": spread,
+                    "exit_future": bar["future"],
+                    "exit_perp": bar["perp"],
                 })
                 size -= close_n
                 entry_legs = entry_legs[close_n:]
@@ -288,4 +292,19 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
             "marker": held + event,
         })
 
-    return points, trades
+    opened = None
+    if position and size and bars:
+        last = bars[-1]
+        opened = {
+            "side": "LONG" if position == 1 else "SHORT",
+            "entry": entry_ts,
+            "n": size,
+            "contract": last["contract"],
+            "avg_spread": avg,
+            "entry_spread": entry_spread,
+            "spread": last["raw"],
+            "price": position * (last["raw"] - avg) * size * unit,
+            "fund": open_fund,
+            "legs": entry_legs,
+        }
+    return points, trades, opened

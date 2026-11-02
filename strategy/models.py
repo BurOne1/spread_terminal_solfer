@@ -18,6 +18,9 @@ class SpreadBar(models.Model):
     foreign_rate = models.DecimalField(max_digits=12, decimal_places=6, null=True, blank=True)
     fair = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     spread_rate = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    # Те же величины по ценам открытия часа. (O+C)/2 считается из двух вариантов.
+    raw_open = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    rate_open = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
 
     class Meta:
         verbose_name = "бар спреда"

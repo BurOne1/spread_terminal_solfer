@@ -1,10 +1,11 @@
 """Фандинг вечных с ISS Мосбиржи.
 
-SWAPRATE — рубли на единицу валюты. Контракт 1000, в базу пишется
-SWAPRATE * 1000: рубли на контракт за день. У каждой пары свой столбец.
+SWAPRATE — рубли на единицу котировки. В базу пишется SWAPRATE × лот:
+рубли на контракт за день. У каждой пары свой столбец.
+Валюта — лот 1000, золото — 1 грамм, серебро — 100 граммов при цене за грамм.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import httpx
@@ -16,20 +17,22 @@ SERIES = {
     "swaprate_usd": ("USDRUBF", Decimal("1000")),
     "swaprate_eur": ("EURRUBF", Decimal("1000")),
     "swaprate_gold": ("GLDRUBF", Decimal("1")),
+    "swaprate_silver": ("SLVRUBF", Decimal("100")),
 }
 FIELDS = {
     "USD": "swaprate_usd",
     "EUR": "swaprate_eur",
     "GOLD": "swaprate_gold",
+    "SILVER": "swaprate_silver",
 }
+LOT = Decimal("1000")
+PAGE = 100
 
 
 def funding_field(pair):
     if pair is None:
         return "swaprate_rub"
     return FIELDS.get(pair.code, "swaprate_rub")
-LOT = Decimal("1000")
-PAGE = 100
 
 
 def fetch_swap(secid: str, start: date, end: date, lot: Decimal = LOT) -> list[tuple[date, Decimal]]:
@@ -70,7 +73,7 @@ def fetch_swap(secid: str, start: date, end: date, lot: Decimal = LOT) -> list[t
 
 
 def fill_funding(lookback=14):
-    end = date.today()
+    end = datetime.now(timezone.utc).date()
     result = {"from": end, "to": end, "days": 0, "last": None}
     for field, spec in SERIES.items():
         secid, lot = spec
