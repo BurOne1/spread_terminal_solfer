@@ -66,11 +66,11 @@ def funding_of(pair):
     В базе золото — рубли на контракт 1 грамм, серебро — на контракт 100 граммов.
     Контракт TRIGD это 1 унция, TRISV — 10 унций.
     Лонг спреда шортит вечный, поэтому знак тот же, что у обычной пары.
-    У календаря обе ноги квартальные, фандинга нет.
+    У календаря обе ноги квартальные, у BR − BZ обе месячные: фандинга нет.
     """
     from rates.funding import funding_field
     from rates.models import FundingDay
-    if pair.calendar:
+    if pair.calendar or pair.nymex:
         return [], "daily"
     if pair.foreign_source == "TRI":
         from strategy.rebuild import OZ_GRAMS, TRI_PERP
@@ -128,4 +128,12 @@ def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close"
         short_pcts=short_pcts,
         long_tp=long_tp,
         short_tp=short_tp,
+        **entry_rules(pair),
     )
+
+
+def entry_rules(pair):
+    """У BR − BZ fair = 0 и спред в центах: правило знака и рублёвый порог не подходят."""
+    if pair.nymex:
+        return {"long_needs_sign": False, "min_spread": 0.0}
+    return {}

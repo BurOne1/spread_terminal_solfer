@@ -5,6 +5,7 @@ Finam отдаёт TIME_FRAME_H1 примерно за 30 дней. Окна с�
 Неизвестный тикер пропускается, остальные инструменты пары всё равно пишутся.
 Календарю и треугольнику на секондах квартал нужен на окно раньше своего:
 там он второй. Инструмент, уже загруженный другой парой, второй раз не грузится.
+У BRNYMEX в каждом окне две ноги: BR Мосбиржи и BZ NYMEX.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -98,6 +99,17 @@ class Command(BaseCommand):
         return count
 
 
+def _brent(pair, start, end):
+    """BR и BZ окон, задевающих [start, end)."""
+    legs = Instrument.objects.filter(
+        pair=pair, kind__in=(Instrument.Kind.FUTURE, Instrument.Kind.FOREIGN), roll_at__gt=start,
+    ).exclude(finam_symbol="")
+    return [
+        (leg, True) for leg in legs.order_by("roll_at", "kind")
+        if (leg.listed_at or start) < end
+    ]
+
+
 def _quarters(owner, start, end, early=False):
     """Кварталы, чьё окно задевает [start, end). early — с окна предыдущего, там он секонд."""
     if owner is None:
@@ -122,6 +134,8 @@ def _owner(code):
 def _targets(pair, start, end):
     if pair.calendar:
         return _quarters(_owner(pair.base), start, end, early=True)
+    if pair.nymex:
+        return _brent(pair, start, end)
     if pair.foreign_source == "TRI":
         if pair.base:
             legs = ["TRIGD", "USD", "GOLD"] if pair.tri_code == "TRIGL" else [pair.tri_code, "USD"]

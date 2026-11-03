@@ -41,6 +41,8 @@ def rebuild_spread(pair_code="", since=None):
             total += _rebuild_tri(pair, since)
         elif pair.calendar:
             total += _rebuild_calendar(pair, since)
+        elif pair.nymex:
+            total += _rebuild_nymex(pair, since)
         else:
             total += _rebuild_pair(pair, since)
     return total
@@ -338,6 +340,63 @@ def _rebuild_calendar(pair, since=None):
                 spread_rate=money(rate),
                 raw_open=money(raw_open),
                 rate_open=money(rate_open),
+            ))
+    return _store(pair, rows, since)
+
+
+def _rebuild_nymex(pair, since=None):
+    """BR Мосбиржи минус BZ NYMEX того же окна, доллары за баррель.
+
+    Обе ноги рассчитываются по одной цене ICE Brent: fair = 0, spread_rate = raw.
+    Бар есть, только если в этот час торговали обе биржи и это часы
+    Мосбиржи в будни: выходные сессии, праздники Лондона и Нью-Йорка,
+    ночь NYMEX и перерывы пропускаются сами. spot — цена BZ, от неё уровни.
+    days_left — дни до экспирации BZ, тогда пара переходит на следующий месяц.
+    """
+    load_from = _load_from(since)
+    windows = _traded(_quarters(pair, load_from))
+    if not windows:
+        return 0
+    legs = Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FOREIGN, roll_at__isnull=False)
+    if load_from is not None:
+        legs = legs.filter(roll_at__gt=load_from)
+    legs = list(legs)
+    bars = _ohlc_many(legs, load_from)
+    foreign = {leg.roll_at: bars[leg.id] for leg in legs}
+    rows = []
+    for window in windows:
+        roll = window["roll_at"]
+        far = foreign.get(roll)
+        if not far:
+            continue
+        for ts in sorted(window["bars"]):
+            if since is not None and ts < since:
+                continue
+            if window["listed_at"] is not None and ts < window["listed_at"]:
+                continue
+            if ts >= roll or not _common_hour(ts):
+                continue
+            nymex = far.get(ts)
+            if nymex is None:
+                continue
+            moex = window["bars"][ts]
+            raw_open = float(moex[0]) - float(nymex[0])
+            raw = float(moex[1]) - float(nymex[1])
+            rows.append(SpreadBar(
+                pair=pair,
+                ts=ts,
+                contract_id=window["id"],
+                future_close=money(float(moex[1])),
+                perp_close=money(float(nymex[1])),
+                spot=money(float(nymex[1])),
+                raw_spread=money(raw),
+                days_left=_days(roll, ts)[0],
+                ruonia=None,
+                foreign_rate=None,
+                fair=money(0.0),
+                spread_rate=money(raw),
+                raw_open=money(raw_open),
+                rate_open=money(raw_open),
             ))
     return _store(pair, rows, since)
 

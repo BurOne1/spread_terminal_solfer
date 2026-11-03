@@ -109,13 +109,15 @@ def funding_asof_ts(rows, ts):
     return rows[pos][1]
 
 
-def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", average=True, notional=None, funding_mode="daily", long_pcts=None, short_pcts=None, long_tp=None, short_tp=None):
+def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", average=True, notional=None, funding_mode="daily", long_pcts=None, short_pcts=None, long_tp=None, short_tp=None, long_needs_sign=REQUIRE_LONG_DIFF_SIGN, min_spread=MIN_PRICE_SPREAD):
     """bars: словари ts, contract, raw, rate, spot, fair, future, perp.
 
     Уровни — доли спота со знаком. Лонг и шорт задаются отдельно,
     тейки тоже: один и тот же знак у обеих сторон допустим.
     Шорт входит по своему уровню без проверки знака спреда.
     Лонг по-прежнему только при разном знаке spread_rate и сырого спреда.
+    У пары с fair = 0 знаки всегда равны: там long_needs_sign выключен.
+    min_spread — минимальный |raw| для входа, в единицах спреда пары.
     """
     unit = float(NOTIONAL if notional is None else notional)
 
@@ -208,8 +210,8 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
             contract_base = realized
 
         different = now and spread and (now > 0) != (spread > 0)
-        long_ok = (not REQUIRE_LONG_DIFF_SIGN) or different
-        wide = abs(spread) >= MIN_PRICE_SPREAD
+        long_ok = (not long_needs_sign) or different
+        wide = abs(spread) >= min_spread
         blocked = i in quiet
 
         def enter(side, key):

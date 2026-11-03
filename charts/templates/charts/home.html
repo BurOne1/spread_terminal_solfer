@@ -431,6 +431,17 @@
     }
     function clearLines() { priceLines.splice(0).forEach((row) => rateSeries.removePriceLine(row)); }
     function clearZ() { if (carrySeries) zLines.splice(0).forEach((row) => carrySeries.removePriceLine(row)); }
+    const TRADING_YEAR = 250;
+    // Будни в [day, day + count календарных дней): торговые дни до склейки.
+    function weekdays(day, count) {
+      const start = new Date(day + "T00:00:00Z").getUTCDay();
+      let result = 0;
+      for (let index = 0; index < count; index += 1) {
+        const weekday = (start + index) % 7;
+        if (weekday !== 0 && weekday !== 6) result += 1;
+      }
+      return result;
+    }
     function indicatorData() {
       const mode = indicatorSelect.value;
       const rates = points.filter((point) => point.rate !== null);
@@ -467,16 +478,21 @@
         if (end < 0) end = days.length;
         const slice = values.slice(Math.max(0, end - windowDays), end);
         const avg = slice.length ? slice.reduce((sum, item) => sum + item, 0) / slice.length : 0;
-        if (summed) {
-          const fund = kind === "rate" ? avg * 3 * windowDays * (point.price || 0) : avg / scale * windowDays;
-          return { time, value: fund - point.raw };
+        if (kind === "rate") {
+          // Bybit: фандинг каждые 8 часов без выходных, календарные дни и 365.
+          if (summed) return { time, value: avg * 3 * windowDays * (point.price || 0) - point.raw };
+          const price = Number(point.price) || 0;
+          if (!price) return { time };
+          return { time, value: avg * 3 * 365 * 100 - point.raw / price * 365 / windowDays * 100 };
         }
+        // Мосбиржа: фандинг начисляется по торговым дням, как в движке.
+        // Срок — будни до склейки, год — 250 торговых дней. Праздники не учтены.
+        const workDays = Math.max(1, weekdays(day, windowDays));
+        if (summed) return { time, value: avg / scale * workDays - point.raw };
         const price = Number(point.price) || 0;
         if (!price) return { time };
-        const basis = point.raw / price * 365 / windowDays * 100;
-        const fundingAnn = kind === "rate"
-          ? avg * 3 * 365 * 100
-          : avg / scale / price * 365 * 100;
+        const basis = point.raw / price * TRADING_YEAR / workDays * 100;
+        const fundingAnn = avg / scale / price * TRADING_YEAR * 100;
         return { time, value: fundingAnn - basis };
       });
     }
@@ -1199,7 +1215,7 @@
     paint(true);
     refresh(true);
     // Скрытая вкладка сервер не опрашивает, при возврате данные берутся сразу.
-    setInterval(() => { if (!document.hidden) refresh(); }, 15000);
+    setInterval(() => { if (!document.hidden) refresh(); }, 5000);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
   </script>
 </body>

@@ -100,3 +100,25 @@ class UnknownPairTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertIn("NOPE", response.json()["error"])
         self.assertEqual(self.client.get("/api/spread/").status_code, 200)
+
+
+class BrentApiTests(TestCase):
+    def setUp(self):
+        from strategy.tests import make_brent
+        make_brent()
+        rebuild_spread("BRNYMEX")
+
+    def test_labels_candles_and_levels(self):
+        body = self.client.get("/api/spread/?pair=BRNYMEX").json()
+        self.assertEqual(body["labels"]["BRZ2026"], "BRZ6/BZF27")
+        self.assertEqual(body["funding"], [])
+        first = body["points"][0]
+        self.assertEqual(first["contract"], "BRZ2026")
+        self.assertAlmostEqual(first["candle"]["c"], 0.12, places=6)
+        self.assertAlmostEqual(first["candle"]["o"], 0.10, places=6)
+        self.assertAlmostEqual(body["levels"]["spot"], 72.0, places=6)
+
+    def test_watchlist(self):
+        body = self.client.get("/api/watchlist/").json()
+        item = next(row for row in body["pairs"] if row["code"] == "BRNYMEX")
+        self.assertEqual((item["contract"], item["group"]), ("BRF7/BZG27", "front"))

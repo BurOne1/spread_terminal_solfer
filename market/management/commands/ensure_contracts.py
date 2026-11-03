@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 from django.core.management.base import BaseCommand
 
+from market.brent import ensure_window
+from market.brent import windows as brent_windows
 from market.finam import future_symbol
 from market.models import Instrument, Pair
 from market.roll import quarter_points
@@ -36,6 +38,16 @@ class Command(BaseCommand):
                 continue
             if pair.calendar:
                 self.stdout.write(f"{pair.code}: календарь, кварталы пары {pair.base}")
+                continue
+            if pair.nymex:
+                self.stdout.write(f"{pair.code}: месячные BR и BZ")
+                for row in brent_windows(start, end):
+                    instrument, created = ensure_window(pair, row, update=True)
+                    mark = "новый" if created else "окно"
+                    self.stdout.write(
+                        f"  {mark} {instrument.code} / {row['nymex_code']} "
+                        f"{row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}"
+                    )
                 continue
             if pair.foreign_source == "TRI":
                 if pair.base:

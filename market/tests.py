@@ -118,3 +118,45 @@ class GapWindowTests(SimpleTestCase):
         now = datetime(2026, 10, 5, 11, 20, tzinfo=UTC)
         depth = timedelta(days=30)
         self.assertEqual(live.gap_windows([], timedelta(hours=1), now, depth), [(now - depth, now)])
+
+
+class BrentCalendarTests(SimpleTestCase):
+    def test_expiry_is_last_london_business_day_two_months_before(self):
+        from market.brent import expiry
+        self.assertEqual(expiry(2027, 1), datetime(2026, 11, 30).date())
+        self.assertEqual(expiry(2027, 2), datetime(2026, 12, 31).date())
+        # 31.05.2027 — весенний банковский выходной, 30.03.2029 — Страстная пятница.
+        self.assertEqual(expiry(2027, 7), datetime(2027, 5, 28).date())
+        self.assertEqual(expiry(2029, 5), datetime(2029, 3, 29).date())
+
+    def test_moex_month_is_one_before_nymex(self):
+        from market.brent import windows
+        rows = windows(datetime(2026, 11, 10, tzinfo=UTC), datetime(2026, 11, 11, tzinfo=UTC))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(
+            (row["code"], row["secid"], row["nymex_code"], row["nymex_secid"]),
+            ("BRZ2026", "BRZ6", "BZF2027", "BZF27"),
+        )
+        self.assertEqual(row["listed_at"], datetime(2026, 10, 30, 20, 50, tzinfo=UTC))
+        self.assertEqual(row["roll_at"], datetime(2026, 11, 30, 20, 50, tzinfo=UTC))
+
+
+class BrentLiveSymbolsTests(TestCase):
+    def setUp(self):
+        Pair.objects.filter(code="CNY").update(active=False)
+        self.pair = Pair.objects.create(
+            code="BRNYMEX", title="BR MOEX − BZ NYMEX", future_root="BR", perp_code="", perp_symbol="",
+            spot_code="", spot_symbol="", foreign_source="NYMEX", quote="USD",
+        )
+
+    def test_month_moves_after_bz_expiry(self):
+        with frozen(datetime(2026, 11, 30, 12, 0, tzinfo=UTC)):
+            before = live.live_symbols()
+        with frozen(datetime(2026, 12, 1, 5, 0, tzinfo=UTC)):
+            after = live.live_symbols()
+        self.assertEqual(before, ["BRZ6@RTSX", "BZF27@XNYM"])
+        self.assertEqual(after, ["BRF7@RTSX", "BZG27@XNYM"])
+        leg = Instrument.objects.get(code="BZG2027")
+        self.assertEqual((leg.pair, leg.kind, leg.finam_symbol), (self.pair, "foreign", "BZG27@XNYM"))
+        self.assertEqual(live.find_instrument("BZG27@XNYM"), leg)

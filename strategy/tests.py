@@ -15,7 +15,7 @@ from strategy import rebuild
 from strategy.engine import run
 from strategy.indicators import fair_spread
 from strategy.models import SpreadBar
-from strategy.runner import priced
+from strategy.runner import entry_rules, priced
 
 UTC = timezone.utc
 BASE = datetime(2026, 10, 5, 5, 0, tzinfo=UTC)  # понедельник
@@ -275,3 +275,76 @@ class TriangleSecondsTests(TestCase):
         rebuild._dirty.clear()
         rebuild.mark_dirty("USD", BEFORE_ROLL)
         self.assertIn("TRIGD2", rebuild.flush_dirty())
+
+
+# BZF2027 истекает 30.11.2026 (понедельник), окно BRZ2026/BZF2027 до 20:50 UTC.
+BRENT_FRONT = datetime(2026, 11, 23, 10, 0, tzinfo=UTC)
+BRENT_LAST = datetime(2026, 11, 30, 10, 0, tzinfo=UTC)
+BRENT_NEXT = datetime(2026, 12, 1, 10, 0, tzinfo=UTC)
+
+
+def make_brent():
+    """BRNYMEX с окнами ноября и декабря. raw: 0.12, 0.05 и −0.03 в следующем окне."""
+    from market.brent import ensure_window, windows
+    pair = Pair.objects.create(
+        code="BRNYMEX", title="BR MOEX − BZ NYMEX", future_root="BR", perp_code="", perp_symbol="",
+        spot_code="", spot_symbol="", foreign_source="NYMEX", quote="USD",
+    )
+    legs = {}
+    for row in windows(datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 12, 5, tzinfo=UTC)):
+        ensure_window(pair, row)
+        legs[row["code"]] = Instrument.objects.get(code=row["code"])
+        legs[row["nymex_code"]] = Instrument.objects.get(code=row["nymex_code"])
+    prices = {
+        "BRZ2026": [(BRENT_FRONT, "70.10", "70.32"), (BRENT_FRONT + timedelta(hours=1), "70.30", "70.40"),
+                    (datetime(2026, 11, 28, 10, 0, tzinfo=UTC), "70", "70"), (BRENT_LAST, "71", "71.05"),
+                    (BRENT_NEXT, "71", "71")],
+        "BZF2027": [(BRENT_FRONT, "70.00", "70.20"), (datetime(2026, 11, 28, 10, 0, tzinfo=UTC), "69", "69"),
+                    (BRENT_LAST, "71", "71.00")],
+        "BRF2027": [(BRENT_NEXT, "72.00", "71.97")],
+        "BZG2027": [(BRENT_NEXT, "72.00", "72.00")],
+    }
+    for code, items in prices.items():
+        for ts, opened, closed in items:
+            candle(legs[code], ts, Decimal(opened), Decimal(closed))
+    return pair, legs
+
+
+class BrentTests(TestCase):
+    def setUp(self):
+        self.pair, self.legs = make_brent()
+        rebuild.rebuild_spread("BRNYMEX")
+
+    def test_only_hours_where_both_legs_trade(self):
+        bars = list(SpreadBar.objects.filter(pair=self.pair).order_by("ts"))
+        # Час только с BR, суббота и BR после экспирации BZ пропущены.
+        self.assertEqual([bar.ts for bar in bars], [BRENT_FRONT, BRENT_LAST, BRENT_NEXT])
+        first = bars[0]
+        self.assertAlmostEqual(float(first.raw_spread), 0.12, places=6)
+        self.assertAlmostEqual(float(first.raw_open), 0.10, places=6)
+        self.assertAlmostEqual(float(first.spread_rate), 0.12, places=6)
+        self.assertEqual(float(first.fair), 0.0)
+        self.assertAlmostEqual(float(first.spot), 70.20, places=6)
+        self.assertEqual(first.days_left, 7)
+
+    def test_switches_to_next_month_after_bz_expiry(self):
+        last, nxt = SpreadBar.objects.filter(pair=self.pair, ts__in=[BRENT_LAST, BRENT_NEXT]).order_by("ts")
+        self.assertEqual((last.contract.code, last.days_left), ("BRZ2026", 1))
+        self.assertEqual(nxt.contract.code, "BRF2027")
+        self.assertAlmostEqual(float(nxt.raw_spread), -0.03, places=6)
+        self.assertEqual(nxt.days_left, 30)
+
+    def test_tail_rebuild_matches_full(self):
+        full = list(SpreadBar.objects.filter(pair=self.pair).order_by("ts").values_list("ts", "raw_spread"))
+        rebuild.rebuild_spread("BRNYMEX", since=BRENT_LAST)
+        tail = list(SpreadBar.objects.filter(pair=self.pair).order_by("ts").values_list("ts", "raw_spread"))
+        self.assertEqual(full, tail)
+
+    def test_long_enters_without_sign_rule(self):
+        # fair = 0, знаки rate и raw равны: общее правило лонг бы не пустило.
+        rates = [0.0, -0.5, -1.2, -0.5, 0.3]
+        _points, blocked, _opened = run(bars(rates), [], **LEVELS)
+        self.assertEqual(blocked, [])
+        _points, trades, _opened = run(bars(rates), [], long_needs_sign=False, min_spread=0.0, **LEVELS)
+        self.assertEqual([trade["side"] for trade in trades], ["LONG"])
+        self.assertEqual(entry_rules(self.pair), {"long_needs_sign": False, "min_spread": 0.0})

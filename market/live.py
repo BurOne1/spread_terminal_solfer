@@ -24,6 +24,7 @@ import websockets
 from django.conf import settings
 from django.db import close_old_connections
 
+from market.brent import front_symbols
 from market.finam import PERP_SYMBOL, SPOT_SYMBOL, FinamClient, FinamError, future_symbol, parse_decimal
 from market.models import Candle, Instrument, Pair
 from market.roll import quarter_points
@@ -93,7 +94,8 @@ def quarter_symbols(owner, now, count):
 
 def live_symbols():
     """Символы сокета. Символ пересчитывается при каждом переоткрытии, раз в 11 минут:
-    после склейки фронт и секонд сами сдвигаются на следующие кварталы.
+    после склейки фронт и секонд сами сдвигаются на следующие кварталы,
+    а BRNYMEX после экспирации BZ — на следующий месяц.
     """
     now = datetime.now(timezone.utc)
     pairs = {pair.code: pair for pair in Pair.objects.filter(active=True).exclude(venue="bybit")}
@@ -103,6 +105,9 @@ def live_symbols():
 
     symbols = []
     for pair in pairs.values():
+        if pair.nymex:
+            symbols.extend(front_symbols(pair, now))
+            continue
         if pair.calendar:
             symbols.extend(quarter_symbols(owner(pair.base), now, 2))
             continue

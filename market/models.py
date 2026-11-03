@@ -46,6 +46,11 @@ class Pair(models.Model):
         return self.foreign_source == "CAL"
 
     @property
+    def nymex(self):
+        """BR Мосбиржи минус BZ NYMEX, оба месячные, см. market/brent.py."""
+        return self.foreign_source == "NYMEX"
+
+    @property
     def tri_code(self):
         """TRIGD, TRISV или TRIGL. У треугольника на секондах — его база."""
         return self.base or self.code
@@ -62,6 +67,8 @@ class Instrument(models.Model):
         PERP = "perp", "вечный"
         FUTURE = "future", "квартальный"
         SPOT = "spot", "спот"
+        # Нога с другой биржи в том же окне, что и квартал пары: BZ NYMEX у BR.
+        FOREIGN = "foreign", "фьючерс другой биржи"
 
     pair = models.ForeignKey(Pair, null=True, blank=True, on_delete=models.PROTECT, related_name="instruments")
     code = models.CharField(max_length=16, unique=True)

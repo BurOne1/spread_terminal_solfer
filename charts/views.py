@@ -45,7 +45,15 @@ def _contracts(pair):
 
 
 def _labels(pair, codes):
-    """Подписи окон у календаря и секондов: Z2026/H2027 — фронт и второй квартал."""
+    """Подписи окон у календаря и секондов: Z2026/H2027 — фронт и второй квартал.
+
+    У BRNYMEX — коды обеих бирж: BRZ6/BZF27.
+    """
+    if pair is not None and pair.nymex:
+        return {
+            moex: f"{moex_symbol.split('@')[0]}/{nymex_symbol.split('@')[0]}"
+            for moex, moex_symbol, nymex_symbol in _nymex_windows(pair, codes)
+        }
     if pair is None or not pair.base:
         return {}
     root = pair.future_root
@@ -53,6 +61,21 @@ def _labels(pair, codes):
     def short(code):
         return code[len(root):] if root and code.startswith(root) else code
     return {code: f"{short(code)}/{short(second)}" for code, second in zip(codes, codes[1:])}
+
+
+def _nymex_windows(pair, codes):
+    """(код BR, символ BR, символ BZ) окон из codes. Ноги одного окна — с одним roll_at."""
+    legs = Instrument.objects.filter(pair=pair, roll_at__isnull=False)
+    foreign = {
+        roll: symbol for roll, symbol in
+        legs.filter(kind=Instrument.Kind.FOREIGN).values_list("roll_at", "finam_symbol")
+    }
+    return [
+        (code, symbol, foreign[roll])
+        for code, symbol, roll in legs.filter(kind=Instrument.Kind.FUTURE, code__in=codes)
+        .values_list("code", "finam_symbol", "roll_at")
+        if roll in foreign
+    ]
 
 
 def _window(codes, start, end):
@@ -89,6 +112,8 @@ def _points(pair, start="", end="", basis="close", rows=None):
     legs = {}
     if pair.calendar:
         legs = _calendar_legs(pair, codes, since)
+    elif pair.nymex:
+        legs = _nymex_legs(pair, codes, since)
     elif pair.foreign_source != "TRI":
         scale = pair.future_scale or 1
         perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
@@ -139,6 +164,17 @@ def _calendar_legs(pair, codes, since):
         front.code: (_ohlc(front, since, scale), _ohlc(second, since, scale))
         for front, second in zip(quarters, quarters[1:])
         if front.code in wanted
+    }
+
+
+def _nymex_legs(pair, codes, since):
+    """BR → (свечи BZ, свечи BR): свеча спреда BR − BZ, как у календаря."""
+    legs = Instrument.objects.filter(pair=pair, roll_at__isnull=False)
+    foreign = {leg.roll_at: leg for leg in legs.filter(kind=Instrument.Kind.FOREIGN)}
+    return {
+        moex.code: (_ohlc(foreign[moex.roll_at], since), _ohlc(moex, since))
+        for moex in legs.filter(kind=Instrument.Kind.FUTURE, code__in=codes)
+        if moex.roll_at in foreign
     }
 
 
@@ -236,9 +272,9 @@ def _level_spot(pair):
     """Цена, от которой уровни — проценты.
 
     У треугольника это вечный металл, руб/грамм. У календаря — спот
-    последнего бара: спот базы или, у GD и SV, фронт.
+    последнего бара: спот базы или, у GD и SV, фронт. У BRNYMEX — цена BZ.
     """
-    if pair.calendar:
+    if pair.calendar or pair.nymex:
         last = SpreadBar.objects.filter(pair=pair).order_by("-ts").values_list("spot", flat=True).first()
         return None if last is None else float(last)
     if pair.foreign_source == "TRI":
@@ -266,7 +302,7 @@ def _funding(pair):
         ]
     from rates.models import FundingDay
     from rates.funding import funding_field
-    if pair is not None and pair.calendar:
+    if pair is not None and (pair.calendar or pair.nymex):
         return []
     if pair is not None and pair.foreign_source == "TRI":
         if pair.tri_code == "TRIGL":
@@ -292,7 +328,7 @@ def _funding_scale(pair):
     """
     if pair is None:
         return 1000
-    if pair.calendar:
+    if pair.calendar or pair.nymex:
         return 1
     if pair.foreign_source == "TRI":
         return 100 if pair.tri_code == "TRISV" else 1
@@ -340,7 +376,7 @@ def home(request):
 def _title(pair):
     if pair is None:
         return ""
-    if pair.foreign_source == "TRI" or pair.calendar:
+    if pair.foreign_source == "TRI" or pair.calendar or pair.nymex:
         return pair.title
     return f"{pair.future_root} − {pair.perp_code}"
 
@@ -352,6 +388,8 @@ def _subtitle(pair):
         return f"руб/грамм, {_rate_label(pair)}"
     if pair.calendar:
         return f"{_rate_label(pair)}, {pair.quote}"
+    if pair.nymex:
+        return "месячные, только общие часы бирж, справедливый 0, $/барр."
     rate = "только RUONIA" if pair.foreign_source == "NONE" else _rate_label(pair)
     return f"Спот {pair.spot_code}, ставка {rate}, {pair.quote}"
 
@@ -364,7 +402,7 @@ def watchlist_json(request):
     for pair in Pair.objects.filter(active=True).order_by("code"):
         bars = SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("-ts")
         last = bars.first()
-        labels = _labels(pair, _contracts(pair)) if last is not None and pair.base else {}
+        labels = _labels(pair, _contracts(pair)) if last is not None and (pair.base or pair.nymex) else {}
         # second — пары на вторых кварталах: календари и треугольники с base.
         item = {
             "code": pair.code, "title": _title(pair), "name": pair.title, "venue": pair.venue,
@@ -402,6 +440,8 @@ def _rate_label(pair):
         return f"секонд − фронт, RUONIA{foreign}"
     if pair.foreign_source == "EWMA14":
         return "EWMA14 фандинга"
+    if pair.nymex:
+        return "BR MOEX − BZ NYMEX"
     return pair.foreign_source
 
 
