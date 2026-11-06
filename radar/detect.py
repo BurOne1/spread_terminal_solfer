@@ -3,6 +3,8 @@
 На вход сделки и строки стакана одного символа, на выход словари аномалий.
 Пороги — по истории самого инструмента: процентиль размеров его заявок,
 медиана уровней его стакана, объём той же минуты суток в прошлые дни.
+Сами числа порогов, окна и паузы — правила сигналов (radar/rules.py),
+self.rules — уже собранные для этого символа.
 Мосбиржа анонимна: видны следы участника, а не он сам.
 """
 
@@ -10,35 +12,23 @@ import statistics
 from collections import deque
 from datetime import timedelta
 
+from radar.rules import resolve
+
 KEEP_SIZES = 5000
 # Пока сделок меньше, порог крупной сделки не устоялся и не проверяется.
 MIN_SIZES = 300
-SWEEP_GAP = timedelta(milliseconds=100)
-SWEEP_LEVELS = 3
-# Проход по 3+ уровням — только для заявок крупнее этого процентиля: мелкие проходы
-# в тонком стакане (Si с шагом 1) обычны.
-SWEEP_PCT = 99.0
 BOOK_DEPTH = 20
 # От пика стены осталось меньше этой доли — стены больше нет.
 WALL_GONE = 0.2
-# Исполнилось хотя бы столько от ушедшего объёма — стену съели, иначе сняли.
-WALL_EATEN = 0.5
-# Стена объявляется, только если простояла столько: перестановки маркетмейкеров не в счёт.
-WALL_CONFIRM = timedelta(seconds=30)
-# Стена крупнее этого процентиля уровней стакана инструмента за последние часы.
-WALL_PCT = 99.5
 # Уровни стакана снимаются в историю не чаще раза в секунду: верхние WALL_SAMPLE на сторону.
 WALL_SAMPLE = 10
 WALL_SAMPLE_EVERY = timedelta(seconds=1)
 WALL_MIN_SAMPLES = 2000
-# Снятие считается, только если стена стояла не дальше стольких уровней от лучшей цены.
-WALL_NEAR = 3
 MAX_WALLS = 200
-VOLUME_Z = 5.0
-VOLUME_RATIO = 3.0
-OI_Z = 6.0
-# Минут истории, после которых объём и ОИ сравниваются с нормой.
+# Окон истории, после которых объём и ОИ сравниваются с нормой.
 MIN_HISTORY = 30
+# Минут в памяти для окон объёма и ОИ: сутки.
+KEEP_MINUTES = 1440
 SEASON_WINDOW = 10
 SEASON_MIN = 20
 
@@ -163,10 +153,9 @@ class Book:
 class SymbolWatch:
     """Всё, что радар знает об одном символе, и его детекторы."""
 
-    def __init__(self, symbol, large_pct=99.5, wall_ratio=5.0, min_sizes=MIN_SIZES):
+    def __init__(self, symbol, rules=None, min_sizes=MIN_SIZES):
         self.symbol = symbol
-        self.large_pct = large_pct
-        self.wall_ratio = wall_ratio
+        self.rules = rules or resolve(symbol, [])
         self.book = Book()
         self.sizes = SizeStats(min_samples=min_sizes)
         # Размеры уровней стакана: от них порог стены.
@@ -176,8 +165,8 @@ class SymbolWatch:
         self.walls = {}
         self.bar = None
         self.closed = []
-        self.recent = deque(maxlen=240)
-        self.oi_moves = deque(maxlen=240)
+        self.recent = deque(maxlen=KEEP_MINUTES)
+        self.oi_closes = deque(maxlen=KEEP_MINUTES)
         self.seasonal = {}
         self.last_oi = None
         self.last_price = None
@@ -227,7 +216,7 @@ class SymbolWatch:
         found = []
         burst = self.burst
         if burst is not None and (
-            trade["side"] != burst["side"] or trade["ts"] - burst["last"] > SWEEP_GAP or trade["side"] == 0
+            trade["side"] != burst["side"] or trade["ts"] - burst["last"] > self.gap() or trade["side"] == 0
         ):
             found += self.finish_burst()
         if self.burst is None:
@@ -247,21 +236,26 @@ class SymbolWatch:
             found += self.finish_burst()
         return found
 
+    def gap(self):
+        """Сделки одной стороны не дальше этого друг от друга — одна заявка."""
+        return timedelta(milliseconds=self.rules["sweep"]["gap_ms"])
+
     def finish_burst(self):
-        """Заявка закончилась: прошла 3+ уровня — проход по стакану, иначе крупная, если велика."""
+        """Заявка закончилась: прошла N+ уровней — проход по стакану, иначе крупная, если велика."""
         burst, self.burst = self.burst, None
         if burst is None:
             return []
+        rule_sweep, rule_large = self.rules["sweep"], self.rules["large"]
         levels, size = len(burst["prices"]), burst["size"]
-        sweep = self.sizes.percentile(SWEEP_PCT)
-        large = self.sizes.percentile(self.large_pct)
+        sweep = self.sizes.percentile(rule_sweep["threshold"])
+        large = self.sizes.percentile(rule_large["threshold"])
         middle = self.sizes.percentile(50.0) or 0
         self.sizes.add(size)
         if burst["quiet"]:
             return []
         who = {1: "покупатель", -1: "продавец"}.get(burst["side"], "участник")
         found = []
-        if sweep is not None and levels >= SWEEP_LEVELS and size >= sweep:
+        if sweep is not None and levels >= rule_sweep["levels"] and size >= sweep:
             took = int((burst["last"] - burst["start"]).total_seconds() * 1000)
             how = "одной заявкой" if took == 0 else f"за {took} мс"
             found.append(self._anomaly(
@@ -269,11 +263,11 @@ class SymbolWatch:
                 f"{who} прошёл {plural(levels, 'уровень', 'уровня', 'уровней')} {how}: "
                 f"{plural(burst['count'], 'сделка', 'сделки', 'сделок')}, {lots(size)}, {burst['first']:g} → {burst['price']:g}",
             ))
-        elif large is not None and size >= large and size >= 3 * middle:
+        elif large is not None and size >= large and size >= rule_large["ratio"] * middle:
             parts = f", {plural(burst['count'], 'сделкой', 'сделками', 'сделками')}" if burst["count"] > 1 else ""
             found.append(self._anomaly(
                 burst["last"], "large", burst["side"], burst["price"], size, size / large,
-                f"{who}: {lots(size)} одной заявкой{parts}, порог {fmt(large)} ({self.large_pct:g}-й процентиль)",
+                f"{who}: {lots(size)} одной заявкой{parts}, порог {fmt(large)} ({rule_large['threshold']:g}-й процентиль)",
             ))
         if found and self.bar is not None:
             self.bar["large"] += 1
@@ -288,33 +282,63 @@ class SymbolWatch:
         quiet = bar.pop("quiet", False)
         self.closed.append(bar)
         found = []
-        volume = bar["volume"]
-        sample = self.season_sample(bar["ts"])
-        if len(sample) < SEASON_MIN:
-            sample = list(self.recent)
-        if len(sample) >= MIN_HISTORY and not quiet:
-            z = robust_z(volume, sample)
-            norm = statistics.median(sample)
-            if z is not None and z >= VOLUME_Z and volume >= VOLUME_RATIO * max(norm, 1e-9):
-                found.append(self._anomaly(
-                    bar["ts"], "volume", sign(bar["buy"] - bar["sell"]), bar["close"], volume, z,
-                    f"объём {fmt(volume)} при норме {fmt(norm)}: покупки {fmt(bar['buy'])}, продажи {fmt(bar['sell'])}",
-                ))
-        self.recent.append(volume)
+        if not quiet:
+            found += self._volume(bar)
+        self.recent.append(bar["volume"])
         if bar["oi"] is not None:
-            if self.last_oi is not None:
-                move = bar["oi"] - self.last_oi
-                if len(self.oi_moves) >= MIN_HISTORY and move and not quiet:
-                    z = robust_z(move, list(self.oi_moves))
-                    if z is not None and abs(z) >= OI_Z:
-                        found.append(self._anomaly(
-                            bar["ts"], "oi", sign(move), bar["close"], move, abs(z),
-                            f"ОИ {move:+,.0f} за минуту, цена {bar['close'] - bar['open']:+g}: "
-                            f"{_oi_meaning(move, bar['close'] - bar['open'])}".replace(",", " "),
-                        ))
-                self.oi_moves.append(move)
+            if not quiet:
+                found += self._oi(bar)
+            self.oi_closes.append(bar["oi"])
             self.last_oi = bar["oi"]
         return found
+
+    def _volume(self, bar):
+        """Объём окна против таких же окон раньше. Окно 1 — против той же минуты прошлых дней."""
+        rule = self.rules["volume"]
+        window = max(1, int(rule["window_minutes"]))
+        history = list(self.recent)
+        if window == 1:
+            volume = bar["volume"]
+            sample = self.season_sample(bar["ts"])
+            if len(sample) < SEASON_MIN:
+                sample = history
+            span = "минуту"
+        else:
+            volume = sum(history[-(window - 1):]) + bar["volume"]
+            sample = [sum(history[index:index + window]) for index in range(len(history) - window + 1)]
+            span = f"{window} мин"
+        if len(sample) < MIN_HISTORY:
+            return []
+        z = robust_z(volume, sample)
+        norm = statistics.median(sample)
+        if z is None or z < rule["threshold"] or volume < rule["ratio"] * max(norm, 1e-9):
+            return []
+        return [self._anomaly(
+            bar["ts"], "volume", sign(bar["buy"] - bar["sell"]), bar["close"], volume, z,
+            f"объём {fmt(volume)} за {span} при норме {fmt(norm)}: "
+            f"в последней минуте покупки {fmt(bar['buy'])}, продажи {fmt(bar['sell'])}",
+        )]
+
+    def _oi(self, bar):
+        """Изменение ОИ за окно против таких же изменений раньше."""
+        rule = self.rules["oi"]
+        window = max(1, int(rule["window_minutes"]))
+        closes = list(self.oi_closes)
+        if len(closes) < window:
+            return []
+        move = bar["oi"] - closes[-window]
+        sample = [closes[index + window] - closes[index] for index in range(len(closes) - window)]
+        if len(sample) < MIN_HISTORY or not move:
+            return []
+        z = robust_z(move, sample)
+        if z is None or abs(z) < rule["threshold"]:
+            return []
+        span = "минуту" if window == 1 else f"{window} мин"
+        price_move = bar["close"] - bar["open"]
+        return [self._anomaly(
+            bar["ts"], "oi", sign(move), bar["close"], move, abs(z),
+            f"ОИ {move:+,.0f} за {span}, цена {price_move:+g}: {_oi_meaning(move, price_move)}".replace(",", " "),
+        )]
 
     def season_sample(self, ts):
         """Объёмы тех же минут суток ±SEASON_WINDOW в прошлые дни."""
@@ -329,7 +353,7 @@ class SymbolWatch:
     def tick(self, now):
         """Закрыть по времени серию сделок и минуту, если новых сделок нет."""
         found = []
-        if self.burst is not None and now - self.burst["last"] > SWEEP_GAP:
+        if self.burst is not None and now - self.burst["last"] > self.gap():
             found += self.finish_burst()
         if self.bar is not None and now.replace(second=0, microsecond=0) > self.bar["ts"]:
             found += self.close_minute()
@@ -345,14 +369,15 @@ class SymbolWatch:
         return self._walls(ts) if detect else []
 
     def wall_limit(self):
-        """Порог стены: выше 99,5-го процентиля уровней инструмента и в wall_ratio раз выше медианы сейчас."""
+        """Порог стены: выше процентиля уровней инструмента и в ratio раз выше медианы сейчас."""
+        rule = self.rules["wall"]
         asks, bids = self.book.top()
         sizes = [size for _price, size in asks + bids if size > 0]
-        history = self.book_sizes.percentile(WALL_PCT)
+        history = self.book_sizes.percentile(rule["threshold"])
         if len(sizes) < 6 or history is None:
             return None, None
         middle = statistics.median(sizes)
-        return max(middle * self.wall_ratio, history), middle
+        return max(middle * rule["ratio"], history), middle
 
     def _sample(self, ts):
         if self.sampled is not None and ts - self.sampled < WALL_SAMPLE_EVERY:
@@ -385,7 +410,7 @@ class SymbolWatch:
                         self.walls[(side, price)] = {"peak": size, "since": ts, "traded": 0.0, "announced": False}
                         continue
                     wall["peak"] = max(wall["peak"], size)
-                    if not wall["announced"] and ts - wall["since"] >= WALL_CONFIRM:
+                    if not wall["announced"] and ts - wall["since"] >= timedelta(seconds=self.rules["wall"]["confirm_seconds"]):
                         wall["announced"] = True
                         where = "продажу" if side == "ask" else "покупку"
                         found.append(self._anomaly(
@@ -403,12 +428,12 @@ class SymbolWatch:
             gone = wall["peak"] - size
             side, price = key
             seconds = int(life.total_seconds())
-            if wall["traded"] >= WALL_EATEN * gone:
+            if wall["traded"] >= self.rules["eaten"]["ratio"] * gone:
                 found.append(self._anomaly(
                     ts, "eaten", -1 if side == "bid" else 1, price, wall["traded"], wall["traded"] / wall["peak"],
                     f"исполнено {fmt(wall['traded'])} из {fmt(wall['peak'])} за {seconds} с",
                 ))
-            elif self._near(side, price) <= WALL_NEAR:
+            elif self._near(side, price) <= self.rules["pulled"]["levels"]:
                 found.append(self._anomaly(
                     ts, "pulled", 1 if side == "bid" else -1, price, gone, gone / wall["peak"],
                     f"снято {fmt(gone)} из {fmt(wall['peak'])} через {seconds} с, исполнено {fmt(wall['traded'])}",

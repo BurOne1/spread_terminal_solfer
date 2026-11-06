@@ -62,54 +62,79 @@ def _number(text, default=0.0):
         return default
 
 
+# Виджетов одного вида на странице не больше: защита от слишком длинного запроса.
+MAX_KEYS = 12
+
+
+def _keys(request, name):
+    """Список ключей виджетов из параметра через запятую, без повторов."""
+    return list(dict.fromkeys(key for key in request.GET.get(name, "").split(",") if key))[:MAX_KEYS]
+
+
+def _tape(symbol, min_size):
+    rows = (
+        Trade.objects.filter(symbol=symbol, size__gte=min_size)
+        .order_by("-ts", "-id").values_list("ts", "price", "size", "side")[:TAPE]
+    )
+    return [{"t": ts.isoformat(), "p": float(price), "s": float(size), "d": side} for ts, price, size, side in rows]
+
+
+def _feed(now, kind, symbol, titles):
+    rows = Anomaly.objects.filter(ts__gte=now - timedelta(days=1))
+    if kind:
+        rows = rows.filter(kind=kind)
+    if symbol:
+        rows = rows.filter(symbol=symbol)
+    return [
+        {
+            "id": item.id, "t": item.ts.isoformat(), "symbol": item.symbol,
+            "title": titles.get(item.symbol, item.symbol), "kind": item.kind,
+            "kind_label": item.get_kind_display(), "side": item.side,
+            "price": None if item.price is None else float(item.price),
+            "size": None if item.size is None else float(item.size),
+            "score": item.score, "text": item.text,
+        }
+        for item in rows.order_by("-ts", "-id")[:FEED]
+    ]
+
+
 def state_json(request):
-    """Состояние источников, список символов, стакан, лента и аномалии. Опрос раз в секунду."""
+    """Источники, список символов и данные виджетов. Опрос раз в секунду.
+
+    books=SiZ6@RTSX,CRZ6@RTSX — стаканы; tapes=SiZ6@RTSX|10,... — ленты с
+    фильтром размера; feeds=sweep|SiZ6@RTSX,|... — ленты аномалий: тип и
+    символ, пустые — все. Ответ — словари по тем же ключам.
+    """
     now = datetime.now(timezone.utc)
     statuses, alive = _statuses(now)
     books = list(BookState.objects.all())
-    symbol = request.GET.get("symbol", "")
     known = {book.symbol: book for book in books}
-    if symbol not in known:
-        symbol = books[0].symbol if books else ""
-    book = known.get(symbol)
-    tape = []
-    if symbol:
-        rows = (
-            Trade.objects.filter(symbol=symbol, size__gte=_number(request.GET.get("min")))
-            .order_by("-ts", "-id").values_list("ts", "price", "size", "side")[:TAPE]
-        )
-        tape = [{"t": ts.isoformat(), "p": float(price), "s": float(size), "d": side} for ts, price, size, side in rows]
-    feed = Anomaly.objects.filter(ts__gte=now - timedelta(days=1))
-    kinds = [kind for kind in request.GET.get("kinds", "").split(",") if kind]
-    if kinds:
-        feed = feed.filter(kind__in=kinds)
-    if request.GET.get("only") == "1" and symbol:
-        feed = feed.filter(symbol=symbol)
     titles = {book.symbol: book.title for book in books}
+    tapes = {}
+    for key in _keys(request, "tapes"):
+        symbol, _bar, min_size = key.partition("|")
+        tapes[key] = _tape(symbol, _number(min_size)) if symbol else []
+    feeds = {}
+    for key in _keys(request, "feeds"):
+        kind, _bar, symbol = key.partition("|")
+        feeds[key] = _feed(now, kind, symbol, titles)
     return JsonResponse({
         "now": now.isoformat(),
         "alive": alive,
         "statuses": statuses,
-        "symbol": symbol,
         "symbols": [
             {"symbol": item.symbol, "title": item.title, "group": item.group, "summary": item.summary}
             for item in books
         ],
-        "book": None if book is None else {
-            "asks": book.asks, "bids": book.bids, "ts": None if book.ts is None else book.ts.isoformat(),
-        },
-        "tape": tape,
-        "anomalies": [
-            {
-                "id": item.id, "t": item.ts.isoformat(), "symbol": item.symbol,
-                "title": titles.get(item.symbol, item.symbol), "kind": item.kind,
-                "kind_label": item.get_kind_display(), "side": item.side,
-                "price": None if item.price is None else float(item.price),
-                "size": None if item.size is None else float(item.size),
-                "score": item.score, "text": item.text,
+        "books": {
+            symbol: None if symbol not in known else {
+                "asks": known[symbol].asks, "bids": known[symbol].bids,
+                "ts": None if known[symbol].ts is None else known[symbol].ts.isoformat(),
             }
-            for item in feed.order_by("-ts", "-id")[:FEED]
-        ],
+            for symbol in _keys(request, "books")
+        },
+        "tapes": tapes,
+        "feeds": feeds,
     })
 
 

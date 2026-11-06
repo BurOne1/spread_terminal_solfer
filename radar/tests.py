@@ -10,7 +10,8 @@ from market.models import Candle, Instrument, Pair
 from radar import algopack
 from radar.detect import Book, SymbolWatch
 from radar.feed import Radar
-from radar.models import Anomaly, BookState, MinuteStat, SourceStatus, Trade, WatchItem
+from radar.models import Anomaly, BookState, MinuteStat, SignalRule, SourceStatus, Trade, WatchItem
+from radar.rules import DEFAULTS, resolve
 from radar.stream import books_of, payload_of, trades_of, watch_items
 
 UTC = timezone.utc
@@ -214,7 +215,7 @@ class DetectTests(SimpleTestCase):
 
 
 def item(symbol, group="legs"):
-    return {"symbol": symbol, "title": symbol.split("@")[0], "group": group, "large_pct": 99.5, "wall_ratio": 5.0}
+    return {"symbol": symbol, "title": symbol.split("@")[0], "group": group}
 
 
 class RadarFlushTests(TestCase):
@@ -248,12 +249,24 @@ class RadarFlushTests(TestCase):
 
 class WatchItemsTests(TestCase):
     def test_legs_and_admin_items(self):
-        WatchItem.objects.create(code="SiZ6@RTSX", kind="symbol", title="Si", large_pct=99.9)
+        WatchItem.objects.create(code="SiZ6@RTSX", kind="symbol", title="Si")
         with patch("radar.stream.live_symbols", return_value=["SiZ6@RTSX", "CNYRUBF@RTSX"]):
             items = {row["symbol"]: row for row in watch_items(T0)}
         self.assertEqual(set(items), {"SiZ6@RTSX", "CNYRUBF@RTSX", "RIZ6@RTSX", "MXZ6@RTSX", "IMOEXF@RTSX"})
-        self.assertEqual((items["SiZ6@RTSX"]["group"], items["SiZ6@RTSX"]["large_pct"]), ("legs", 99.9))
+        self.assertEqual((items["SiZ6@RTSX"]["group"], items["SiZ6@RTSX"]["title"]), ("legs", "Si"))
         self.assertEqual((items["RIZ6@RTSX"]["group"], items["RIZ6@RTSX"]["title"]), ("extra", "RTS RIZ2026"))
+
+    def test_inactive_rows_switch_off_legs(self):
+        WatchItem.objects.filter(code="RI").update(active=False)
+        WatchItem.objects.create(code="Si", kind="quarter", active=False)
+        WatchItem.objects.create(code="CNYRUBF@RTSX", kind="symbol", active=False)
+        WatchItem.objects.create(code="SiH7@RTSX", kind="symbol", title="Si секонд")
+        legs = ["SiZ6@RTSX", "SiH7@RTSX", "CNYRUBF@RTSX", "CRZ6@RTSX", "S2Z6@RTSX"]
+        with patch("radar.stream.live_symbols", return_value=legs):
+            items = {row["symbol"]: row for row in watch_items(T0)}
+        # Корень Si не задевает S2, включённый символ важнее выключенного корня.
+        self.assertEqual(set(items), {"SiH7@RTSX", "CRZ6@RTSX", "S2Z6@RTSX", "MXZ6@RTSX", "IMOEXF@RTSX"})
+        self.assertEqual(items["SiH7@RTSX"]["group"], "extra")
 
     def test_quarter_moves_after_roll(self):
         with patch("radar.stream.live_symbols", return_value=[]):
@@ -272,11 +285,14 @@ class RadarPageTests(TestCase):
         response = self.client.get("/radar/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="chips"')
+        self.assertContains(response, 'id="grid"')
         body = self.client.get("/api/radar/state/").json()
         self.assertFalse(body["alive"])
         self.assertEqual([item["state"] for item in body["statuses"]], ["off", "off", "off"])
         self.assertIn("run_radar", body["statuses"][2]["message"])
-        self.assertEqual((body["symbols"], body["book"], body["anomalies"]), ([], None, []))
+        self.assertEqual((body["symbols"], body["books"], body["tapes"], body["feeds"]), ([], {}, {}, {}))
+        body = self.client.get("/api/radar/state/?books=SiZ6@RTSX&tapes=SiZ6@RTSX|0&feeds=|").json()
+        self.assertEqual((body["books"], body["tapes"], body["feeds"]), ({"SiZ6@RTSX": None}, {"SiZ6@RTSX|0": []}, {"|": []}))
 
     def test_state_and_chart_from_flushed_radar(self):
         now = datetime.now(timezone.utc).replace(microsecond=0)
@@ -290,11 +306,20 @@ class RadarPageTests(TestCase):
         ])
         radar.on_book("SiZ6@RTSX", ladder(), now)
         radar.flush(now)
-        body = self.client.get("/api/radar/state/?min=3").json()
+        Anomaly.objects.create(symbol="SiZ6@RTSX", ts=now, kind="sweep", side=1, score=2, text="проход")
+        Anomaly.objects.create(symbol="CRZ6@RTSX", ts=now, kind="large", side=-1, score=2, text="крупная")
+        body = self.client.get(
+            "/api/radar/state/?books=SiZ6@RTSX,SiZ6@RTSX,CRZ6@RTSX&tapes=SiZ6@RTSX|3,SiZ6@RTSX|0&feeds=|,sweep|,|CRZ6@RTSX"
+        ).json()
         self.assertTrue(body["alive"])
         self.assertEqual({item["name"]: item["state"] for item in body["statuses"]}, {"finam": "off", "algopack": "no_key", "radar": "ok"})
-        self.assertEqual(body["symbol"], "SiZ6@RTSX")
-        self.assertEqual([row["s"] for row in body["tape"]], [5.0])
+        self.assertEqual(list(body["books"]), ["SiZ6@RTSX", "CRZ6@RTSX"])
+        self.assertEqual(body["books"]["SiZ6@RTSX"]["asks"][0][:2], [101.0, 10.0])
+        self.assertIsNone(body["books"]["CRZ6@RTSX"])
+        self.assertEqual([row["s"] for row in body["tapes"]["SiZ6@RTSX|3"]], [5.0])
+        self.assertEqual([row["s"] for row in body["tapes"]["SiZ6@RTSX|0"]], [2.0, 5.0])
+        self.assertEqual({key: [row["kind"] for row in rows] for key, rows in body["feeds"].items()},
+                         {"|": ["large", "sweep"], "sweep|": ["sweep"], "|CRZ6@RTSX": ["large"]})
         chart = self.client.get("/api/radar/chart/?symbol=SiZ6@RTSX").json()
         self.assertEqual([point["v"] for point in chart["delta"]], [5.0, 3.0])
         self.assertEqual([point["v"] for point in chart["oi"]], [10.0, 12.0])
@@ -305,3 +330,103 @@ class RadarPageTests(TestCase):
         Candle.objects.create(instrument=future, ts=datetime.now(timezone.utc) - timedelta(hours=1), open=1, high=1, low=1, close=11.5)
         rows = self.client.get("/api/radar/instruments/").json()["instruments"]
         self.assertEqual([(row["code"], row["close"]) for row in rows], [("CRZ2026", 11.5)])
+
+
+def rule(kind, scope="", enabled=True, **values):
+    return {"kind": kind, "scope": scope, "enabled": enabled, **values}
+
+
+class RulesTests(SimpleTestCase):
+    def test_narrower_scope_overrides_only_filled_fields(self):
+        rows = [
+            rule("sweep", threshold=98.0),
+            rule("sweep", "Si", levels=5),
+            rule("sweep", "SiZ6@RTSX", threshold=99.9),
+            rule("large", "SiZ6@RTSX", enabled=False),
+        ]
+        front = resolve("SiZ6@RTSX", rows)
+        self.assertEqual((front["sweep"]["threshold"], front["sweep"]["levels"], front["sweep"]["gap_ms"]), (99.9, 5, 100))
+        self.assertFalse(front["large"]["enabled"])
+        second = resolve("SiH7@RTSX", rows)
+        self.assertEqual((second["sweep"]["threshold"], second["sweep"]["levels"]), (98.0, 5))
+        self.assertTrue(second["large"]["enabled"])
+        # Корень Si не задевает S2.
+        self.assertEqual(resolve("S2Z6@RTSX", rows)["sweep"]["levels"], 3)
+
+    def test_sweep_levels_from_rule(self):
+        watch = SymbolWatch("SiZ6@RTSX", resolve("SiZ6@RTSX", [rule("sweep", levels=4)]), min_sizes=50)
+        warm(watch)
+        for price in (100.0, 100.5, 101.0):
+            watch.on_trade(trade(300, price, 2.0, 1))
+        found = watch.tick(T0 + timedelta(seconds=301))
+        # Три уровня при правиле «не меньше четырёх» — не проход, а крупная заявка.
+        self.assertEqual([item["kind"] for item in found], ["large"])
+
+    def run_minutes(self, watch):
+        found = []
+        for minute in range(40):
+            found += watch.on_trade(trade(minute * 60, 100.0, 9.0 + minute % 3, 1))
+        for minute in range(40, 45):
+            found += watch.on_trade(trade(minute * 60, 100.0, 13.0, 1))
+        found += watch.tick(T0 + timedelta(minutes=46))
+        return [item for item in found if item["kind"] == "volume"]
+
+    def test_volume_window_sums_minutes(self):
+        one = self.run_minutes(SymbolWatch("SiZ6@RTSX", min_sizes=50))
+        self.assertEqual(one, [])
+        rules = resolve("SiZ6@RTSX", [rule("volume", window_minutes=5, ratio=1.0)])
+        five = self.run_minutes(SymbolWatch("SiZ6@RTSX", rules, min_sizes=50))
+        self.assertTrue(five)
+        self.assertIn("за 5 мин", five[0]["text"])
+
+
+class RuleStorageTests(TestCase):
+    def test_migration_creates_rule_for_every_signal(self):
+        rows = SignalRule.objects.filter(scope="")
+        self.assertEqual(sorted(rows.values_list("kind", flat=True)), sorted(DEFAULTS))
+        self.assertEqual(rows.get(kind="wall").confirm_seconds, 30)
+
+    def test_radar_drops_disabled_signal_and_uses_rule_pause(self):
+        SignalRule.objects.filter(kind="sweep", scope="").update(enabled=False)
+        SignalRule.objects.filter(kind="volume", scope="").update(cooldown_seconds=0, window_minutes=1)
+        radar = Radar()
+        radar.watch([item("SiZ6@RTSX")])
+        base = {"symbol": "SiZ6@RTSX", "side": 1, "price": 1.0, "size": 1.0, "score": 9, "text": ""}
+        radar._found([
+            {**base, "ts": T0, "kind": "sweep"},
+            {**base, "ts": T0, "kind": "volume"},
+            {**base, "ts": T0 + timedelta(seconds=30), "kind": "volume"},
+            {**base, "ts": T0 + timedelta(seconds=70), "kind": "volume"},
+        ])
+        radar.flush(T0 + timedelta(seconds=71))
+        # Пауза 0, но окно 1 минута: второй всплеск через 30 с не пишется.
+        self.assertEqual(list(Anomaly.objects.order_by("ts").values_list("kind", flat=True)), ["volume", "volume"])
+
+    def test_rule_change_reaches_detectors(self):
+        radar = Radar()
+        radar.watch([item("SiZ6@RTSX")])
+        self.assertEqual(radar.watches["SiZ6@RTSX"].rules["wall"]["ratio"], 5.0)
+        SignalRule.objects.create(kind="wall", scope="Si", ratio=8.0)
+        radar.reload_rules()
+        self.assertEqual(radar.watches["SiZ6@RTSX"].rules["wall"]["ratio"], 8.0)
+
+
+class RuleAdminTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+        user = User.objects.create_superuser("admin", "", "pass")
+        self.client.force_login(user)
+
+    def test_list_and_change_form_show_signal_fields(self):
+        body = self.client.get("/admin/radar/signalrule/").content.decode()
+        self.assertIn("все инструменты", body)
+        volume = SignalRule.objects.get(kind="volume", scope="")
+        body = self.client.get(f"/admin/radar/signalrule/{volume.pk}/change/").content.decode()
+        self.assertIn("Окно, минут", body)
+        self.assertNotIn("Простоять, с", body)
+
+    def test_add_redirects_to_parameters(self):
+        response = self.client.post("/admin/radar/signalrule/add/", {"kind": "sweep", "scope": "Si", "enabled": "on", "note": ""})
+        created = SignalRule.objects.get(kind="sweep", scope="Si")
+        self.assertRedirects(response, f"/admin/radar/signalrule/{created.pk}/change/")
+        self.assertIsNone(created.threshold)

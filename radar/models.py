@@ -32,7 +32,11 @@ class SourceStatus(models.Model):
 
 
 class WatchItem(models.Model):
-    """Инструмент сверх ног спредов: ноги радар подписывает сам и сам переводит после склейки."""
+    """Инструмент сверх ног спредов или выключенная нога.
+
+    Ноги спредов радар подписывает сам и сам переводит после склейки. Строка
+    без галочки «следить» убирает ногу: символ (SiH7@RTSX) или корень (Si — все Si).
+    """
 
     class Kind(models.TextChoices):
         QUARTER = "quarter", "квартальный фьючерс, корень"
@@ -44,14 +48,10 @@ class WatchItem(models.Model):
         "код", max_length=32,
         help_text="Корень квартала Мосбиржи (RI, MX) — фронт выбирается сам. Или символ Finam: IMOEXF@RTSX.",
     )
-    active = models.BooleanField("следить", default=True)
-    large_pct = models.FloatField(
-        "процентиль крупной сделки", default=99.5,
-        help_text="Сделка крупнее этого процентиля размеров инструмента — крупный принт.",
-    )
-    wall_ratio = models.FloatField(
-        "стена, раз к медиане уровня", default=5.0,
-        help_text="Стена: уровень во столько раз больше медианного и выше 99,5-го процентиля уровней инструмента.",
+    active = models.BooleanField(
+        "следить", default=True,
+        help_text="Без галочки радар не слушает этот инструмент, даже если он нога спреда. "
+                  "Корень квартала (Si) выключает все его контракты.",
     )
     note = models.CharField("заметка", max_length=255, blank=True)
 
@@ -62,6 +62,47 @@ class WatchItem(models.Model):
 
     def __str__(self):
         return self.title or self.code
+
+
+class SignalRule(models.Model):
+    """Пороги, окно и пауза одного вида сигнала. См. radar/rules.py.
+
+    Пустой охват — для всех инструментов. Корень (Si) или символ (SiZ6@RTSX) —
+    переопределение: пустые поля берутся из общего правила.
+    """
+
+    class Kind(models.TextChoices):
+        LARGE = "large", "крупная сделка"
+        SWEEP = "sweep", "проход по стакану"
+        WALL = "wall", "стена"
+        PULLED = "pulled", "стена снята"
+        EATEN = "eaten", "стена съедена"
+        VOLUME = "volume", "всплеск объёма"
+        OI = "oi", "скачок ОИ"
+
+    kind = models.CharField("сигнал", max_length=8, choices=Kind.choices)
+    scope = models.CharField(
+        "для кого", max_length=32, blank=True,
+        help_text="Пусто — для всех инструментов. Корень квартала (Si) — все его контракты. Символ Finam (SiZ6@RTSX) — один.",
+    )
+    enabled = models.BooleanField("включён", default=True)
+    threshold = models.FloatField("порог", null=True, blank=True)
+    ratio = models.FloatField("кратность", null=True, blank=True)
+    levels = models.PositiveSmallIntegerField("уровней", null=True, blank=True)
+    gap_ms = models.PositiveIntegerField("промежуток, мс", null=True, blank=True)
+    confirm_seconds = models.PositiveIntegerField("простоять, с", null=True, blank=True)
+    window_minutes = models.PositiveSmallIntegerField("окно, минут", null=True, blank=True)
+    cooldown_seconds = models.PositiveIntegerField("пауза, с", null=True, blank=True)
+    note = models.CharField("заметка", max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = "правило сигнала"
+        verbose_name_plural = "правила сигналов"
+        ordering = ["kind", "scope"]
+        constraints = [models.UniqueConstraint(fields=["kind", "scope"], name="uniq_signal_rule")]
+
+    def __str__(self):
+        return f"{self.get_kind_display()}: {self.scope or 'все'}"
 
 
 class Trade(models.Model):

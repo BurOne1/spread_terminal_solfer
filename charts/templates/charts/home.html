@@ -10,10 +10,10 @@
   <script src="https://unpkg.com/lightweight-charts-drawing@0.6.2/dist/lightweight-charts-drawing.umd.cjs"></script>
   <style>
     :root[data-theme="dark"] {
-      --bg: #131722; --panel: #1e222d; --raised: #2a2e39; --hover: #2a2e39; --line: #2a2e39; --line-strong: #363a45; --pane-sep: #5d606b;
-      --ink: #d1d4dc; --muted: #787b86; --accent: #2962ff; --accent-soft: rgba(41, 98, 255, .18);
-      --green: #089981; --red: #f23645; --blue: #2962ff; --orange: #ff9800; --violet: #9c6ade; --take: #4d8dff;
-      --grid: rgba(42, 46, 57, .6); --cross: #758696; --shadow: 0 8px 24px rgba(0, 0, 0, .45);
+      --bg: #2b2b2b; --panel: #313335; --raised: #3c3f41; --hover: #3c3f41; --line: #3c3f41;
+      --line-strong: #4e5254; --pane-sep: #5e6366; --ink: #bbbbbb; --muted: #808080; --accent: #4a88c7;
+      --accent-soft: rgba(74, 136, 199, .22); --green: #59a869; --red: #c75450; --blue: #6897bb; --orange: #cc7832;
+      --violet: #9876aa; --take: #6897bb; --grid: rgba(255, 255, 255, .045); --cross: #6e7275; --shadow: 0 8px 24px rgba(0, 0, 0, .5);
     }
     :root[data-theme="light"] {
       --bg: #ffffff; --panel: #ffffff; --raised: #f0f3fa; --hover: #f0f3fa; --line: #e0e3eb; --line-strong: #d1d4dc; --pane-sep: #9598a1;
@@ -120,13 +120,18 @@
     .wl-head { height: 28px; flex: none; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
     .wl-head span:not(:first-child), .wl-row .num { text-align: right; }
     .wl-list { flex: 1; min-height: 0; overflow-y: auto; }
-    .wl-row { width: 100%; min-height: 44px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+    .wl-row { position: relative; width: 100%; min-height: 34px; padding-top: 3px; padding-bottom: 3px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; line-height: 1.25; }
+    .wl-row .grip { position: absolute; left: 2px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 10px; letter-spacing: -1px; opacity: 0; cursor: grab; user-select: none; }
+    .wl-row:hover .grip { opacity: .8; }
+    .wl-row.dragging { opacity: .4; }
+    .wl-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+    .wl-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
     .wl-row:hover { background: var(--hover); }
     .wl-group { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; padding: 6px 12px; background: var(--raised); color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
     .wl-row.on { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
     .wl-name { min-width: 0; }
     .wl-name b { display: block; font-weight: 600; }
-    .wl-name span { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .wl-name span { display: block; color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .wl-row .num { font-variant-numeric: tabular-nums; font-size: 12px; }
     .wl-row .up { color: var(--green); }
     .wl-row .down { color: var(--red); }
@@ -999,10 +1004,20 @@
     }
     // Две группы: front — пары на ближнем квартале, second — календари и треугольники на секондах.
     const WATCH_GROUPS = [["front", "Front"], ["second", "Second"]];
+    // Порядок строк задаётся перетаскиванием внутри группы и хранится в браузере.
+    // Новая пара, которой нет в сохранённом порядке, встаёт в конец группы.
+    const WATCH_ORDER = "spread-watch-order";
+    let dragCode = null;
+    function ordered(rows) {
+      const order = readStore(WATCH_ORDER, []);
+      const place = (code) => { const index = order.indexOf(code); return index < 0 ? order.length : index; };
+      return rows.map((item, index) => [item, index]).sort((a, b) => place(a[0].code) - place(b[0].code) || a[1] - b[1]).map(([item]) => item);
+    }
     function renderWatchlist() {
+      if (dragCode) return;
       const nodes = [];
       WATCH_GROUPS.forEach(([key, title]) => {
-        const rows = watchRows.filter((item) => (item.group || "front") === key);
+        const rows = ordered(watchRows.filter((item) => (item.group || "front") === key));
         if (!rows.length) return;
         const head = document.createElement("div");
         head.className = "wl-group";
@@ -1017,6 +1032,12 @@
       button.type = "button";
       button.className = "wl-row" + (item.code === current ? " on" : "");
       button.dataset.code = item.code;
+      button.dataset.group = item.group || "front";
+      button.draggable = true;
+      const grip = document.createElement("span");
+      grip.className = "grip";
+      grip.textContent = "⋮⋮";
+      grip.title = "Перетащите, чтобы поменять порядок";
       button.title = item.title + (item.t ? ", последний бар " + item.t.slice(0, 16).replace("T", " ") + " UTC" : "");
       const name = document.createElement("span");
       name.className = "wl-name";
@@ -1027,6 +1048,7 @@
       name.append(code, detail);
       const change = item.change;
       button.append(
+        grip,
         name,
         cell(fmt(item.rate), item.rate === null || item.rate === undefined ? "dim" : ""),
         cell(fmt(item.raw), "dim"),
@@ -1034,7 +1056,49 @@
       );
       return button;
     }
-    document.getElementById("wl-list").addEventListener("click", (event) => {
+    const watchList = document.getElementById("wl-list");
+    function clearDrop() {
+      watchList.querySelectorAll(".drop-before, .drop-after").forEach((node) => node.classList.remove("drop-before", "drop-after"));
+    }
+    function dropTarget(event) {
+      const row = event.target.closest(".wl-row");
+      const dragged = dragCode && watchList.querySelector(`.wl-row[data-code="${CSS.escape(dragCode)}"]`);
+      if (!row || !dragged || row === dragged || row.dataset.group !== dragged.dataset.group) return null;
+      const box = row.getBoundingClientRect();
+      return { row, after: event.clientY > box.top + box.height / 2 };
+    }
+    watchList.addEventListener("dragstart", (event) => {
+      const row = event.target.closest(".wl-row");
+      if (!row) return;
+      dragCode = row.dataset.code;
+      row.classList.add("dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", dragCode);
+    });
+    watchList.addEventListener("dragover", (event) => {
+      const target = dropTarget(event);
+      clearDrop();
+      if (!target) return;
+      event.preventDefault();
+      target.row.classList.add(target.after ? "drop-after" : "drop-before");
+    });
+    watchList.addEventListener("drop", (event) => {
+      const target = dropTarget(event);
+      clearDrop();
+      if (!target) return;
+      event.preventDefault();
+      const group = target.row.dataset.group;
+      const codes = ordered(watchRows.filter((item) => (item.group || "front") === group)).map((item) => item.code).filter((code) => code !== dragCode);
+      codes.splice(codes.indexOf(target.row.dataset.code) + (target.after ? 1 : 0), 0, dragCode);
+      const others = readStore(WATCH_ORDER, []).filter((code) => !codes.includes(code));
+      writeStore(WATCH_ORDER, [...codes, ...others]);
+    });
+    watchList.addEventListener("dragend", () => {
+      dragCode = null;
+      clearDrop();
+      renderWatchlist();
+    });
+    watchList.addEventListener("click", (event) => {
       const row = event.target.closest(".wl-row");
       if (!row || !pairSelect || row.dataset.code === pairSelect.value) return;
       const item = watchRows.find((entry) => entry.code === row.dataset.code);

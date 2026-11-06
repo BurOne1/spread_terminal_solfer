@@ -6,30 +6,29 @@
   <title>Радар</title>
   <script>try { document.documentElement.dataset.theme = localStorage.getItem("spread-theme") || "dark"; } catch (error) { /* хранилище недоступно */ }</script>
   <script src="https://unpkg.com/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/gridstack@10.3.1/dist/gridstack-all.js"></script>
   <style>
     :root[data-theme="dark"] {
-      --bg: #131722; --panel: #1e222d; --raised: #2a2e39; --hover: #2a2e39; --line: #2a2e39; --line-strong: #363a45; --pane-sep: #5d606b;
-      --ink: #d1d4dc; --muted: #787b86; --accent: #2962ff; --accent-soft: rgba(41, 98, 255, .18);
-      --green: #089981; --red: #f23645; --orange: #ff9800; --violet: #9c6ade; --blue: #2962ff;
-      --green-soft: rgba(8, 153, 129, .22); --red-soft: rgba(242, 54, 69, .22); --wall: rgba(255, 152, 0, .35);
-      --grid: rgba(42, 46, 57, .6); --cross: #758696;
+      --bg: #2b2b2b; --panel: #313335; --raised: #3c3f41; --hover: #3c3f41; --line: #3c3f41;
+      --line-strong: #4e5254; --pane-sep: #5e6366; --ink: #bbbbbb; --muted: #808080; --accent: #4a88c7;
+      --accent-soft: rgba(74, 136, 199, .22); --green: #59a869; --red: #c75450; --orange: #cc7832; --violet: #9876aa;
+      --blue: #6897bb; --green-soft: rgba(89, 168, 105, .2); --red-soft: rgba(199, 84, 80, .2); --wall: rgba(204, 120, 50, .32); --grid: rgba(255, 255, 255, .045);
+      --cross: #6e7275; --shadow: 0 8px 24px rgba(0, 0, 0, .5);
     }
     :root[data-theme="light"] {
-      --bg: #ffffff; --panel: #ffffff; --raised: #f0f3fa; --hover: #f0f3fa; --line: #e0e3eb; --line-strong: #d1d4dc; --pane-sep: #9598a1;
+      --bg: #f0f3fa; --panel: #ffffff; --raised: #f0f3fa; --hover: #f0f3fa; --line: #e0e3eb; --line-strong: #d1d4dc; --pane-sep: #9598a1;
       --ink: #131722; --muted: #787b86; --accent: #2962ff; --accent-soft: rgba(41, 98, 255, .1);
       --green: #089981; --red: #f23645; --orange: #f57c00; --violet: #7e57c2; --blue: #2962ff;
       --green-soft: rgba(8, 153, 129, .14); --red-soft: rgba(242, 54, 69, .14); --wall: rgba(245, 124, 0, .28);
-      --grid: #f0f3fa; --cross: #9598a1;
+      --grid: #f0f3fa; --cross: #9598a1; --shadow: 0 8px 24px rgba(19, 23, 34, .14);
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body {
       margin: 0; overflow: hidden; background: var(--bg); color: var(--ink);
       font: 13px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif;
-      display: grid; height: 100vh; height: 100dvh;
-      grid-template-rows: 46px minmax(0, 1fr) 220px 28px;
-      grid-template-columns: 280px minmax(0, 1fr) 300px;
-      grid-template-areas: "top top top" "list chart book" "list feed book" "status status status";
+      display: grid; height: 100vh; height: 100dvh; grid-template-rows: 46px minmax(0, 1fr) 28px;
     }
     button, select, input { font: inherit; color: inherit; }
     .num { font-variant-numeric: tabular-nums; }
@@ -38,10 +37,10 @@
     .dim { color: var(--muted); }
 
     /* шапка */
-    .topbar { grid-area: top; display: flex; align-items: center; gap: 4px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--panel); min-width: 0; }
-    .title { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 0 10px 0 4px; margin-right: 4px; border-right: 1px solid var(--line); }
+    .topbar { display: flex; align-items: center; gap: 4px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--panel); min-width: 0; position: relative; z-index: 20; }
+    .title { display: flex; flex-direction: column; justify-content: center; flex: none; padding: 0 10px 0 4px; margin-right: 4px; border-right: 1px solid var(--line); }
     .title b { font-size: 14px; font-weight: 600; white-space: nowrap; }
-    .title span { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .title span { color: var(--muted); font-size: 11px; white-space: nowrap; }
     .tb { height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); cursor: pointer; white-space: nowrap; text-decoration: none; }
     .tb:hover { background: var(--hover); }
     .tb.on { color: var(--accent); }
@@ -54,45 +53,62 @@
     .chip.wait i { background: var(--orange); }
     .chip.no_key i, .chip.error i { background: var(--red); }
     .chip.off { color: var(--muted); }
+    .menu { position: relative; }
+    .menu-list { display: none; position: absolute; top: 36px; right: 0; min-width: 210px; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); box-shadow: var(--shadow); }
+    .menu.open .menu-list { display: block; }
+    .menu-list button { display: block; width: 100%; padding: 7px 10px; border: 0; border-radius: 4px; background: transparent; text-align: left; cursor: pointer; }
+    .menu-list button:hover { background: var(--hover); }
+    .menu-list small { display: block; color: var(--muted); font-size: 11px; }
+    .menu-list hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+
+    /* рабочая область и виджеты */
+    .workspace { overflow-y: auto; overflow-x: hidden; min-height: 0; padding: 3px; }
+    .grid-stack-item-content.widget { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
+    .w-head { display: flex; align-items: center; gap: 6px; height: 30px; flex: none; padding: 0 4px 0 8px; border-bottom: 1px solid var(--line); font-size: 12px; }
+    .w-drag { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 100%; font-weight: 600; white-space: nowrap; overflow: hidden; }
+    .editing .w-drag { cursor: move; }
+    .w-btn.close, .w-btn.pin { display: none; }
+    .editing .w-btn.close, .w-btn.pin.shown { display: grid; }
+    .editing .grid-stack-item-content.widget { outline: 1px dashed var(--accent); outline-offset: -1px; }
+    .editing .workspace { background-image: radial-gradient(var(--line-strong) 1px, transparent 1px); background-size: 16px 16px; }
+    .w-drag span { color: var(--muted); font-weight: 400; overflow: hidden; text-overflow: ellipsis; }
+    .w-head select, .w-head input { height: 22px; max-width: 150px; background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 12px; }
+    .w-head input[type="number"] { width: 64px; }
+    .w-head label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+    .w-btn { width: 22px; height: 22px; display: grid; place-items: center; flex: none; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; padding: 0; }
+    .w-btn:hover { background: var(--hover); color: var(--ink); }
+    .w-btn.close:hover { color: var(--red); }
+    .w-body { flex: 1; min-height: 0; position: relative; overflow-y: auto; }
+    .grid-stack > .grid-stack-item > .ui-resizable-se { opacity: .5; }
+    .grid-stack-placeholder > .placeholder-content { border: 1px dashed var(--accent); background: var(--accent-soft); border-radius: 4px; }
 
     /* список инструментов */
-    .list { grid-area: list; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--panel); }
-    .list-head, .row { display: grid; grid-template-columns: minmax(0, 1fr) 66px 52px 34px; gap: 6px; align-items: center; padding: 0 10px; }
-    .list-head { height: 28px; flex: none; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
+    .list-head, .row { display: grid; grid-template-columns: minmax(0, 1fr) 70px 54px 34px; gap: 6px; align-items: center; padding: 0 8px; }
+    .list-head { height: 24px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); z-index: 2; }
     .list-head span:not(:first-child), .row .num { text-align: right; }
-    .list-body { flex: 1; min-height: 0; overflow-y: auto; }
-    .group { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; padding: 6px 10px; background: var(--raised); color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
-    .row { width: 100%; min-height: 40px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+    .group { position: sticky; top: 24px; z-index: 1; display: flex; justify-content: space-between; padding: 4px 8px; background: var(--raised); color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
+    .row { width: 100%; min-height: 34px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; line-height: 1.25; }
     .row:hover { background: var(--hover); }
     .row.on { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
     .row .name { min-width: 0; }
     .row .name b { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .row .name span { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row .name span { display: block; color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .row .num { font-size: 12px; }
     .row .hot { color: var(--orange); font-weight: 600; }
     .badge { display: inline-block; min-width: 20px; padding: 0 5px; border-radius: 9px; background: var(--raised); color: var(--muted); font-size: 11px; text-align: center; }
     .badge.lit { background: var(--orange); color: #111; font-weight: 600; }
-    .row.idle { min-height: 34px; }
+    .row.idle { min-height: 30px; }
+    .empty { padding: 12px 10px; color: var(--muted); font-size: 12px; }
+    .empty a { color: var(--accent); }
 
     /* график */
-    .chart-wrap { grid-area: chart; position: relative; min-width: 0; min-height: 0; background: var(--bg); }
-    #chart { position: absolute; inset: 0; }
-    .legend { position: absolute; left: 8px; top: 6px; z-index: 3; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; pointer-events: none; font-size: 12px; color: var(--muted); }
+    .chart-box { position: absolute; inset: 0; }
+    .legend { position: absolute; left: 8px; top: 4px; z-index: 3; display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; pointer-events: none; font-size: 12px; color: var(--muted); max-width: calc(100% - 80px); }
     .legend b { color: var(--ink); font-size: 13px; }
     .legend .v { color: var(--ink); }
-    .overlay { position: absolute; inset: 0; z-index: 4; display: none; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 88%, transparent); text-align: center; }
-    .overlay.show { display: grid; }
-    .overlay div { max-width: 460px; }
-    .overlay a { color: var(--accent); }
 
     /* стакан и лента */
-    .book { grid-area: book; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--panel); }
-    .pane-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 32px; flex: none; padding: 0 10px; border-bottom: 1px solid var(--line); font-weight: 600; }
-    .pane-head span { color: var(--muted); font-weight: 400; font-size: 11px; }
-    .pane-head input { width: 70px; background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font-size: 12px; }
-    .dom { flex: 1 1 55%; min-height: 0; overflow-y: auto; font-size: 12px; }
-    .tape { flex: 1 1 45%; min-height: 0; overflow-y: auto; font-size: 12px; border-top: 1px solid var(--line); }
-    .lvl, .tr { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 1px 10px; }
+    .lvl, .tr { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 1px 8px; font-size: 12px; }
     .lvl .bar { position: absolute; top: 1px; bottom: 1px; right: 0; z-index: 0; }
     .lvl.ask .bar { background: var(--red-soft); }
     .lvl.bid .bar { background: var(--green-soft); }
@@ -102,21 +118,16 @@
     .lvl.ask span:first-child { color: var(--red); }
     .lvl.bid span:first-child { color: var(--green); }
     .lvl.wall span:last-child { font-weight: 700; }
-    .mid { padding: 3px 10px; color: var(--muted); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: center; font-size: 11px; }
-    .tr { grid-template-columns: 70px 1fr 1fr; }
+    .mid { padding: 2px 8px; color: var(--muted); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: center; font-size: 11px; }
+    .tr { grid-template-columns: 64px 1fr 1fr; }
     .tr.buy span:nth-child(2) { color: var(--green); }
     .tr.sell span:nth-child(2) { color: var(--red); }
     .tr.big { font-weight: 700; background: var(--accent-soft); }
-    .empty { padding: 14px 10px; color: var(--muted); font-size: 12px; }
 
     /* лента аномалий */
-    .feed { grid-area: feed; display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--pane-sep); background: var(--panel); }
-    .feed .pane-head label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; font-size: 12px; color: var(--muted); cursor: pointer; }
-    .feed select { background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font-size: 12px; }
-    .feed-body { flex: 1; min-height: 0; overflow-y: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 400; font-size: 11px; text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
-    td { padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 400; font-size: 11px; text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+    td { padding: 3px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
     td.text { color: var(--muted); max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; }
     tbody tr { cursor: pointer; }
     tbody tr:hover { background: var(--hover); }
@@ -129,100 +140,94 @@
     .kind.oi { color: var(--violet); }
 
     /* строка состояния */
-    .statusbar { grid-area: status; display: flex; align-items: center; gap: 14px; padding: 0 10px; border-top: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .statusbar { display: flex; align-items: center; gap: 14px; padding: 0 10px; border-top: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; }
     .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 6px; }
     .live .pulse { background: var(--green); box-shadow: 0 0 0 3px rgba(8, 153, 129, .2); }
-
-    @media (max-width: 1000px) {
-      body { overflow: auto; height: auto; grid-template-columns: 1fr; grid-template-rows: 46px 260px 60vh 300px 320px 28px; grid-template-areas: "top" "list" "chart" "book" "feed" "status"; }
-      .topbar { overflow-x: auto; }
-    }
+    @media (max-width: 900px) { .topbar { overflow-x: auto; } .title span { display: none; } }
   </style>
 </head>
 <body>
   <header class="topbar">
     <div class="title">
-      <b id="title">Радар</b>
-      <span id="subtitle">крупные участники, стены, всплески</span>
+      <b>Радар</b>
+      <span>крупные участники, стены, всплески</span>
     </div>
     <a class="tb" href="/" title="Графики спредов">Спреды</a>
     <a class="tb on" href="/radar/">Радар</a>
     <div class="sep"></div>
     <div id="chips" style="display:flex; gap:6px"></div>
     <div class="grow"></div>
+    <button type="button" class="tb" id="edit" title="Двигать, растягивать и убирать виджеты">Редактировать</button>
+    <div class="menu" id="add-menu">
+      <button type="button" class="tb" id="add-button" title="Добавить виджет">+ Виджет</button>
+      <div class="menu-list" id="add-list">
+        <button type="button" data-add="list">Список инструментов<small>клик переключает свою цветовую группу</small></button>
+        <button type="button" data-add="chart">График<small>минуты, дельта, ОИ, маркеры аномалий</small></button>
+        <button type="button" data-add="book">Стакан<small>20 уровней, стены подсвечены</small></button>
+        <button type="button" data-add="tape">Лента сделок<small>с фильтром по размеру</small></button>
+        <button type="button" data-add="feed">Аномалии<small>все или по типу, клик — на график</small></button>
+        <hr>
+        <button type="button" id="reset-layout">Вернуть раскладку по умолчанию</button>
+      </div>
+    </div>
     <a class="tb" href="/admin/radar/watchitem/" title="Какие инструменты слушает радар и пороги детекторов">Настройки</a>
     <button type="button" class="tb" id="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 18 18"><path d="M15 10.5A6.5 6.5 0 0 1 7.5 3a6.5 6.5 0 1 0 7.5 7.5Z"/></svg></button>
   </header>
 
-  <aside class="list">
-    <div class="list-head"><span>Инструмент</span><span>Цена</span><span title="Изменение от открытия дня, МСК">Δ день</span><span title="Аномалий за час">⚑</span></div>
-    <div class="list-body" id="list"></div>
-  </aside>
-
-  <main class="chart-wrap">
-    <div id="chart"></div>
-    <div class="legend" id="legend"></div>
-    <div class="overlay" id="overlay"><div id="overlay-text"></div></div>
+  <main class="workspace" id="workspace">
+    <div class="grid-stack" id="grid"></div>
   </main>
-
-  <aside class="book">
-    <div class="pane-head">Стакан <span id="book-age"></span></div>
-    <div class="dom" id="dom"></div>
-    <div class="pane-head">Лента <label class="dim" style="font-weight:400;font-size:11px">от <input id="min-size" type="number" min="0" step="1" placeholder="0"> лотов</label></div>
-    <div class="tape" id="tape"></div>
-  </aside>
-
-  <section class="feed">
-    <div class="pane-head">
-      Аномалии за сутки
-      <span style="display:flex; gap:12px; align-items:center">
-        <select id="kind-filter" title="Тип аномалии">
-          <option value="">все типы</option>
-          <option value="large">крупная сделка</option>
-          <option value="sweep">проход по стакану</option>
-          <option value="wall">стена</option>
-          <option value="pulled">стена снята</option>
-          <option value="eaten">стена съедена</option>
-          <option value="volume">всплеск объёма</option>
-          <option value="oi">скачок ОИ</option>
-        </select>
-        <label><input type="checkbox" id="only-mine"> только выбранный</label>
-      </span>
-    </div>
-    <div class="feed-body">
-      <table>
-        <thead><tr><th>Время, МСК</th><th>Инструмент</th><th>Тип</th><th>Цена</th><th>Объём</th><th title="Во сколько раз выше порога">Сила</th><th>Что видно</th></tr></thead>
-        <tbody id="feed"></tbody>
-      </table>
-      <div class="empty" id="feed-empty"></div>
-    </div>
-  </section>
 
   <footer class="statusbar" id="statusbar">
     <span id="live"><span class="pulse"></span><span id="live-text">нет связи</span></span>
     <span id="counts"></span>
     <span class="grow"></span>
+    <span class="dim">Список меняет инструмент во всех виджетах, выбор в заголовке — только в этом. Двигать и растягивать — после «Редактировать».</span>
     <span id="clock"></span>
   </footer>
 
   <script>
     const MSK = 3 * 3600;
-    const GROUPS = [["legs", "Ноги спредов"], ["extra", "Добавленные"]];
-    const store = {
-      get(key, fallback) { try { const value = localStorage.getItem(key); return value === null ? fallback : value; } catch (error) { return fallback; } },
-      set(key, value) { try { localStorage.setItem(key, value); } catch (error) { /* хранилище недоступно */ } },
+    const LAYOUT_KEY = "radar-layout-v2";
+    const ROWS = 14;
+    const TYPES = {
+      list: { title: "Инструменты", w: 3, h: 14, linked: false },
+      chart: { title: "График", w: 6, h: 10, linked: true },
+      book: { title: "Стакан", w: 3, h: 7, linked: true },
+      tape: { title: "Лента", w: 3, h: 7, linked: true },
+      feed: { title: "Аномалии", w: 6, h: 4, linked: false },
     };
-    let symbol = "{{ symbol|escapejs }}" || store.get("radar-symbol", "");
-    let symbols = [];
-    let others = [];
-    let chartSymbol = "";
-    let focusTime = null;
+    const KINDS = [["", "все типы"], ["large", "крупная сделка"], ["sweep", "проход по стакану"], ["wall", "стена"],
+      ["pulled", "стена снята"], ["eaten", "стена съедена"], ["volume", "всплеск объёма"], ["oi", "скачок ОИ"]];
+    // symbol — общий инструмент: его задают список и клик по аномалии, он меняется на всех
+    // виджетах. Инструмент, выбранный в заголовке виджета, закреплён только за этим виджетом.
+    const DEFAULT_LAYOUT = {
+      symbol: "",
+      widgets: [
+        { type: "list", x: 0, y: 0, w: 3, h: 14 },
+        { type: "chart", x: 3, y: 0, w: 6, h: 10 },
+        { type: "book", x: 9, y: 0, w: 3, h: 7 },
+        { type: "tape", x: 9, y: 7, w: 3, h: 7, opts: { min: 0 } },
+        { type: "feed", x: 3, y: 10, w: 6, h: 4, opts: { kind: "", only: false } },
+      ],
+    };
+
+    const store = {
+      get(key, fallback) { try { const value = localStorage.getItem(key); return value === null ? fallback : JSON.parse(value); } catch (error) { return fallback; } },
+      set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (error) { /* хранилище недоступно */ } },
+    };
     const $ = (id) => document.getElementById(id);
     const esc = (text) => String(text ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
     const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     const sec = (iso) => Math.floor(Date.parse(iso) / 1000) + MSK;
     const clock = (iso) => new Date(Date.parse(iso) + MSK * 1000).toISOString().slice(11, 19);
     const day = (iso) => new Date(Date.parse(iso) + MSK * 1000).toISOString().slice(5, 10).split("-").reverse().join(".");
+    function num(value, digits) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+      const n = Number(value);
+      const d = digits ?? (Math.abs(n) >= 1000 ? 0 : Math.abs(n) >= 10 ? 2 : 4);
+      return n.toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: d });
+    }
     // Цена — с теми знаками, что прислала биржа: шаг GD 0,1, CR 0,001.
     function decimals(value) {
       const text = String(Number(value));
@@ -236,192 +241,328 @@
       const d = digits ?? decimals(value);
       return Number(value).toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
     }
-    function num(value, digits) {
-      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
-      const n = Number(value);
-      const d = digits ?? (Math.abs(n) >= 1000 ? 0 : Math.abs(n) >= 10 ? 2 : 4);
-      return n.toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: d });
+
+    /* состояние страницы */
+    // Раскладка прежней версии с цветовыми группами: позиции сохраняются, инструмент — первой группы.
+    function oldLayout() {
+      const old = store.get("radar-layout-v1", null);
+      if (!old || !Array.isArray(old.widgets)) return null;
+      return { symbol: (old.links || {})[1] || "", widgets: old.widgets.map(({ link, ...rest }) => rest) };
     }
+    let layout = store.get(LAYOUT_KEY, null) || oldLayout() || JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+    const widgets = new Map();
+    let symbols = [];
+    let others = [];
+    let lastState = null;
+    let counter = 0;
+    const newId = () => "w" + Date.now().toString(36) + (counter++).toString(36);
 
-    /* график: свечи, дельта, ОИ — три панели одного графика */
-    const chart = LightweightCharts.createChart($("chart"), {
-      autoSize: true,
-      timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 6 },
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    });
-    const candles = chart.addSeries(LightweightCharts.CandlestickSeries, { priceLineVisible: true }, 0);
-    const delta = chart.addSeries(LightweightCharts.LineSeries, { lineWidth: 2, priceLineVisible: false, lastValueVisible: true }, 1);
-    const interest = chart.addSeries(LightweightCharts.LineSeries, { lineWidth: 2, priceLineVisible: false, lastValueVisible: true }, 2);
-    const markers = LightweightCharts.createSeriesMarkers(candles, []);
-    chart.panes().forEach((pane, index) => pane.setStretchFactor(index === 0 ? 3 : 1));
-
-    function paintTheme() {
-      chart.applyOptions({
-        layout: { background: { color: css("--bg") }, textColor: css("--muted"), panes: { separatorColor: css("--pane-sep"), separatorHoverColor: css("--accent") } },
-        grid: { vertLines: { color: css("--grid") }, horzLines: { color: css("--grid") } },
-        rightPriceScale: { borderColor: css("--line") },
-        timeScale: { borderColor: css("--line") },
-        crosshair: { vertLine: { color: css("--cross") }, horzLine: { color: css("--cross") } },
+    function globalSymbol() {
+      return layout.symbol || (symbols[0] && symbols[0].symbol) || "";
+    }
+    function symbolOf(widget) {
+      return widget.symbol || globalSymbol();
+    }
+    function titleOf(symbol) {
+      const item = symbols.find((row) => row.symbol === symbol);
+      return item ? item.title : symbol;
+    }
+    function save() {
+      const items = grid.save(false);
+      layout.widgets = items.map((node) => {
+        const widget = widgets.get(node.id);
+        return { id: node.id, type: widget.type, symbol: widget.symbol || "", x: node.x, y: node.y, w: node.w, h: node.h, opts: widget.opts };
       });
-      const up = css("--green"), down = css("--red");
-      candles.applyOptions({ upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down });
-      delta.applyOptions({ color: css("--blue") });
-      interest.applyOptions({ color: css("--violet") });
+      store.set(LAYOUT_KEY, layout);
     }
-    paintTheme();
-    $("theme").addEventListener("click", () => {
-      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-      document.documentElement.dataset.theme = next;
-      store.set("spread-theme", next);
-      paintTheme();
-      loadChart(true);
-    });
+    // Выбор в списке или в ленте аномалий: инструмент меняется на всех виджетах,
+    // закреплённые за своим инструментом тоже возвращаются к общему.
+    function setGlobal(symbol, at) {
+      layout.symbol = symbol;
+      for (const widget of widgets.values()) {
+        widget.symbol = "";
+        if (widget.type === "chart" && at !== undefined) widget.focus = at;
+        widget.sync();
+      }
+      save();
+      refresh();
+    }
+    // Выбор в заголовке виджета: только этот виджет.
+    function setOwn(widget, symbol) {
+      widget.symbol = symbol === globalSymbol() ? "" : symbol;
+      widget.sync();
+      save();
+      refresh();
+    }
+
+    /* сетка */
+    const workspace = $("workspace");
+    const cellHeight = () => Math.max(26, Math.floor((workspace.clientHeight - 6) / ROWS) - 1);
+    const grid = GridStack.init({
+      column: 12, cellHeight: cellHeight(), margin: 3, float: false, animate: false, staticGrid: true,
+      draggable: { handle: ".w-drag" },
+      resizable: { handles: "e, se, s, sw, w" },
+      columnOpts: { breakpointForWindow: true, breakpoints: [{ w: 900, c: 1 }] },
+    }, "#grid");
+    grid.on("change", save);
+    grid.on("removed", save);
+    addEventListener("resize", () => grid.cellHeight(cellHeight()));
+    // Двигать, растягивать и убирать виджеты можно только в режиме правки:
+    // иначе перетаскивание мешает графикам, прокрутке и ползункам.
+    let editing = false;
+    function setEditing(on) {
+      editing = on;
+      grid.setStatic(!on);
+      document.body.classList.toggle("editing", on);
+      $("edit").classList.toggle("on", on);
+      $("edit").textContent = on ? "Готово" : "Редактировать";
+    }
+
+    function head(widget) {
+      const type = TYPES[widget.type];
+      const unpin = type.linked
+        ? `<button type="button" class="w-btn pin" data-act="unpin" title="Свой инструмент виджета. Клик — вернуть к инструменту из списка">📌</button>`
+        : "";
+      return `<div class="w-head"><div class="w-drag">${type.title}<span data-role="caption"></span></div>` +
+        `<span data-role="controls" style="display:flex; gap:6px; align-items:center"></span>${unpin}` +
+        `<button type="button" class="w-btn close" data-act="close" title="Убрать виджет">×</button></div><div class="w-body"></div>`;
+    }
+
+    function addWidget(spec) {
+      const id = spec.id || newId();
+      const element = grid.addWidget({ id, x: spec.x, y: spec.y, w: spec.w ?? TYPES[spec.type].w, h: spec.h ?? TYPES[spec.type].h, autoPosition: spec.x === undefined });
+      const content = element.querySelector(".grid-stack-item-content");
+      content.classList.add("widget");
+      const widget = { id, type: spec.type, symbol: spec.symbol || "", opts: { ...(spec.opts || {}) }, element, content };
+      content.innerHTML = head(widget);
+      widget.body = content.querySelector(".w-body");
+      widget.controls = content.querySelector('[data-role="controls"]');
+      widget.caption = content.querySelector('[data-role="caption"]');
+      BUILD[spec.type](widget);
+      content.querySelector('[data-act="close"]').addEventListener("click", () => removeWidget(widget));
+      const unpin = content.querySelector('[data-act="unpin"]');
+      if (unpin) unpin.addEventListener("click", () => setOwn(widget, ""));
+      widgets.set(id, widget);
+      widget.sync();
+      return widget;
+    }
+
+    function removeWidget(widget) {
+      if (widget.destroy) widget.destroy();
+      widgets.delete(widget.id);
+      grid.removeWidget(widget.element);
+      save();
+    }
+
+    function symbolSelect(widget) {
+      const select = document.createElement("select");
+      select.title = "Инструмент только этого виджета. Список слева меняет все виджеты";
+      select.addEventListener("change", () => setOwn(widget, select.value));
+      widget.controls.prepend(select);
+      const pin = widget.content.querySelector('[data-act="unpin"]');
+      widget.fillSymbols = () => {
+        const current = symbolOf(widget);
+        if (pin) pin.classList.toggle("shown", !!widget.symbol);
+        const list = symbols.map((item) => [item.symbol, item.title]);
+        if (current && !list.some(([value]) => value === current)) list.unshift([current, current]);
+        const signature = list.map(([value]) => value).join("|") + "#" + current;
+        if (select.dataset.signature === signature) return;
+        select.dataset.signature = signature;
+        select.innerHTML = list.map(([value, title]) => `<option value="${esc(value)}" ${value === current ? "selected" : ""}>${esc(title)}</option>`).join("");
+      };
+      widget.fillSymbols();
+    }
+
+    /* виды виджетов */
+    const BUILD = {};
+
+    BUILD.list = (widget) => {
+      widget.body.innerHTML = `<div class="list-head"><span>Инструмент</span><span>Цена</span><span title="Изменение от открытия дня, МСК">Δ день</span><span title="Аномалий за час">⚑</span></div><div data-role="rows"></div>`;
+      const rows = widget.body.querySelector('[data-role="rows"]');
+      widget.caption.textContent = "клик — во все виджеты";
+      widget.sync = () => {
+        const current = globalSymbol();
+        let html = "";
+        for (const [key, label] of [["legs", "Ноги спредов"], ["extra", "Добавленные"]]) {
+          const items = symbols.filter((item) => item.group === key);
+          if (!items.length) continue;
+          html += `<div class="group"><span>${label}</span><span>${items.length}</span></div>` + items.map((item) => {
+            const s = item.summary || {};
+            const change = s.change === null || s.change === undefined ? "—" : (s.change > 0 ? "+" : "") + num(s.change, 2) + "%";
+            const cls = s.change > 0 ? "up" : s.change < 0 ? "down" : "dim";
+            const ratio = s.volume_ratio ? `<span class="${s.volume_ratio >= 2 ? "hot" : "dim"}">об. ×${num(s.volume_ratio, 1)}</span>` : "";
+            return `<button type="button" class="row ${item.symbol === current ? "on" : ""}" data-symbol="${esc(item.symbol)}">
+              <span class="name"><b>${esc(item.title)}</b><span>${esc(item.symbol)} ${ratio}</span></span>
+              <span class="num">${price(s.last)}</span><span class="num ${cls}">${change}</span>
+              <span class="num"><span class="badge ${s.anomalies ? "lit" : ""}">${s.anomalies || 0}</span></span></button>`;
+          }).join("");
+        }
+        if (!symbols.length) html += `<div class="empty">Радар ещё ничего не слушает. Запустите в отдельном терминале: <b>python manage.py run_radar</b></div>`;
+        if (others.length) {
+          html += `<div class="group"><span>В базе, не в радаре</span><span>${others.length}</span></div>` + others.map((item) =>
+            `<button type="button" class="row idle" data-other="${esc(item.symbol)}" data-code="${esc(item.code)}">
+              <span class="name"><b>${esc(item.code)}</b><span>${esc(item.pair)} · час ${esc(day(item.t))} ${esc(clock(item.t).slice(0, 5))}</span></span>
+              <span class="num">${price(item.close)}</span><span></span><span></span></button>`).join("");
+        }
+        const scroll = widget.body.scrollTop;
+        rows.innerHTML = html;
+        widget.body.scrollTop = scroll;
+      };
+      rows.addEventListener("click", (event) => {
+        const row = event.target.closest(".row");
+        if (!row) return;
+        if (row.dataset.symbol) {
+          setGlobal(row.dataset.symbol);
+        } else if (row.dataset.other) {
+          const link = `/admin/radar/watchitem/add/?kind=symbol&code=${encodeURIComponent(row.dataset.other)}&title=${encodeURIComponent(row.dataset.code)}`;
+          if (confirm(`${row.dataset.code} есть в базе часовыми свечами, но радар его не слушает. Открыть админку, чтобы добавить? Он появится после переоткрытия сокета run_radar, до 11 минут.`)) open(link, "_blank");
+        }
+      });
+    };
 
     const MARK = {
-      large: (side) => ({ shape: "circle", position: side < 0 ? "aboveBar" : "belowBar", color: side < 0 ? css("--red") : css("--green") }),
-      sweep: (side) => ({ shape: side < 0 ? "arrowDown" : "arrowUp", position: side < 0 ? "aboveBar" : "belowBar", color: side < 0 ? css("--red") : css("--green"), text: "проход" }),
+      large: (side) => ({ shape: "circle", position: side < 0 ? "aboveBar" : "belowBar", color: css(side < 0 ? "--red" : "--green") }),
+      sweep: (side) => ({ shape: side < 0 ? "arrowDown" : "arrowUp", position: side < 0 ? "aboveBar" : "belowBar", color: css(side < 0 ? "--red" : "--green"), text: "проход" }),
       wall: (side) => ({ shape: "square", position: side < 0 ? "aboveBar" : "belowBar", color: css("--orange") }),
       pulled: (side) => ({ shape: "square", position: side < 0 ? "aboveBar" : "belowBar", color: css("--red"), text: "снята" }),
       eaten: (side) => ({ shape: "square", position: side < 0 ? "belowBar" : "aboveBar", color: css("--orange"), text: "съедена" }),
       volume: () => ({ shape: "circle", position: "aboveBar", color: css("--orange"), text: "объём" }),
       oi: () => ({ shape: "circle", position: "belowBar", color: css("--violet"), text: "ОИ" }),
     };
-    let chartData = { candles: [], delta: [], oi: [] };
 
-    async function loadChart(keepView) {
-      if (!symbol) return;
-      const switched = chartSymbol !== symbol;
+    function chartTheme(widget) {
+      widget.chart.applyOptions({
+        layout: { background: { color: css("--panel") }, textColor: css("--muted"), panes: { separatorColor: css("--pane-sep"), separatorHoverColor: css("--accent") } },
+        grid: { vertLines: { color: css("--grid") }, horzLines: { color: css("--grid") } },
+        rightPriceScale: { borderColor: css("--line") },
+        timeScale: { borderColor: css("--line") },
+        crosshair: { vertLine: { color: css("--cross") }, horzLine: { color: css("--cross") } },
+      });
+      const up = css("--green"), down = css("--red");
+      widget.candles.applyOptions({ upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down });
+      widget.delta.applyOptions({ color: css("--blue") });
+      widget.interest.applyOptions({ color: css("--violet") });
+    }
+
+    BUILD.chart = (widget) => {
+      widget.body.style.overflow = "hidden";
+      widget.body.innerHTML = `<div class="chart-box"></div><div class="legend"></div>`;
+      const box = widget.body.querySelector(".chart-box");
+      widget.legend = widget.body.querySelector(".legend");
+      symbolSelect(widget);
+      const filter = document.createElement("select");
+      filter.title = "Какие аномалии отмечать на графике";
+      filter.innerHTML = KINDS.map(([value, label]) => `<option value="${value}">${value ? label : "все маркеры"}</option>`).join("");
+      filter.value = widget.opts.kind || "";
+      filter.addEventListener("change", () => { widget.opts.kind = filter.value; save(); paintMarkers(widget); });
+      widget.controls.append(filter);
+      widget.chart = LightweightCharts.createChart(box, {
+        autoSize: true,
+        timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 6 },
+        crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+      });
+      widget.candles = widget.chart.addSeries(LightweightCharts.CandlestickSeries, { priceLineVisible: true }, 0);
+      // Дельта — в тысячах и миллионах. ОИ — целыми: сокращение до «1M» прячет его изменения.
+      widget.delta = widget.chart.addSeries(LightweightCharts.LineSeries, { lineWidth: 2, priceLineVisible: false, priceFormat: { type: "volume" } }, 1);
+      widget.interest = widget.chart.addSeries(LightweightCharts.LineSeries, { lineWidth: 2, priceLineVisible: false, priceFormat: { type: "price", precision: 0, minMove: 1 } }, 2);
+      widget.markers = LightweightCharts.createSeriesMarkers(widget.candles, []);
+      widget.chart.panes().forEach((pane, index) => pane.setStretchFactor(index === 0 ? 3 : 1));
+      widget.data = { candles: [], delta: [], oi: [], markers: [] };
+      widget.shown = "";
+      widget.focus = null;
+      chartTheme(widget);
+      widget.chart.subscribeCrosshairMove((param) => paintLegend(widget, param));
+      widget.sync = () => { widget.fillSymbols(); loadChart(widget, false); };
+      widget.timer = setInterval(() => { if (!document.hidden) loadChart(widget, true); }, 5000);
+      widget.destroy = () => { clearInterval(widget.timer); widget.chart.remove(); };
+    };
+
+    function paintMarkers(widget) {
+      const kind = widget.opts.kind || "";
+      widget.markers.setMarkers(widget.data.markers.filter((m) => !kind || m.kind === kind)
+        .map((m) => ({ time: Math.floor(sec(m.t) / 60) * 60, ...MARK[m.kind](m.side) })));
+    }
+
+    // При смене инструмента график подстраивается под него: точность и шаг цены,
+    // автомасштаб всех трёх панелей, последние 4 часа. Ответ по прежнему символу,
+    // пришедший после переключения, отбрасывается.
+    async function loadChart(widget, keepView) {
+      const asked = symbolOf(widget);
+      if (!asked) return;
+      const switched = widget.shown !== asked;
       try {
-        const response = await fetch("/api/radar/chart/?symbol=" + encodeURIComponent(symbol), { cache: "no-cache" });
+        const response = await fetch("/api/radar/chart/?symbol=" + encodeURIComponent(asked), { cache: "no-cache" });
         if (!response.ok) throw new Error(response.status);
         const body = await response.json();
-        chartData = body;
-        const digits = places(body.candles.slice(-300).flatMap((c) => [c.o, c.c]));
-        candles.applyOptions({ priceFormat: { type: "price", precision: digits, minMove: 1 / 10 ** digits } });
-        candles.setData(body.candles.map((c) => ({ time: sec(c.t), open: c.o, high: c.h, low: c.l, close: c.c })));
-        delta.setData(body.delta.map((p) => ({ time: sec(p.t), value: p.v })));
-        interest.setData(body.oi.map((p) => ({ time: sec(p.t), value: p.v })));
-        const kind = $("kind-filter").value;
-        markers.setMarkers(body.markers.filter((m) => !kind || m.kind === kind)
-          .map((m) => ({ time: Math.floor(sec(m.t) / 60) * 60, ...MARK[m.kind](m.side) })));
-        chartSymbol = symbol;
-        if (focusTime !== null) {
-          chart.timeScale().setVisibleRange({ from: focusTime - 3600, to: focusTime + 1800 });
-          focusTime = null;
-        } else if (switched && !keepView && body.candles.length) {
-          const count = body.candles.length;
-          chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, count - 240), to: count + 6 });
+        if (asked !== symbolOf(widget) || !widgets.has(widget.id)) return;
+        widget.data = body;
+        const digits = places(body.candles.slice(-300).flatMap((c) => [c.o, c.h, c.l, c.c]));
+        widget.candles.applyOptions({ priceFormat: { type: "price", precision: digits, minMove: 1 / 10 ** digits } });
+        widget.candles.setData(body.candles.map((c) => ({ time: sec(c.t), open: c.o, high: c.h, low: c.l, close: c.c })));
+        widget.delta.setData(body.delta.map((p) => ({ time: sec(p.t), value: p.v })));
+        widget.interest.setData(body.oi.map((p) => ({ time: sec(p.t), value: p.v })));
+        paintMarkers(widget);
+        widget.shown = asked;
+        if (switched) {
+          widget.chart.panes().forEach((_pane, index) => widget.chart.priceScale("right", index).applyOptions({ autoScale: true }));
         }
-        paintLegend();
+        if (widget.focus !== null) {
+          widget.chart.timeScale().setVisibleRange({ from: widget.focus - 3600, to: widget.focus + 1800 });
+          widget.focus = null;
+        } else if ((switched || !keepView) && body.candles.length) {
+          const count = body.candles.length;
+          widget.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, count - 240), to: count + 6 });
+        }
+        paintLegend(widget);
       } catch (error) {
         /* следующий опрос повторит */
       }
     }
 
-    function paintLegend(param) {
-      const item = symbols.find((row) => row.symbol === symbol);
-      const name = item ? item.title : symbol;
-      let candle = chartData.candles.at(-1), d = chartData.delta.at(-1), o = chartData.oi.at(-1);
+    function paintLegend(widget, param) {
+      const symbol = widget.shown;
+      const data = widget.data;
+      const name = titleOf(symbol);
+      widget.caption.textContent = symbol ? "· " + name : "";
+      if (!symbol) { widget.legend.innerHTML = ""; return; }
+      if (!data.candles.length) {
+        widget.legend.innerHTML = `<b>${esc(name)}</b><span>минут пока нет: радар ещё не видел сделок по этому инструменту</span>`;
+        return;
+      }
+      let candle = data.candles.at(-1), d = data.delta.at(-1), o = data.oi.at(-1);
       if (param && param.time !== undefined) {
-        const bar = param.seriesData.get(candles);
-        const dv = param.seriesData.get(delta), ov = param.seriesData.get(interest);
+        const bar = param.seriesData.get(widget.candles);
+        const dv = param.seriesData.get(widget.delta), ov = param.seriesData.get(widget.interest);
         if (bar) candle = { o: bar.open, h: bar.high, l: bar.low, c: bar.close };
         d = dv ? { v: dv.value } : d;
         o = ov ? { v: ov.value } : o;
       }
-      $("legend").innerHTML = symbol ? (
-        `<b>${esc(name)}</b><span>1 мин, МСК</span>` +
-        (candle ? ((d) => `<span>O <span class="v num">${price(candle.o, d)}</span> H <span class="v num">${price(candle.h, d)}</span> L <span class="v num">${price(candle.l, d)}</span> C <span class="v num">${price(candle.c, d)}</span></span>`)(places([candle.o, candle.h, candle.l, candle.c])) : "") +
+      const digits = places([candle.o, candle.h, candle.l, candle.c]);
+      widget.legend.innerHTML = `<b>${esc(name)}</b><span>1 мин, МСК</span>` +
+        `<span>O <span class="v num">${price(candle.o, digits)}</span> H <span class="v num">${price(candle.h, digits)}</span> L <span class="v num">${price(candle.l, digits)}</span> C <span class="v num">${price(candle.c, digits)}</span></span>` +
         `<span style="color:var(--blue)">дельта за день <span class="v num">${d ? num(d.v, 0) : "—"}</span></span>` +
-        `<span style="color:var(--violet)">ОИ <span class="v num">${o ? num(o.v, 0) : "—"}</span></span>`
-      ) : "";
-    }
-    chart.subscribeCrosshairMove(paintLegend);
-
-    /* состояние: источники, список, стакан, лента, аномалии */
-    function paintChips(statuses) {
-      $("chips").innerHTML = statuses.map((item) =>
-        `<span class="chip ${esc(item.state)}" title="${esc(item.message)}"><i></i>${esc(item.label)}</span>`
-      ).join("");
+        `<span style="color:var(--violet)">ОИ <span class="v num">${o ? num(o.v, 0) : "—"}</span></span>`;
     }
 
-    function rowHtml(item) {
-      const s = item.summary || {};
-      const change = s.change === null || s.change === undefined ? "—" : (s.change > 0 ? "+" : "") + num(s.change, 2) + "%";
-      const cls = s.change > 0 ? "up" : s.change < 0 ? "down" : "dim";
-      const ratio = s.volume_ratio ? `<span class="${s.volume_ratio >= 2 ? "hot" : "dim"}">об. ×${num(s.volume_ratio, 1)}</span>` : "";
-      return `<button type="button" class="row ${item.symbol === symbol ? "on" : ""}" data-symbol="${esc(item.symbol)}">
-        <span class="name"><b>${esc(item.title)}</b><span>${esc(item.symbol)} ${ratio}</span></span>
-        <span class="num">${price(s.last)}</span>
-        <span class="num ${cls}">${change}</span>
-        <span class="num"><span class="badge ${s.anomalies ? "lit" : ""}">${s.anomalies || 0}</span></span>
-      </button>`;
-    }
-
-    function paintList() {
-      let html = "";
-      for (const [key, label] of GROUPS) {
-        const rows = symbols.filter((item) => item.group === key);
-        if (!rows.length) continue;
-        html += `<div class="group"><span>${label}</span><span>${rows.length}</span></div>` + rows.map(rowHtml).join("");
-      }
-      if (!symbols.length) {
-        html += `<div class="empty">Радар ещё ничего не слушает. Запустите в отдельном терминале: <b>python manage.py run_radar</b></div>`;
-      }
-      if (others.length) {
-        html += `<div class="group"><span>В базе, не в радаре</span><span>${others.length}</span></div>` + others.map((item) =>
-          `<button type="button" class="row idle" data-other="${esc(item.symbol)}" data-code="${esc(item.code)}">
-            <span class="name"><b>${esc(item.code)}</b><span>${esc(item.pair)} · час ${esc(day(item.t))} ${esc(clock(item.t).slice(0, 5))}</span></span>
-            <span class="num">${price(item.close)}</span><span></span><span></span>
-          </button>`).join("");
-      }
-      $("list").innerHTML = html;
-    }
-
-    $("list").addEventListener("click", (event) => {
-      const row = event.target.closest(".row");
-      if (!row) return;
-      if (row.dataset.symbol) {
-        select(row.dataset.symbol);
-      } else if (row.dataset.other) {
-        const code = row.dataset.code, sym = row.dataset.other;
-        const link = `/admin/radar/watchitem/add/?kind=symbol&code=${encodeURIComponent(sym)}&title=${encodeURIComponent(code)}`;
-        showOverlay(`<b>${esc(code)}</b> есть в базе часовыми свечами, но радар его не слушает.<br><br>` +
-          `<a href="${link}">Добавить в радар</a> — он появится после ближайшего переоткрытия сокета run_radar (до 11 минут).<br><br>` +
-          `<a href="#" id="overlay-close">Закрыть</a>`);
-      }
-    });
-
-    function showOverlay(html) {
-      $("overlay-text").innerHTML = html;
-      $("overlay").classList.add("show");
-      const close = $("overlay-close");
-      if (close) close.addEventListener("click", (event) => { event.preventDefault(); $("overlay").classList.remove("show"); });
-    }
-
-    function select(next, at) {
-      symbol = next;
-      store.set("radar-symbol", next);
-      $("overlay").classList.remove("show");
-      if (at !== undefined) focusTime = at;
-      paintList();
-      refresh();
-      loadChart(false);
-    }
+    BUILD.book = (widget) => {
+      symbolSelect(widget);
+      widget.sync = () => { widget.fillSymbols(); widget.caption.textContent = ""; paintBook(widget); };
+    };
 
     // Почему нет данных: радар не запущен, Finam не подключён или просто ещё не прислал.
-    function reason(statuses, alive) {
-      if (!alive) return "Нет данных: run_radar не запущен.";
-      const finam = statuses.find((item) => item.name === "finam");
+    function reason() {
+      if (!lastState) return "Загрузка…";
+      if (!lastState.alive) return "Нет данных: run_radar не запущен.";
+      const finam = lastState.statuses.find((item) => item.name === "finam");
       if (finam && finam.state !== "ok") return "Finam не подключён: " + finam.message + ".";
       return "";
     }
 
-    function paintBook(book, why) {
-      const dom = $("dom");
+    function paintBook(widget) {
+      const symbol = symbolOf(widget);
+      const book = lastState && lastState.books[symbol];
       if (!book || (!book.asks.length && !book.bids.length)) {
-        dom.innerHTML = `<div class="empty">${esc(why || "Стакана пока нет: Finam не прислал его по этому символу.")}</div>`;
-        $("book-age").textContent = "";
+        widget.body.innerHTML = `<div class="empty">${esc(reason() || "Стакана пока нет: Finam не прислал его по этому символу.")}</div>`;
         return;
       }
       const max = Math.max(...book.asks.map((l) => l[1]), ...book.bids.map((l) => l[1]), 1);
@@ -430,49 +571,96 @@
         `<div class="lvl ${side} ${wall ? "wall" : ""}" title="${wall ? "стена: в разы больше обычного уровня" : ""}"><div class="bar" style="width:${(size / max * 100).toFixed(1)}%"></div><span class="num">${price(at, digits)}</span><span class="num">${num(size, 0)}</span></div>`;
       const bestAsk = book.asks.length ? book.asks[0][0] : null, bestBid = book.bids.length ? book.bids[0][0] : null;
       const spread = bestAsk !== null && bestBid !== null ? `спред ${price(bestAsk - bestBid, digits)}` : "";
-      dom.innerHTML = book.asks.slice().reverse().map(level("ask")).join("") + `<div class="mid">${spread}</div>` + book.bids.map(level("bid")).join("");
-      $("book-age").textContent = book.ts ? "обновлён " + clock(book.ts) : "";
+      const age = book.ts ? " · " + clock(book.ts) : "";
+      widget.body.innerHTML = book.asks.slice().reverse().map(level("ask")).join("") + `<div class="mid">${spread}${age}</div>` + book.bids.map(level("bid")).join("");
     }
 
-    function paintTape(tape, why) {
-      if (!tape.length) {
-        $("tape").innerHTML = `<div class="empty">${esc(why || "Сделок нет" + (Number($("min-size").value) ? " крупнее фильтра." : "."))}</div>`;
+    BUILD.tape = (widget) => {
+      symbolSelect(widget);
+      const label = document.createElement("label");
+      label.innerHTML = `от <input type="number" min="0" step="1" placeholder="0">`;
+      const input = label.querySelector("input");
+      input.value = widget.opts.min || "";
+      input.title = "Показывать сделки не меньше стольких лотов";
+      input.addEventListener("change", () => { widget.opts.min = Number(input.value) || 0; save(); refresh(); });
+      widget.controls.append(label);
+      widget.key = () => symbolOf(widget) + "|" + (Number(widget.opts.min) || 0);
+      widget.sync = () => { widget.fillSymbols(); paintTape(widget); };
+    };
+
+    function paintTape(widget) {
+      const tape = lastState && lastState.tapes[widget.key()];
+      if (!tape || !tape.length) {
+        widget.body.innerHTML = `<div class="empty">${esc(reason() || (tape ? "Сделок нет" + (Number(widget.opts.min) ? " крупнее фильтра." : ".") : "Загрузка…"))}</div>`;
         return;
       }
       const sizes = tape.map((t) => t.s).sort((a, b) => a - b);
       const median = sizes[Math.floor(sizes.length / 2)] || 0;
       const digits = places(tape.map((t) => t.p));
-      $("tape").innerHTML = tape.map((t) =>
+      widget.body.innerHTML = tape.map((t) =>
         `<div class="tr ${t.d > 0 ? "buy" : t.d < 0 ? "sell" : ""} ${median && t.s >= median * 5 ? "big" : ""}"><span class="num dim">${clock(t.t)}</span><span class="num">${price(t.p, digits)}</span><span class="num">${num(t.s, 0)}</span></div>`
       ).join("");
     }
 
-    let feedRows = [];
-    function paintFeed(rows, why) {
-      feedRows = rows;
-      $("feed").innerHTML = rows.map((a, index) => {
+    BUILD.feed = (widget) => {
+      const filter = document.createElement("select");
+      filter.title = "Тип аномалии";
+      filter.innerHTML = KINDS.map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+      filter.value = widget.opts.kind || "";
+      filter.addEventListener("change", () => { widget.opts.kind = filter.value; save(); refresh(); });
+      const label = document.createElement("label");
+      label.title = "Только инструмент, выбранный в списке";
+      label.innerHTML = `<input type="checkbox"> только выбранный`;
+      const only = label.querySelector("input");
+      only.checked = !!widget.opts.only;
+      only.addEventListener("change", () => { widget.opts.only = only.checked; save(); refresh(); });
+      widget.controls.append(filter, label);
+      widget.body.innerHTML = `<table><thead><tr><th>Время, МСК</th><th>Инструмент</th><th>Тип</th><th>Цена</th><th>Объём</th><th title="Во сколько раз выше порога">Сила</th><th>Что видно</th></tr></thead><tbody></tbody></table><div class="empty" data-role="empty"></div>`;
+      widget.rows = [];
+      widget.key = () => (widget.opts.kind || "") + "|" + (widget.opts.only ? globalSymbol() : "");
+      widget.sync = () => paintFeed(widget);
+      widget.body.querySelector("tbody").addEventListener("click", (event) => {
+        const tr = event.target.closest("tr");
+        const item = tr && widget.rows[Number(tr.dataset.index)];
+        if (item) setGlobal(item.symbol, sec(item.t));
+      });
+    };
+
+    function paintFeed(widget) {
+      const rows = (lastState && lastState.feeds[widget.key()]) || [];
+      widget.rows = rows;
+      widget.caption.textContent = rows.length ? `· ${rows.length} за сутки` : "";
+      widget.body.querySelector("tbody").innerHTML = rows.map((a, index) => {
         const arrow = a.side > 0 ? '<span class="up">▲</span>' : a.side < 0 ? '<span class="down">▼</span>' : "";
         return `<tr data-index="${index}"><td class="num">${esc(day(a.t))} ${esc(clock(a.t))}</td><td>${esc(a.title)}</td>` +
           `<td>${arrow} <span class="kind ${esc(a.kind)}">${esc(a.kind_label)}</span></td><td class="num">${price(a.price)}</td>` +
           `<td class="num">${num(a.size, 0)}</td><td class="num">${num(a.score, 1)}</td><td class="text" title="${esc(a.text)}">${esc(a.text)}</td></tr>`;
       }).join("");
-      $("feed-empty").textContent = rows.length ? "" : why
+      widget.body.querySelector('[data-role="empty"]').textContent = rows.length ? "" : reason()
         || "Аномалий пока нет. Пороги считаются по истории инструмента: первые часы после запуска радар только набирает статистику.";
     }
-    $("feed").addEventListener("click", (event) => {
-      const tr = event.target.closest("tr");
-      if (!tr) return;
-      const item = feedRows[Number(tr.dataset.index)];
-      if (item) select(item.symbol, sec(item.t));
-    });
 
+    /* опрос */
     function query() {
-      const params = new URLSearchParams({ symbol });
-      const min = Number($("min-size").value);
-      if (min > 0) params.set("min", String(min));
-      if ($("kind-filter").value) params.set("kinds", $("kind-filter").value);
-      if ($("only-mine").checked) params.set("only", "1");
+      const books = new Set(), tapes = new Set(), feeds = new Set();
+      for (const widget of widgets.values()) {
+        if (widget.type === "book") books.add(symbolOf(widget));
+        if (widget.type === "tape") tapes.add(widget.key());
+        if (widget.type === "feed") feeds.add(widget.key());
+      }
+      // Пустой символ — группа ещё не выбрана: такие стаканы и ленты не запрашиваются.
+      const params = new URLSearchParams();
+      const bookKeys = [...books].filter(Boolean), tapeKeys = [...tapes].filter((key) => !key.startsWith("|"));
+      if (bookKeys.length) params.set("books", bookKeys.join(","));
+      if (tapeKeys.length) params.set("tapes", tapeKeys.join(","));
+      if (feeds.size) params.set("feeds", [...feeds].join(","));
       return params.toString();
+    }
+
+    function paintChips(statuses) {
+      $("chips").innerHTML = statuses.map((item) =>
+        `<span class="chip ${esc(item.state)}" title="${esc(item.message)}"><i></i>${esc(item.label)}</span>`
+      ).join("");
     }
 
     let busy = false;
@@ -482,22 +670,23 @@
       try {
         const response = await fetch("/api/radar/state/?" + query(), { cache: "no-store" });
         if (!response.ok) throw new Error(response.status);
-        const body = await response.json();
-        symbols = body.symbols;
-        if (body.symbol && body.symbol !== symbol) {
-          symbol = body.symbol;
-          loadChart(false);
+        lastState = await response.json();
+        const before = symbols.map((item) => item.symbol).join("|");
+        symbols = lastState.symbols;
+        const changed = before !== symbols.map((item) => item.symbol).join("|");
+        paintChips(lastState.statuses);
+        for (const widget of widgets.values()) {
+          if (widget.type === "chart") {
+            widget.fillSymbols();
+            if (changed && !widget.shown) loadChart(widget, false);
+            if (changed) paintLegend(widget);
+          } else {
+            widget.sync();
+          }
         }
-        paintChips(body.statuses);
-        paintList();
-        const why = reason(body.statuses, body.alive);
-        paintBook(body.book, why);
-        paintTape(body.tape, why);
-        paintFeed(body.anomalies, why);
-        $("statusbar").classList.toggle("live", body.alive);
-        $("live-text").textContent = body.alive ? "радар работает" : "радар не запущен";
-        $("counts").textContent = `символов ${symbols.length} · аномалий в ленте ${body.anomalies.length} · обновлено ${clock(body.now)} МСК`;
-        if (!symbol) paintLegend();
+        $("statusbar").classList.toggle("live", lastState.alive);
+        $("live-text").textContent = lastState.alive ? "радар работает" : "радар не запущен";
+        $("counts").textContent = `символов ${symbols.length} · виджетов ${widgets.size} · обновлено ${clock(lastState.now)} МСК`;
       } catch (error) {
         $("statusbar").classList.remove("live");
         $("live-text").textContent = "сервер не отвечает";
@@ -511,23 +700,56 @@
         const response = await fetch("/api/radar/instruments/", { cache: "no-store" });
         if (!response.ok) return;
         others = (await response.json()).instruments;
-        paintList();
+        for (const widget of widgets.values()) if (widget.type === "list") widget.sync();
       } catch (error) {
         /* список вторичен */
       }
     }
 
-    for (const id of ["kind-filter", "only-mine"]) $(id).addEventListener("change", refresh);
-    $("kind-filter").addEventListener("change", () => loadChart(true));
-    $("min-size").value = store.get("radar-min", "");
-    $("min-size").addEventListener("change", () => { store.set("radar-min", $("min-size").value); refresh(); });
+    /* меню и тема */
+    $("add-button").addEventListener("click", (event) => { event.stopPropagation(); $("add-menu").classList.toggle("open"); });
+    document.addEventListener("click", () => $("add-menu").classList.remove("open"));
+    $("add-list").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-add]");
+      if (!button) return;
+      const type = button.dataset.add;
+      setEditing(true);
+      addWidget({ type, opts: type === "feed" ? { kind: "", only: false } : type === "tape" ? { min: 0 } : {} });
+      save();
+      refresh();
+    });
+    $("edit").addEventListener("click", () => setEditing(!editing));
+    $("reset-layout").addEventListener("click", () => {
+      if (!confirm("Вернуть раскладку по умолчанию? Свои виджеты и их настройки пропадут.")) return;
+      for (const widget of [...widgets.values()]) removeWidget(widget);
+      layout = JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+      layout.widgets.forEach(addWidget);
+      save();
+      refresh();
+    });
+    $("theme").addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem("spread-theme", next); } catch (error) { /* хранилище недоступно */ }
+      for (const widget of widgets.values()) if (widget.type === "chart") { chartTheme(widget); paintMarkers(widget); }
+    });
 
+    /* старт */
+    const startSymbol = "{{ symbol|escapejs }}";
+    if (startSymbol) layout.symbol = startSymbol;
+    grid.batchUpdate();
+    (layout.widgets.length ? layout.widgets : DEFAULT_LAYOUT.widgets).forEach((spec) => { if (TYPES[spec.type]) addWidget(spec); });
+    grid.batchUpdate(false);
+    save();
     setInterval(() => { $("clock").textContent = new Date(Date.now() + MSK * 1000).toISOString().slice(11, 19) + " МСК"; }, 1000);
     setInterval(() => { if (!document.hidden) refresh(); }, 1000);
-    setInterval(() => { if (!document.hidden) loadChart(true); }, 5000);
     setInterval(() => { if (!document.hidden) loadOthers(); }, 60000);
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) { refresh(); loadChart(true); } });
-    refresh().then(() => loadChart(false));
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      refresh();
+      for (const widget of widgets.values()) if (widget.type === "chart") loadChart(widget, true);
+    });
+    refresh();
     loadOthers();
   </script>
 </body>

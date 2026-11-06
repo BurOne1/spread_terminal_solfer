@@ -12,6 +12,7 @@
 
 import asyncio
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 import websockets
@@ -24,8 +25,6 @@ from market.roll import quarter_points
 from radar import algopack
 from radar.feed import FLUSH_SECONDS, Radar
 
-DEFAULT_LARGE_PCT = 99.5
-DEFAULT_WALL_RATIO = 5.0
 RESYNC_SECONDS = 60
 # Одна и та же ошибка REST по символу печатается не чаще этого.
 ERROR_LOG_EVERY = timedelta(minutes=10)
@@ -109,8 +108,23 @@ def trades_of(payload):
 
 # --- список символов ---
 
+def switched_off(symbol, item):
+    """Выключенная строка админки убирает ногу: символ целиком или корень квартала (Si — все Si*)."""
+    from radar.models import WatchItem
+
+    ticker = symbol.split("@")[0]
+    if item.kind == WatchItem.Kind.QUARTER and "@" not in item.code:
+        return re.fullmatch(re.escape(item.code) + r"[FGHJKMNQUVXZ]\d{1,2}", ticker) is not None
+    return symbol.lower() == item.code.lower()
+
+
 def watch_items(now=None):
-    """Ноги спредов и инструменты радара. Инструмент из админки переписывает пороги ноги."""
+    """Ноги спредов и инструменты радара.
+
+    Строка админки с галочкой «следить» добавляет инструмент. Без галочки —
+    убирает ногу из радара, даже если она в спредах. Пороги — в правилах сигналов.
+    Включённая строка с символом важнее выключенного корня.
+    """
     from market.models import Instrument
     from radar.models import WatchItem
 
@@ -124,9 +138,15 @@ def watch_items(now=None):
     for symbol in legs:
         items[symbol] = {
             "symbol": symbol, "title": titles.get(symbol, symbol.split("@")[0]), "group": "legs",
-            "large_pct": DEFAULT_LARGE_PCT, "wall_ratio": DEFAULT_WALL_RATIO,
         }
-    for item in WatchItem.objects.filter(active=True):
+    rows = list(WatchItem.objects.all())
+    for item in rows:
+        if not item.active:
+            for symbol in [symbol for symbol in items if switched_off(symbol, item)]:
+                del items[symbol]
+    for item in rows:
+        if not item.active:
+            continue
         symbol, title = item.code, item.title
         if item.kind == WatchItem.Kind.QUARTER:
             rows = [
@@ -140,7 +160,6 @@ def watch_items(now=None):
         group = items[symbol]["group"] if symbol in items else "extra"
         items[symbol] = {
             "symbol": symbol, "title": title or symbol.split("@")[0], "group": group,
-            "large_pct": item.large_pct, "wall_ratio": item.wall_ratio,
         }
     return list(items.values())
 
