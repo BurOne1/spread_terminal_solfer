@@ -106,6 +106,22 @@ class FinamClient:
         self._raise(response, symbol=symbol)
         return parse_bars(response.json())
 
+    def orderbook(self, symbol: str) -> dict:
+        """Текущий стакан: {"symbol", "orderbook": {"rows": [...]}}."""
+        return self._json(f"{self._base}/v1/instruments/{quote(symbol, safe='')}/orderbook", symbol)
+
+    def latest_trades(self, symbol: str) -> dict:
+        """Последние сделки: {"symbol", "trades": [...]}."""
+        return self._json(f"{self._base}/v1/instruments/{quote(symbol, safe='')}/trades/latest", symbol)
+
+    def _json(self, path, symbol):
+        response = self._get(path, {})
+        if response.status_code == 401:
+            self._token = None
+            response = self._get(path, {})
+        self._raise(response, symbol=symbol)
+        return response.json()
+
     def _get(self, path, params):
         return self._http.get(path, params=params, headers={"Authorization": f"Bearer {self.token()}"})
 

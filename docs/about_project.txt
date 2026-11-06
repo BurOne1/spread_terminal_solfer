@@ -1,0 +1,7 @@
+Данный проект построен на фреймворке django с базой postgresql и служит для того чтобы в реальном времени строить и анализировать спреды
+А также приминять стандартные стратегии с прицелом на будующий терминал для аналитических целей без выставления заявок (ближайшее время точно)
+В проекте используется FINAM trade api:
+https://github.com/FinamWeb/finam-trade-api/blob/main/.ai/skills/README.md
+https://github.com/FinamWeb/finam-trade-api
+AlgoPack MOEX:
+https://github.com/moexalgo/moexalgo (https://moexalgo.github.io/docs/api/)

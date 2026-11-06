@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Радар</title>
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("spread-theme") || "dark"; } catch (error) { /* хранилище недоступно */ }</script>
+  <script src="https://unpkg.com/lightweight-charts@5.0.9/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root[data-theme="dark"] {
+      --bg: #131722; --panel: #1e222d; --raised: #2a2e39; --hover: #2a2e39; --line: #2a2e39; --line-strong: #363a45; --pane-sep: #5d606b;
+      --ink: #d1d4dc; --muted: #787b86; --accent: #2962ff; --accent-soft: rgba(41, 98, 255, .18);
+      --green: #089981; --red: #f23645; --orange: #ff9800; --violet: #9c6ade; --blue: #2962ff;
+      --green-soft: rgba(8, 153, 129, .22); --red-soft: rgba(242, 54, 69, .22); --wall: rgba(255, 152, 0, .35);
+      --grid: rgba(42, 46, 57, .6); --cross: #758696;
+    }
+    :root[data-theme="light"] {
+      --bg: #ffffff; --panel: #ffffff; --raised: #f0f3fa; --hover: #f0f3fa; --line: #e0e3eb; --line-strong: #d1d4dc; --pane-sep: #9598a1;
+      --ink: #131722; --muted: #787b86; --accent: #2962ff; --accent-soft: rgba(41, 98, 255, .1);
+      --green: #089981; --red: #f23645; --orange: #f57c00; --violet: #7e57c2; --blue: #2962ff;
+      --green-soft: rgba(8, 153, 129, .14); --red-soft: rgba(242, 54, 69, .14); --wall: rgba(245, 124, 0, .28);
+      --grid: #f0f3fa; --cross: #9598a1;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; overflow: hidden; background: var(--bg); color: var(--ink);
+      font: 13px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: grid; height: 100vh; height: 100dvh;
+      grid-template-rows: 46px minmax(0, 1fr) 220px 28px;
+      grid-template-columns: 280px minmax(0, 1fr) 300px;
+      grid-template-areas: "top top top" "list chart book" "list feed book" "status status status";
+    }
+    button, select, input { font: inherit; color: inherit; }
+    .num { font-variant-numeric: tabular-nums; }
+    .up { color: var(--green); }
+    .down { color: var(--red); }
+    .dim { color: var(--muted); }
+
+    /* шапка */
+    .topbar { grid-area: top; display: flex; align-items: center; gap: 4px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--panel); min-width: 0; }
+    .title { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 0 10px 0 4px; margin-right: 4px; border-right: 1px solid var(--line); }
+    .title b { font-size: 14px; font-weight: 600; white-space: nowrap; }
+    .title span { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tb { height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); cursor: pointer; white-space: nowrap; text-decoration: none; }
+    .tb:hover { background: var(--hover); }
+    .tb.on { color: var(--accent); }
+    .tb svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .grow { flex: 1; }
+    .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; flex: none; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 12px; background: var(--raised); font-size: 12px; cursor: help; white-space: nowrap; }
+    .chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+    .chip.ok i { background: var(--green); }
+    .chip.wait i { background: var(--orange); }
+    .chip.no_key i, .chip.error i { background: var(--red); }
+    .chip.off { color: var(--muted); }
+
+    /* список инструментов */
+    .list { grid-area: list; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--panel); }
+    .list-head, .row { display: grid; grid-template-columns: minmax(0, 1fr) 66px 52px 34px; gap: 6px; align-items: center; padding: 0 10px; }
+    .list-head { height: 28px; flex: none; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); }
+    .list-head span:not(:first-child), .row .num { text-align: right; }
+    .list-body { flex: 1; min-height: 0; overflow-y: auto; }
+    .group { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; padding: 6px 10px; background: var(--raised); color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
+    .row { width: 100%; min-height: 40px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+    .row:hover { background: var(--hover); }
+    .row.on { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+    .row .name { min-width: 0; }
+    .row .name b { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row .name span { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row .num { font-size: 12px; }
+    .row .hot { color: var(--orange); font-weight: 600; }
+    .badge { display: inline-block; min-width: 20px; padding: 0 5px; border-radius: 9px; background: var(--raised); color: var(--muted); font-size: 11px; text-align: center; }
+    .badge.lit { background: var(--orange); color: #111; font-weight: 600; }
+    .row.idle { min-height: 34px; }
+
+    /* график */
+    .chart-wrap { grid-area: chart; position: relative; min-width: 0; min-height: 0; background: var(--bg); }
+    #chart { position: absolute; inset: 0; }
+    .legend { position: absolute; left: 8px; top: 6px; z-index: 3; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; pointer-events: none; font-size: 12px; color: var(--muted); }
+    .legend b { color: var(--ink); font-size: 13px; }
+    .legend .v { color: var(--ink); }
+    .overlay { position: absolute; inset: 0; z-index: 4; display: none; place-items: center; padding: 24px; background: color-mix(in srgb, var(--bg) 88%, transparent); text-align: center; }
+    .overlay.show { display: grid; }
+    .overlay div { max-width: 460px; }
+    .overlay a { color: var(--accent); }
+
+    /* стакан и лента */
+    .book { grid-area: book; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--panel); }
+    .pane-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 32px; flex: none; padding: 0 10px; border-bottom: 1px solid var(--line); font-weight: 600; }
+    .pane-head span { color: var(--muted); font-weight: 400; font-size: 11px; }
+    .pane-head input { width: 70px; background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font-size: 12px; }
+    .dom { flex: 1 1 55%; min-height: 0; overflow-y: auto; font-size: 12px; }
+    .tape { flex: 1 1 45%; min-height: 0; overflow-y: auto; font-size: 12px; border-top: 1px solid var(--line); }
+    .lvl, .tr { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 1px 10px; }
+    .lvl .bar { position: absolute; top: 1px; bottom: 1px; right: 0; z-index: 0; }
+    .lvl.ask .bar { background: var(--red-soft); }
+    .lvl.bid .bar { background: var(--green-soft); }
+    .lvl.wall .bar { background: var(--wall); }
+    .lvl span { position: relative; z-index: 1; }
+    .lvl span:last-child, .tr span:not(:first-child) { text-align: right; }
+    .lvl.ask span:first-child { color: var(--red); }
+    .lvl.bid span:first-child { color: var(--green); }
+    .lvl.wall span:last-child { font-weight: 700; }
+    .mid { padding: 3px 10px; color: var(--muted); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: center; font-size: 11px; }
+    .tr { grid-template-columns: 70px 1fr 1fr; }
+    .tr.buy span:nth-child(2) { color: var(--green); }
+    .tr.sell span:nth-child(2) { color: var(--red); }
+    .tr.big { font-weight: 700; background: var(--accent-soft); }
+    .empty { padding: 14px 10px; color: var(--muted); font-size: 12px; }
+
+    /* лента аномалий */
+    .feed { grid-area: feed; display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--pane-sep); background: var(--panel); }
+    .feed .pane-head label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; font-size: 12px; color: var(--muted); cursor: pointer; }
+    .feed select { background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; font-size: 12px; }
+    .feed-body { flex: 1; min-height: 0; overflow-y: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 400; font-size: 11px; text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+    td { padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    td.text { color: var(--muted); max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover { background: var(--hover); }
+    .kind { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 11px; background: var(--raised); }
+    .kind.large { color: var(--blue); }
+    .kind.sweep { color: var(--accent); font-weight: 600; }
+    .kind.wall, .kind.eaten { color: var(--orange); }
+    .kind.pulled { color: var(--red); }
+    .kind.volume { color: var(--orange); font-weight: 600; }
+    .kind.oi { color: var(--violet); }
+
+    /* строка состояния */
+    .statusbar { grid-area: status; display: flex; align-items: center; gap: 14px; padding: 0 10px; border-top: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 6px; }
+    .live .pulse { background: var(--green); box-shadow: 0 0 0 3px rgba(8, 153, 129, .2); }
+
+    @media (max-width: 1000px) {
+      body { overflow: auto; height: auto; grid-template-columns: 1fr; grid-template-rows: 46px 260px 60vh 300px 320px 28px; grid-template-areas: "top" "list" "chart" "book" "feed" "status"; }
+      .topbar { overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">
+      <b id="title">Радар</b>
+      <span id="subtitle">крупные участники, стены, всплески</span>
+    </div>
+    <a class="tb" href="/" title="Графики спредов">Спреды</a>
+    <a class="tb on" href="/radar/">Радар</a>
+    <div class="sep"></div>
+    <div id="chips" style="display:flex; gap:6px"></div>
+    <div class="grow"></div>
+    <a class="tb" href="/admin/radar/watchitem/" title="Какие инструменты слушает радар и пороги детекторов">Настройки</a>
+    <button type="button" class="tb" id="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 18 18"><path d="M15 10.5A6.5 6.5 0 0 1 7.5 3a6.5 6.5 0 1 0 7.5 7.5Z"/></svg></button>
+  </header>
+
+  <aside class="list">
+    <div class="list-head"><span>Инструмент</span><span>Цена</span><span title="Изменение от открытия дня, МСК">Δ день</span><span title="Аномалий за час">⚑</span></div>
+    <div class="list-body" id="list"></div>
+  </aside>
+
+  <main class="chart-wrap">
+    <div id="chart"></div>
+    <div class="legend" id="legend"></div>
+    <div class="overlay" id="overlay"><div id="overlay-text"></div></div>
+  </main>
+
+  <aside class="book">
+    <div class="pane-head">Стакан <span id="book-age"></span></div>
+    <div class="dom" id="dom"></div>
+    <div class="pane-head">Лента <label class="dim" style="font-weight:400;font-size:11px">от <input id="min-size" type="number" min="0" step="1" placeholder="0"> лотов</label></div>
+    <div class="tape" id="tape"></div>
+  </aside>
+
+  <section class="feed">
+    <div class="pane-head">
+      Аномалии за сутки
+      <span style="display:flex; gap:12px; align-items:center">
+        <select id="kind-filter" title="Тип аномалии">
+          <option value="">все типы</option>
+          <option value="large">крупная сделка</option>
+          <option value="sweep">проход по стакану</option>
+          <option value="wall">стена</option>
+          <option value="pulled">стена снята</option>
+          <option value="eaten">стена съедена</option>
+          <option value="volume">всплеск объёма</option>
+          <option value="oi">скачок ОИ</option>
+        </select>
+        <label><input type="checkbox" id="only-mine"> только выбранный</label>
+      </span>
+    </div>
+    <div class="feed-body">
+      <table>
+        <thead><tr><th>Время, МСК</th><th>Инструмент</th><th>Тип</th><th>Цена</th><th>Объём</th><th title="Во сколько раз выше порога">Сила</th><th>Что видно</th></tr></thead>
+        <tbody id="feed"></tbody>
+      </table>
+      <div class="empty" id="feed-empty"></div>
+    </div>
+  </section>
+
+  <footer class="statusbar" id="statusbar">
+    <span id="live"><span class="pulse"></span><span id="live-text">нет связи</span></span>
+    <span id="counts"></span>
+    <span class="grow"></span>
+    <span id="clock"></span>
+  </footer>
+
+  <script>
+    const MSK = 3 * 3600;
+    const GROUPS = [["legs", "Ноги спредов"], ["extra", "Добавленные"]];
+    const store = {
+      get(key, fallback) { try { const value = localStorage.getItem(key); return value === null ? fallback : value; } catch (error) { return fallback; } },
+      set(key, value) { try { localStorage.setItem(key, value); } catch (error) { /* хранилище недоступно */ } },
+    };
+    let symbol = "{{ symbol|escapejs }}" || store.get("radar-symbol", "");
+    let symbols = [];
+    let others = [];
+    let chartSymbol = "";
+    let focusTime = null;
+    const $ = (id) => document.getElementById(id);
+    const esc = (text) => String(text ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const sec = (iso) => Math.floor(Date.parse(iso) / 1000) + MSK;
+    const clock = (iso) => new Date(Date.parse(iso) + MSK * 1000).toISOString().slice(11, 19);
+    const day = (iso) => new Date(Date.parse(iso) + MSK * 1000).toISOString().slice(5, 10).split("-").reverse().join(".");
+    // Цена — с теми знаками, что прислала биржа: шаг GD 0,1, CR 0,001.
+    function decimals(value) {
+      const text = String(Number(value));
+      if (text.includes("e")) return 6;
+      const dot = text.indexOf(".");
+      return dot < 0 ? 0 : Math.min(6, text.length - dot - 1);
+    }
+    function places(values) { return Math.max(0, ...values.filter((v) => v !== null && v !== undefined).map(decimals)); }
+    function price(value, digits) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+      const d = digits ?? decimals(value);
+      return Number(value).toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
+    }
+    function num(value, digits) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+      const n = Number(value);
+      const d = digits ?? (Math.abs(n) >= 1000 ? 0 : Math.abs(n) >= 10 ? 2 : 4);
+      return n.toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: d });
+    }
+
+    /* график: свечи, дельта, ОИ — три панели одного графика */
+    const chart = LightweightCharts.createChart($("chart"), {
+      autoSize: true,
+      timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 6 },
+      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    });
+    const candles = chart.addSeries(LightweightCharts.CandlestickSeries, { priceLineVisible: true }, 0);
+    const delta = chart.addSeries(LightweightCharts.LineSeries, { lineWidth: 2, priceLineVisible: false, lastValueVisible: true }, 1);
+    const interest = chart.addSeries(LightweightCharts.LineSeries, { lineWidth: 2, priceLineVisible: false, lastValueVisible: true }, 2);
+    const markers = LightweightCharts.createSeriesMarkers(candles, []);
+    chart.panes().forEach((pane, index) => pane.setStretchFactor(index === 0 ? 3 : 1));
+
+    function paintTheme() {
+      chart.applyOptions({
+        layout: { background: { color: css("--bg") }, textColor: css("--muted"), panes: { separatorColor: css("--pane-sep"), separatorHoverColor: css("--accent") } },
+        grid: { vertLines: { color: css("--grid") }, horzLines: { color: css("--grid") } },
+        rightPriceScale: { borderColor: css("--line") },
+        timeScale: { borderColor: css("--line") },
+        crosshair: { vertLine: { color: css("--cross") }, horzLine: { color: css("--cross") } },
+      });
+      const up = css("--green"), down = css("--red");
+      candles.applyOptions({ upColor: up, downColor: down, borderUpColor: up, borderDownColor: down, wickUpColor: up, wickDownColor: down });
+      delta.applyOptions({ color: css("--blue") });
+      interest.applyOptions({ color: css("--violet") });
+    }
+    paintTheme();
+    $("theme").addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      store.set("spread-theme", next);
+      paintTheme();
+      loadChart(true);
+    });
+
+    const MARK = {
+      large: (side) => ({ shape: "circle", position: side < 0 ? "aboveBar" : "belowBar", color: side < 0 ? css("--red") : css("--green") }),
+      sweep: (side) => ({ shape: side < 0 ? "arrowDown" : "arrowUp", position: side < 0 ? "aboveBar" : "belowBar", color: side < 0 ? css("--red") : css("--green"), text: "проход" }),
+      wall: (side) => ({ shape: "square", position: side < 0 ? "aboveBar" : "belowBar", color: css("--orange") }),
+      pulled: (side) => ({ shape: "square", position: side < 0 ? "aboveBar" : "belowBar", color: css("--red"), text: "снята" }),
+      eaten: (side) => ({ shape: "square", position: side < 0 ? "belowBar" : "aboveBar", color: css("--orange"), text: "съедена" }),
+      volume: () => ({ shape: "circle", position: "aboveBar", color: css("--orange"), text: "объём" }),
+      oi: () => ({ shape: "circle", position: "belowBar", color: css("--violet"), text: "ОИ" }),
+    };
+    let chartData = { candles: [], delta: [], oi: [] };
+
+    async function loadChart(keepView) {
+      if (!symbol) return;
+      const switched = chartSymbol !== symbol;
+      try {
+        const response = await fetch("/api/radar/chart/?symbol=" + encodeURIComponent(symbol), { cache: "no-cache" });
+        if (!response.ok) throw new Error(response.status);
+        const body = await response.json();
+        chartData = body;
+        const digits = places(body.candles.slice(-300).flatMap((c) => [c.o, c.c]));
+        candles.applyOptions({ priceFormat: { type: "price", precision: digits, minMove: 1 / 10 ** digits } });
+        candles.setData(body.candles.map((c) => ({ time: sec(c.t), open: c.o, high: c.h, low: c.l, close: c.c })));
+        delta.setData(body.delta.map((p) => ({ time: sec(p.t), value: p.v })));
+        interest.setData(body.oi.map((p) => ({ time: sec(p.t), value: p.v })));
+        const kind = $("kind-filter").value;
+        markers.setMarkers(body.markers.filter((m) => !kind || m.kind === kind)
+          .map((m) => ({ time: Math.floor(sec(m.t) / 60) * 60, ...MARK[m.kind](m.side) })));
+        chartSymbol = symbol;
+        if (focusTime !== null) {
+          chart.timeScale().setVisibleRange({ from: focusTime - 3600, to: focusTime + 1800 });
+          focusTime = null;
+        } else if (switched && !keepView && body.candles.length) {
+          const count = body.candles.length;
+          chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, count - 240), to: count + 6 });
+        }
+        paintLegend();
+      } catch (error) {
+        /* следующий опрос повторит */
+      }
+    }
+
+    function paintLegend(param) {
+      const item = symbols.find((row) => row.symbol === symbol);
+      const name = item ? item.title : symbol;
+      let candle = chartData.candles.at(-1), d = chartData.delta.at(-1), o = chartData.oi.at(-1);
+      if (param && param.time !== undefined) {
+        const bar = param.seriesData.get(candles);
+        const dv = param.seriesData.get(delta), ov = param.seriesData.get(interest);
+        if (bar) candle = { o: bar.open, h: bar.high, l: bar.low, c: bar.close };
+        d = dv ? { v: dv.value } : d;
+        o = ov ? { v: ov.value } : o;
+      }
+      $("legend").innerHTML = symbol ? (
+        `<b>${esc(name)}</b><span>1 мин, МСК</span>` +
+        (candle ? ((d) => `<span>O <span class="v num">${price(candle.o, d)}</span> H <span class="v num">${price(candle.h, d)}</span> L <span class="v num">${price(candle.l, d)}</span> C <span class="v num">${price(candle.c, d)}</span></span>`)(places([candle.o, candle.h, candle.l, candle.c])) : "") +
+        `<span style="color:var(--blue)">дельта за день <span class="v num">${d ? num(d.v, 0) : "—"}</span></span>` +
+        `<span style="color:var(--violet)">ОИ <span class="v num">${o ? num(o.v, 0) : "—"}</span></span>`
+      ) : "";
+    }
+    chart.subscribeCrosshairMove(paintLegend);
+
+    /* состояние: источники, список, стакан, лента, аномалии */
+    function paintChips(statuses) {
+      $("chips").innerHTML = statuses.map((item) =>
+        `<span class="chip ${esc(item.state)}" title="${esc(item.message)}"><i></i>${esc(item.label)}</span>`
+      ).join("");
+    }
+
+    function rowHtml(item) {
+      const s = item.summary || {};
+      const change = s.change === null || s.change === undefined ? "—" : (s.change > 0 ? "+" : "") + num(s.change, 2) + "%";
+      const cls = s.change > 0 ? "up" : s.change < 0 ? "down" : "dim";
+      const ratio = s.volume_ratio ? `<span class="${s.volume_ratio >= 2 ? "hot" : "dim"}">об. ×${num(s.volume_ratio, 1)}</span>` : "";
+      return `<button type="button" class="row ${item.symbol === symbol ? "on" : ""}" data-symbol="${esc(item.symbol)}">
+        <span class="name"><b>${esc(item.title)}</b><span>${esc(item.symbol)} ${ratio}</span></span>
+        <span class="num">${price(s.last)}</span>
+        <span class="num ${cls}">${change}</span>
+        <span class="num"><span class="badge ${s.anomalies ? "lit" : ""}">${s.anomalies || 0}</span></span>
+      </button>`;
+    }
+
+    function paintList() {
+      let html = "";
+      for (const [key, label] of GROUPS) {
+        const rows = symbols.filter((item) => item.group === key);
+        if (!rows.length) continue;
+        html += `<div class="group"><span>${label}</span><span>${rows.length}</span></div>` + rows.map(rowHtml).join("");
+      }
+      if (!symbols.length) {
+        html += `<div class="empty">Радар ещё ничего не слушает. Запустите в отдельном терминале: <b>python manage.py run_radar</b></div>`;
+      }
+      if (others.length) {
+        html += `<div class="group"><span>В базе, не в радаре</span><span>${others.length}</span></div>` + others.map((item) =>
+          `<button type="button" class="row idle" data-other="${esc(item.symbol)}" data-code="${esc(item.code)}">
+            <span class="name"><b>${esc(item.code)}</b><span>${esc(item.pair)} · час ${esc(day(item.t))} ${esc(clock(item.t).slice(0, 5))}</span></span>
+            <span class="num">${price(item.close)}</span><span></span><span></span>
+          </button>`).join("");
+      }
+      $("list").innerHTML = html;
+    }
+
+    $("list").addEventListener("click", (event) => {
+      const row = event.target.closest(".row");
+      if (!row) return;
+      if (row.dataset.symbol) {
+        select(row.dataset.symbol);
+      } else if (row.dataset.other) {
+        const code = row.dataset.code, sym = row.dataset.other;
+        const link = `/admin/radar/watchitem/add/?kind=symbol&code=${encodeURIComponent(sym)}&title=${encodeURIComponent(code)}`;
+        showOverlay(`<b>${esc(code)}</b> есть в базе часовыми свечами, но радар его не слушает.<br><br>` +
+          `<a href="${link}">Добавить в радар</a> — он появится после ближайшего переоткрытия сокета run_radar (до 11 минут).<br><br>` +
+          `<a href="#" id="overlay-close">Закрыть</a>`);
+      }
+    });
+
+    function showOverlay(html) {
+      $("overlay-text").innerHTML = html;
+      $("overlay").classList.add("show");
+      const close = $("overlay-close");
+      if (close) close.addEventListener("click", (event) => { event.preventDefault(); $("overlay").classList.remove("show"); });
+    }
+
+    function select(next, at) {
+      symbol = next;
+      store.set("radar-symbol", next);
+      $("overlay").classList.remove("show");
+      if (at !== undefined) focusTime = at;
+      paintList();
+      refresh();
+      loadChart(false);
+    }
+
+    // Почему нет данных: радар не запущен, Finam не подключён или просто ещё не прислал.
+    function reason(statuses, alive) {
+      if (!alive) return "Нет данных: run_radar не запущен.";
+      const finam = statuses.find((item) => item.name === "finam");
+      if (finam && finam.state !== "ok") return "Finam не подключён: " + finam.message + ".";
+      return "";
+    }
+
+    function paintBook(book, why) {
+      const dom = $("dom");
+      if (!book || (!book.asks.length && !book.bids.length)) {
+        dom.innerHTML = `<div class="empty">${esc(why || "Стакана пока нет: Finam не прислал его по этому символу.")}</div>`;
+        $("book-age").textContent = "";
+        return;
+      }
+      const max = Math.max(...book.asks.map((l) => l[1]), ...book.bids.map((l) => l[1]), 1);
+      const digits = places([...book.asks, ...book.bids].map((l) => l[0]));
+      const level = (side) => ([at, size, wall]) =>
+        `<div class="lvl ${side} ${wall ? "wall" : ""}" title="${wall ? "стена: в разы больше обычного уровня" : ""}"><div class="bar" style="width:${(size / max * 100).toFixed(1)}%"></div><span class="num">${price(at, digits)}</span><span class="num">${num(size, 0)}</span></div>`;
+      const bestAsk = book.asks.length ? book.asks[0][0] : null, bestBid = book.bids.length ? book.bids[0][0] : null;
+      const spread = bestAsk !== null && bestBid !== null ? `спред ${price(bestAsk - bestBid, digits)}` : "";
+      dom.innerHTML = book.asks.slice().reverse().map(level("ask")).join("") + `<div class="mid">${spread}</div>` + book.bids.map(level("bid")).join("");
+      $("book-age").textContent = book.ts ? "обновлён " + clock(book.ts) : "";
+    }
+
+    function paintTape(tape, why) {
+      if (!tape.length) {
+        $("tape").innerHTML = `<div class="empty">${esc(why || "Сделок нет" + (Number($("min-size").value) ? " крупнее фильтра." : "."))}</div>`;
+        return;
+      }
+      const sizes = tape.map((t) => t.s).sort((a, b) => a - b);
+      const median = sizes[Math.floor(sizes.length / 2)] || 0;
+      const digits = places(tape.map((t) => t.p));
+      $("tape").innerHTML = tape.map((t) =>
+        `<div class="tr ${t.d > 0 ? "buy" : t.d < 0 ? "sell" : ""} ${median && t.s >= median * 5 ? "big" : ""}"><span class="num dim">${clock(t.t)}</span><span class="num">${price(t.p, digits)}</span><span class="num">${num(t.s, 0)}</span></div>`
+      ).join("");
+    }
+
+    let feedRows = [];
+    function paintFeed(rows, why) {
+      feedRows = rows;
+      $("feed").innerHTML = rows.map((a, index) => {
+        const arrow = a.side > 0 ? '<span class="up">▲</span>' : a.side < 0 ? '<span class="down">▼</span>' : "";
+        return `<tr data-index="${index}"><td class="num">${esc(day(a.t))} ${esc(clock(a.t))}</td><td>${esc(a.title)}</td>` +
+          `<td>${arrow} <span class="kind ${esc(a.kind)}">${esc(a.kind_label)}</span></td><td class="num">${price(a.price)}</td>` +
+          `<td class="num">${num(a.size, 0)}</td><td class="num">${num(a.score, 1)}</td><td class="text" title="${esc(a.text)}">${esc(a.text)}</td></tr>`;
+      }).join("");
+      $("feed-empty").textContent = rows.length ? "" : why
+        || "Аномалий пока нет. Пороги считаются по истории инструмента: первые часы после запуска радар только набирает статистику.";
+    }
+    $("feed").addEventListener("click", (event) => {
+      const tr = event.target.closest("tr");
+      if (!tr) return;
+      const item = feedRows[Number(tr.dataset.index)];
+      if (item) select(item.symbol, sec(item.t));
+    });
+
+    function query() {
+      const params = new URLSearchParams({ symbol });
+      const min = Number($("min-size").value);
+      if (min > 0) params.set("min", String(min));
+      if ($("kind-filter").value) params.set("kinds", $("kind-filter").value);
+      if ($("only-mine").checked) params.set("only", "1");
+      return params.toString();
+    }
+
+    let busy = false;
+    async function refresh() {
+      if (busy) return;
+      busy = true;
+      try {
+        const response = await fetch("/api/radar/state/?" + query(), { cache: "no-store" });
+        if (!response.ok) throw new Error(response.status);
+        const body = await response.json();
+        symbols = body.symbols;
+        if (body.symbol && body.symbol !== symbol) {
+          symbol = body.symbol;
+          loadChart(false);
+        }
+        paintChips(body.statuses);
+        paintList();
+        const why = reason(body.statuses, body.alive);
+        paintBook(body.book, why);
+        paintTape(body.tape, why);
+        paintFeed(body.anomalies, why);
+        $("statusbar").classList.toggle("live", body.alive);
+        $("live-text").textContent = body.alive ? "радар работает" : "радар не запущен";
+        $("counts").textContent = `символов ${symbols.length} · аномалий в ленте ${body.anomalies.length} · обновлено ${clock(body.now)} МСК`;
+        if (!symbol) paintLegend();
+      } catch (error) {
+        $("statusbar").classList.remove("live");
+        $("live-text").textContent = "сервер не отвечает";
+      } finally {
+        busy = false;
+      }
+    }
+
+    async function loadOthers() {
+      try {
+        const response = await fetch("/api/radar/instruments/", { cache: "no-store" });
+        if (!response.ok) return;
+        others = (await response.json()).instruments;
+        paintList();
+      } catch (error) {
+        /* список вторичен */
+      }
+    }
+
+    for (const id of ["kind-filter", "only-mine"]) $(id).addEventListener("change", refresh);
+    $("kind-filter").addEventListener("change", () => loadChart(true));
+    $("min-size").value = store.get("radar-min", "");
+    $("min-size").addEventListener("change", () => { store.set("radar-min", $("min-size").value); refresh(); });
+
+    setInterval(() => { $("clock").textContent = new Date(Date.now() + MSK * 1000).toISOString().slice(11, 19) + " МСК"; }, 1000);
+    setInterval(() => { if (!document.hidden) refresh(); }, 1000);
+    setInterval(() => { if (!document.hidden) loadChart(true); }, 5000);
+    setInterval(() => { if (!document.hidden) loadOthers(); }, 60000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { refresh(); loadChart(true); } });
+    refresh().then(() => loadChart(false));
+    loadOthers();
+  </script>
+</body>
+</html>

@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     "rates",
     "strategy",
     "charts",
+    "radar",
 ]
 
 MIDDLEWARE = [
@@ -101,6 +102,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Секрет Finam Trade API. В коде и в git его нет.
 FINAM_API_SECRET = os.environ.get("FINAM_API_SECRET", "")
 FINAM_BASE_URL = os.environ.get("FINAM_BASE_URL", "https://api.finam.ru")
+# MOEX AlgoPack (data.moex.com). Пусто — радар работает без него и пишет, что AlgoPack не подключён.
+ALGOPACK_TOKEN = os.environ.get("ALGOPACK_TOKEN", "")
+ALGOPACK_BASE_URL = os.environ.get("ALGOPACK_BASE_URL", "https://apim.moex.com")
 
 # SHIBOR — как в текущем strategies.py. RUSFARCNY подставим, если выберете его.
 FOREIGN_RATE_SOURCE = os.environ.get("FOREIGN_RATE_SOURCE", "SHIBOR")
