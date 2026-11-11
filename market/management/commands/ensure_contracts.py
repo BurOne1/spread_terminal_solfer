@@ -6,8 +6,10 @@ CRU2026 начинается в день склейки CRH2026.
 
 from datetime import datetime, timedelta, timezone
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from market import cross, ngcal
 from market.brent import ensure_window
 from market.brent import windows as brent_windows
 from market.finam import future_symbol
@@ -49,7 +51,23 @@ class Command(BaseCommand):
                         f"{row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}"
                     )
                 continue
+            if pair.cross or pair.listed:
+                module = cross if pair.cross else ngcal
+                client = _client()
+                try:
+                    rows = module.ensure(pair, start, end, client=client, update=True)
+                finally:
+                    if client is not None:
+                        client.close()
+                source = "даты из Finam" if client is not None else "даты по правилу биржи: нет ключа Finam"
+                self.stdout.write(f"{pair.code}: окон {len(rows)}, {source}")
+                for row in rows:
+                    self.stdout.write(f"  {row['code']} {row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}")
+                continue
             if pair.foreign_source == "TRI":
+                if pair.code == "TRIGDS":
+                    self.stdout.write("TRIGDS: контракты чужие, GD из TRIGD, SI из USD, спот из GOLD")
+                    continue
                 if pair.base:
                     self.stdout.write(f"{pair.code}: вторые кварталы ног {pair.base}")
                     continue
@@ -112,3 +130,11 @@ class Command(BaseCommand):
                 self.stdout.write(
                     f"  {mark} {instrument.code} {row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}"
                 )
+
+
+def _client():
+    """Finam для точных дат экспирации CME и NG; без ключа — правило биржи."""
+    if not settings.FINAM_API_SECRET:
+        return None
+    from market.finam import FinamClient
+    return FinamClient(settings.FINAM_API_SECRET, settings.FINAM_BASE_URL)

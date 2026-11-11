@@ -24,6 +24,7 @@ import websockets
 from django.conf import settings
 from django.db import close_old_connections
 
+from market import cross, ngcal
 from market.brent import front_symbols
 from market.finam import PERP_SYMBOL, SPOT_SYMBOL, FinamClient, FinamError, future_symbol, parse_decimal
 from market.models import Candle, Instrument, Pair
@@ -108,6 +109,12 @@ def live_symbols():
         if pair.nymex:
             symbols.extend(front_symbols(pair, now))
             continue
+        if pair.cross:
+            symbols.extend(cross.front_symbols(pair, now))
+            continue
+        if pair.listed:
+            symbols.extend(ngcal.front_symbols(pair, now))
+            continue
         if pair.calendar:
             symbols.extend(quarter_symbols(owner(pair.base), now, 2))
             continue
@@ -117,7 +124,8 @@ def live_symbols():
                 legs = ["TRIGD", "USD", "GOLD"] if pair.tri_code == "TRIGL" else [pair.tri_code, "USD"]
                 for code in legs:
                     symbols.extend(quarter_symbols(owner(code), now, 2)[1:])
-            elif pair.code != "TRIGL":
+            elif pair.code not in ("TRIGL", "TRIGDS"):
+                # TRIGL и TRIGDS берут кварталы у TRIGD, GOLD и USD: те подписаны своими парами.
                 symbols.extend(quarter_symbols(pair, now, 1))
             continue
         symbols.extend([pair.perp_symbol, pair.spot_symbol])

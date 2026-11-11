@@ -43,6 +43,10 @@ def rebuild_spread(pair_code="", since=None):
             total += _rebuild_calendar(pair, since)
         elif pair.nymex:
             total += _rebuild_nymex(pair, since)
+        elif pair.cross:
+            total += _rebuild_cross(pair, since)
+        elif pair.listed:
+            total += _rebuild_listed(pair, since)
         else:
             total += _rebuild_pair(pair, since)
     return total
@@ -54,6 +58,8 @@ TRI_DEPS = {
     "TRISV": ("TRISV", "SILVER", "USD"),
     "TRIGL": ("TRIGD", "GOLD", "USD"),
 }
+# Треугольник на споте золота — только если такая пара заведена (add_extra_spreads).
+TRI_SPOT_DEPS = {"TRIGDS": ("TRIGD", "GOLD", "USD")}
 
 
 def mark_dirty(pair_code, since):
@@ -67,7 +73,13 @@ def mark_dirty(pair_code, since):
 
 def _dependencies():
     """Пара → пары, чьи свечи её меняют. Календари и секонды — из базы."""
+    from market.cross import CROSS
     deps = dict(TRI_DEPS)
+    # Кросс-пары берут кварталы Мосбиржи у USD, CNY, EUR.
+    crosses = Pair.objects.filter(active=True, foreign_source="CMEFX", code__in=list(CROSS)).values_list("code", flat=True)
+    deps.update({code: (code, *CROSS[code]["deps"]) for code in crosses})
+    spot = Pair.objects.filter(active=True, code__in=list(TRI_SPOT_DEPS)).values_list("code", flat=True)
+    deps.update({code: TRI_SPOT_DEPS[code] for code in spot})
     rows = Pair.objects.filter(active=True).exclude(base="").values_list("code", "base", "foreign_source")
     for code, base, source in rows:
         deps[code] = TRI_DEPS.get(base, (base,)) if source == "TRI" else (base,)
@@ -401,9 +413,108 @@ def _rebuild_nymex(pair, since=None):
     return _store(pair, rows, since)
 
 
+def _rebuild_cross(pair, since=None):
+    """a × b × mult − c за час, где торговали все три ноги, в будний час Мосбиржи.
+
+    Окна — кварталы CME пары (см. market/cross.py), ноги Мосбиржи — кварталы
+    того же месяца у пар USD, CNY, EUR. fair = 0, spread_rate = raw; spot —
+    цена c (Si или Eu), от неё уровни. days_left — до экспирации CME.
+    """
+    from market.cross import CROSS, legs, parse_code
+
+    spec = CROSS.get(pair.code)
+    if spec is None:
+        return 0
+    load_from = _load_from(since)
+    windows = _traded(_quarters(pair, load_from))
+    if not windows:
+        return 0
+    wanted = {}
+    for window in windows:
+        a, _b, c = legs(spec, *parse_code(spec, window["code"]))
+        wanted[window["id"]] = (a, c)
+    symbols = {symbol for pairs in wanted.values() for symbol in pairs}
+    instruments = list(Instrument.objects.filter(finam_symbol__in=symbols))
+    bars = _ohlc_many(instruments, load_from)
+    by_symbol = {instrument.finam_symbol: bars[instrument.id] for instrument in instruments}
+    mult = spec["mult"]
+    rows = []
+    for window in windows:
+        a_symbol, c_symbol = wanted[window["id"]]
+        a_bars, c_bars = by_symbol.get(a_symbol), by_symbol.get(c_symbol)
+        if not a_bars or not c_bars:
+            continue
+        roll = window["roll_at"]
+        for ts in sorted(window["bars"]):
+            if since is not None and ts < since:
+                continue
+            if window["listed_at"] is not None and ts < window["listed_at"]:
+                continue
+            if ts >= roll or not _common_hour(ts):
+                continue
+            a, c = a_bars.get(ts), c_bars.get(ts)
+            if a is None or c is None:
+                continue
+            b = window["bars"][ts]
+            synthetic = [float(a[index]) * float(b[index]) * mult for index in (0, 1)]
+            raw_open, raw = synthetic[0] - float(c[0]), synthetic[1] - float(c[1])
+            rows.append(SpreadBar(
+                pair=pair, ts=ts, contract_id=window["id"],
+                future_close=money(synthetic[1]), perp_close=money(float(c[1])), spot=money(float(c[1])),
+                raw_spread=money(raw), days_left=_days(roll, ts)[0], ruonia=None, foreign_rate=money(float(b[1])),
+                fair=money(0.0), spread_rate=money(raw), raw_open=money(raw_open), rate_open=money(raw_open),
+            ))
+    return _store(pair, rows, since)
+
+
+def _rebuild_listed(pair, since=None):
+    """Готовый спред биржи (NGX6NGZ6): raw — его цена, fair = 0.
+
+    spot — последняя цена фронта окна (NGX6), от неё уровни в процентах;
+    час без цены фронта до этого момента пропускается.
+    """
+    load_from = _load_from(since)
+    windows = _traded(_quarters(pair, load_from))
+    if not windows:
+        return 0
+    fronts = Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FOREIGN, roll_at__isnull=False)
+    if load_from is not None:
+        fronts = fronts.filter(roll_at__gt=load_from)
+    fronts = list(fronts)
+    front_bars = _ohlc_many(fronts, load_from)
+    front_of = {front.roll_at: front_bars[front.id] for front in fronts}
+    rows = []
+    for window in windows:
+        roll = window["roll_at"]
+        front = front_of.get(roll) or {}
+        spot = _stepper(sorted((ts, prices[1]) for ts, prices in front.items()))
+        for ts in sorted(window["bars"]):
+            if since is not None and ts < since:
+                continue
+            if window["listed_at"] is not None and ts < window["listed_at"]:
+                continue
+            if ts >= roll:
+                continue
+            price = spot(ts)
+            if price is None:
+                continue
+            opened, closed = (float(value) for value in window["bars"][ts])
+            rows.append(SpreadBar(
+                pair=pair, ts=ts, contract_id=window["id"],
+                future_close=money(closed), perp_close=money(price), spot=money(price),
+                raw_spread=money(closed), days_left=_days(roll, ts)[0], ruonia=None, foreign_rate=None,
+                fair=money(0.0), spread_rate=money(closed), raw_open=money(opened), rate_open=money(opened),
+            ))
+    return _store(pair, rows, since)
+
+
 OZ_GRAMS = 31.1034768
 # Чей вечный в треугольнике. Ключ — pair.tri_code: у секондов это база.
-TRI_PERP = {"TRIGD": "GOLD", "TRISV": "SILVER", "TRIGL": "GOLD"}
+TRI_PERP = {"TRIGD": "GOLD", "TRISV": "SILVER", "TRIGL": "GOLD", "TRIGDS": "GOLD"}
+# Треугольники со спотом металла вместо вечного: фандинга нет.
+TRI_SPOT = {"TRIGDS"}
+# Чьи кварталы металла берёт треугольник, если не свои.
+TRI_OWNER = {"TRIGDS": "TRIGD"}
 
 
 def _common_hour(ts):
@@ -504,10 +615,11 @@ def _rebuild_tri(pair, since=None):
     load_from = _load_from(since)
     metal = Pair.objects.filter(code=TRI_PERP.get(pair.tri_code, "")).first()
     usd = Pair.objects.filter(code="USD").first()
-    owner = Pair.objects.filter(code=pair.tri_code).first()
+    owner = Pair.objects.filter(code=TRI_OWNER.get(pair.tri_code, pair.tri_code)).first()
     if metal is None or usd is None or owner is None:
         return 0
-    perp = Instrument.objects.filter(pair=metal, code=metal.perp_code).first()
+    third = metal.spot_code if pair.tri_code in TRI_SPOT else metal.perp_code
+    perp = Instrument.objects.filter(pair=metal, code=third).first()
     perp_bars = _ohlc(perp, load_from)
     si_contracts, metal_contracts = _legs(pair, _si_contracts(usd, load_from), _quarters(owner, load_from))
     if not perp_bars or not si_contracts or not metal_contracts:

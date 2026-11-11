@@ -114,7 +114,7 @@ def _points(pair, start="", end="", basis="close", rows=None):
         legs = _calendar_legs(pair, codes, since)
     elif pair.nymex:
         legs = _nymex_legs(pair, codes, since)
-    elif pair.foreign_source != "TRI":
+    elif pair.foreign_source != "TRI" and not pair.cross and not pair.listed:
         scale = pair.future_scale or 1
         perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
         if perp is not None:
@@ -272,17 +272,19 @@ def _level_spot(pair):
     """Цена, от которой уровни — проценты.
 
     У треугольника это вечный металл, руб/грамм. У календаря — спот
-    последнего бара: спот базы или, у GD и SV, фронт. У BRNYMEX — цена BZ.
+    последнего бара: спот базы или, у GD и SV, фронт. У BRNYMEX — цена BZ,
+    у кросс-пар — Si или Eu, у календаря NG — фронт NG.
     """
-    if pair.calendar or pair.nymex:
+    if pair.calendar or pair.zero_fair:
         last = SpreadBar.objects.filter(pair=pair).order_by("-ts").values_list("spot", flat=True).first()
         return None if last is None else float(last)
     if pair.foreign_source == "TRI":
-        from strategy.rebuild import TRI_PERP
+        from strategy.rebuild import TRI_PERP, TRI_SPOT
         metal = Pair.objects.filter(code=TRI_PERP.get(pair.tri_code, "")).first()
         if metal is None:
             return None
-        perp = Instrument.objects.filter(pair=metal, code=metal.perp_code).first()
+        third = metal.spot_code if pair.tri_code in TRI_SPOT else metal.perp_code
+        perp = Instrument.objects.filter(pair=metal, code=third).first()
     else:
         perp = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
         if perp is None:
@@ -302,10 +304,11 @@ def _funding(pair):
         ]
     from rates.models import FundingDay
     from rates.funding import funding_field
-    if pair is not None and (pair.calendar or pair.nymex):
+    if pair is not None and (pair.calendar or pair.zero_fair):
         return []
     if pair is not None and pair.foreign_source == "TRI":
-        if pair.tri_code == "TRIGL":
+        from strategy.rebuild import TRI_SPOT
+        if pair.tri_code == "TRIGL" or pair.tri_code in TRI_SPOT:
             return []
         from strategy.rebuild import TRI_PERP
         metal = Pair.objects.filter(code=TRI_PERP.get(pair.tri_code, "")).first()
@@ -328,7 +331,7 @@ def _funding_scale(pair):
     """
     if pair is None:
         return 1000
-    if pair.calendar or pair.nymex:
+    if pair.calendar or pair.zero_fair:
         return 1
     if pair.foreign_source == "TRI":
         return 100 if pair.tri_code == "TRISV" else 1
@@ -376,7 +379,7 @@ def home(request):
 def _title(pair):
     if pair is None:
         return ""
-    if pair.foreign_source == "TRI" or pair.calendar or pair.nymex:
+    if pair.foreign_source == "TRI" or pair.calendar or pair.zero_fair:
         return pair.title
     return f"{pair.future_root} − {pair.perp_code}"
 
@@ -390,6 +393,11 @@ def _subtitle(pair):
         return f"{_rate_label(pair)}, {pair.quote}"
     if pair.nymex:
         return "месячные, только общие часы бирж, справедливый 0, $/барр."
+    if pair.cross:
+        from market.cross import CROSS
+        return f"{CROSS[pair.code]['note']}, третья нога CME, справедливый 0"
+    if pair.listed:
+        return "календарь биржи одним инструментом, $/MMBtu, уровни от цены фронта"
     rate = "только RUONIA" if pair.foreign_source == "NONE" else _rate_label(pair)
     return f"Спот {pair.spot_code}, ставка {rate}, {pair.quote}"
 
@@ -431,6 +439,8 @@ def _rate_label(pair):
         seconds = " на секондах" if pair.base else ""
         if pair.tri_code == "TRIGL":
             return f"треугольник{seconds}, ноги чистятся отдельно"
+        if pair.code == "TRIGDS":
+            return "треугольник на споте GLDRUB_TOM, RUONIA + ставка ФРС, без фандинга"
         return f"треугольник{seconds}, RUONIA и фандинг вечного"
     if pair.calendar:
         base = Pair.objects.filter(code=pair.base).first()
@@ -442,6 +452,8 @@ def _rate_label(pair):
         return "EWMA14 фандинга"
     if pair.nymex:
         return "BR MOEX − BZ NYMEX"
+    if pair.cross or pair.listed:
+        return pair.title
     return pair.foreign_source
 
 

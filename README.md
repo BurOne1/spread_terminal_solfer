@@ -20,6 +20,10 @@ Django + PostgreSQL, данные Finam Trade API, Мосбиржи, ЦБ и Byb
 | GDCAL, SVCAL | секонд − фронт GD/SV, доллары | ставка ФРС, рублёвой нет |
 | TRIGD2, TRIGL2 | TRIGD и TRIGL на вторых кварталах | RUONIA + ставка ФРС |
 | BRNYMEX | BR Мосбиржи − BZ NYMEX, месячные, $/барр. | нет, fair = 0 |
+| CRCNH | CR × CNH × 1000 − Si, CNH — CME, пункты Si | нет, fair = 0 |
+| SI6E | Si × 6E − Eu, 6E — CME, пункты Eu | нет, fair = 0 |
+| NGCAL | календарь NG Мосбиржи одним инструментом (NGX6NGZ6), $/MMBtu | нет, fair = 0 |
+| TRIGDS | GD·SI − GLDRUB_TOM: TRIGD на споте золота, без фандинга | RUONIA + ставка ФРС |
 
 Лоты: валюта 1000, золото 1 г, серебро 100 г, TRIGD 1 унция, TRISV 10 унций.
 
@@ -36,6 +40,14 @@ BRZ2026 ↔ BZF2027, окно до экспирации BZ (30.11.2026, 20:50 UT
 fair = 0, лот 1000 баррелей (1 BZ против 100 BR). Лонг входит без правила
 знака, порога `MIN_PRICE_SPREAD` нет. Календарь в `market/brent.py`.
 
+Кросс-пары (`market/cross.py`): окно — квартал CME, он истекает за два рабочих
+дня до третьей среды, на три дня раньше Мосбиржи; в этот день все три ноги
+переходят на следующий квартал. Бар — только в будний час Мосбиржи, где есть
+свечи всех трёх ног. Календарь NG (`market/ngcal.py`): окно до экспирации
+первой ноги, потом следующая пара месяцев; уровни — доли цены фронта NG.
+Даты экспирации CME и NG `ensure_contracts` и `add_extra_spreads` берут из
+Finam (`/v1/assets/{symbol}`), без ключа — по правилу биржи (`market/expiry.py`).
+
 ## Запуск
 
 `.env` в корне: `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, `FINAM_API_SECRET`
@@ -46,12 +58,18 @@ python manage.py migrate
 python manage.py add_eur | add_gold | add_silver | add_tri | add_btc   # нужные пары
 python manage.py add_seconds        # календари и треугольники на секондах, после базовых пар
 python manage.py add_brent          # BR − BZ NYMEX и месячные контракты
+python manage.py add_extra_spreads  # CRCNH, SI6E, NGCAL, TRIGDS
 python manage.py sync_rates
 python manage.py sync_funding
 python manage.py sync_bars          # Finam отдаёт час примерно за 30 дней
 python manage.py build_spread
 python manage.py runserver
 ```
+
+Поиск инструментов Finam: `python manage.py finam_search NG --mic EDT` — по части
+тикера, символа или названия и по части MIC (`--mics` — все биржи, `--bars` —
+сколько часовых баров у найденных). Список всех активных инструментов
+скачивается постранично из `/v1/assets/all` раз в сутки в `var/finam_assets.json`.
 
 Постоянно работают `run_live` (Finam), для крипты `run_bybit` и, для радара, `run_radar`.
 `run_live` копит котировки и бары в памяти и раз в 5 с пишет их пачкой,
@@ -71,6 +89,15 @@ python manage.py runserver
 скрытая вкладка сервер не опрашивает.
 Порядок пар в списке спредов меняется перетаскиванием внутри групп Front и Second
 и тоже хранится в браузере.
+Рисунки: Ctrl+Z отменяет, Ctrl+Y или Ctrl+Shift+Z повторяют (в любой раскладке), то же —
+кнопки на панели рисования. Перетаскивание или подбор цвета — один шаг, история
+своя у каждой пары и сбрасывается при её смене или перезагрузке страницы.
+Переключатель «график стратегии» в панели «Стратегия» убирает панель PnL
+(сделки на спреде и их счёт остаются), выбор хранится в браузере.
+Кнопка с фотоаппаратом (Alt+S) копирует изображение графика со всеми панелями и
+легендами в буфер обмена; по http без https буфер браузеру недоступен, тогда
+снимок скачивается PNG-файлом. Легенда индикатора «фандинг − контанго»
+показывает итог и отдельно фандинг и контанго в тех же единицах.
 
 `run_strategy --pair CNY` — то же в консоли с уровнями пары: закрытые сделки
 пишет в `PaperTrade`, открытую позицию держит в `PositionState`.

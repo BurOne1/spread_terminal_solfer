@@ -56,6 +56,7 @@
     .tool { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border: 0; border-radius: 4px; background: transparent; color: var(--ink); cursor: pointer; padding: 0; }
     .tool:hover { background: var(--hover); }
     .tool.on { background: var(--accent-soft); color: var(--accent); }
+    .tool:disabled { opacity: .35; cursor: default; background: transparent; }
     .tool.danger:hover { color: var(--red); }
     .tools .sep { width: 24px; height: 1px; margin: 4px 0; }
 
@@ -87,6 +88,13 @@
     .side select:focus, .side input[type="number"]:focus { border-color: var(--accent); }
     .check { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; cursor: pointer; }
     .check input { accent-color: var(--accent); }
+    .switch { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; cursor: pointer; user-select: none; }
+    .switch input { position: absolute; opacity: 0; pointer-events: none; }
+    .switch .knob { position: relative; width: 30px; height: 16px; flex: none; border-radius: 8px; background: var(--line-strong); transition: background .15s; }
+    .switch .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--ink); transition: transform .15s; }
+    .switch input:checked + .knob { background: var(--accent); }
+    .switch input:checked + .knob::after { transform: translateX(14px); background: #fff; }
+    .switch input:focus-visible + .knob { outline: 2px solid var(--accent); outline-offset: 2px; }
     .fold { border-top: 1px solid var(--line); }
     .fold summary { display: flex; align-items: center; gap: 8px; padding: 9px 0; cursor: pointer; list-style: none; font-weight: 600; user-select: none; }
     .fold summary::-webkit-details-marker { display: none; }
@@ -187,6 +195,7 @@
     </select>
     <div class="grow"></div>
     <a class="tb" href="/radar/" title="Радар: крупные участники, стены, всплески">Радар</a>
+    <button type="button" class="tb" id="snapshot" title="Скопировать изображение графика (Alt+S)"><svg viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="10" rx="1.5"/><circle cx="9" cy="9.5" r="2.6"/><path d="M6.5 4.5 7.5 3h3l1 1.5"/></svg></button>
     <button type="button" class="tb" id="fit" title="Вписать график (Alt+R)"><svg viewBox="0 0 18 18"><path d="M3 7V3h4M15 7V3h-4M3 11v4h4M15 11v4h-4"/></svg></button>
     <button type="button" class="tb" id="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 18 18"><path d="M15 10.5A6.5 6.5 0 0 1 7.5 3a6.5 6.5 0 1 0 7.5 7.5Z"/></svg></button>
   </header>
@@ -209,6 +218,8 @@
     <button type="button" class="tool" data-tool="date-range" title="Диапазон дат"><svg viewBox="0 0 18 18"><path d="M3 4v10M15 4v10M4.5 9h9M6.5 7l-2 2 2 2M11.5 7l2 2-2 2"/></svg></button>
     <button type="button" class="tool" data-tool="price-label" title="Метка цены"><svg viewBox="0 0 18 18"><path d="M2.5 9 6 5.5h9.5v7H6Z"/></svg></button>
     <div class="sep"></div>
+    <button type="button" class="tool" id="draw-undo" title="Отменить (Ctrl+Z)" disabled><svg viewBox="0 0 18 18"><path d="M6.5 4 3 7.5 6.5 11"/><path d="M3.5 7.5H11a4 4 0 0 1 0 8H8"/></svg></button>
+    <button type="button" class="tool" id="draw-redo" title="Повторить (Ctrl+Y, Ctrl+Shift+Z)" disabled><svg viewBox="0 0 18 18"><path d="M11.5 4 15 7.5 11.5 11"/><path d="M14.5 7.5H7a4 4 0 0 0 0 8h3"/></svg></button>
     <button type="button" class="tool danger" data-clear="1" title="Удалить все рисунки"><svg viewBox="0 0 18 18"><path d="M4 5h10M7 5V3.5h4V5M5 5l.7 9.5h6.6L13 5"/></svg></button>
   </nav>
 
@@ -244,6 +255,7 @@
         <select id="entry-mode"><option value="touch">при достижении уровня</option><option value="reverse">обратное пробитие</option></select>
       </label>
       <label class="check"><input id="average" type="checkbox" checked> усреднять глубже</label>
+      <label class="switch" title="Панель PnL под графиком. Стратегия считается и без неё: сделки остаются на спреде"><input id="pnl-chart" type="checkbox" checked><span class="knob"></span> график стратегии</label>
       <details class="fold" data-fold="long-entry" open>
         <summary><i class="dot" style="background:var(--green)"></i>Вход лонг<span class="badge" id="long-entry-count"></span><span class="chev">▶</span></summary>
         <div class="fold-body"><div id="long-entry-list"></div><button class="add" type="button" data-add="long-entry">+ уровень</button></div>
@@ -321,7 +333,7 @@
         layout: {
           background: { color: css("--bg") }, textColor: css("--muted"), fontFamily: "-apple-system, Segoe UI, Roboto, sans-serif", fontSize: 11,
           // Разделитель панелей контрастнее сетки, при наведении — синий, за него тянут высоту.
-          panes: { separatorColor: css("--pane-sep"), separatorHoverColor: css("--accent"), enableResize: true },
+          panes: { separatorColor: css("--pane-sep"), separatorHoverColor: css("--accent-soft"), enableResize: true },
           attributionLogo: false,
         },
         grid: { vertLines: { color: css("--grid") }, horzLines: { color: css("--grid") } },
@@ -353,6 +365,10 @@
     let equitySeries = null;
     let equityMarkers = null;
     let carryOn = null;
+    // Панель PnL можно выключить в «Стратегии»; выбор хранится в браузере.
+    const PNL_KEY = "spread-pnl-chart";
+    let pnlOn = readStore(PNL_KEY, true) !== false;
+    let pnlShown = null;
     const pnlPieces = [];
     let drawings = null;
     try {
@@ -364,20 +380,23 @@
     const zLines = [];
     let armed = null;
 
-    // Нижние панели: 1 — индикатор (если включён), дальше — PnL.
+    // Нижние панели: 1 — индикатор (если включён), дальше — PnL (если включён).
     // Пустая панель библиотекой удаляется сама, поэтому при смене набора
     // серии индикатора и PnL пересоздаются в нужном порядке.
     const PANE_KEY = "spread-panes";
     const PANE_DEFAULT = { spread: 3, carry: 1, pnl: 1.2 };
-    function pnlPane() { return carryOn ? 2 : 1; }
+    function pnlPane() { return pnlOn ? (carryOn ? 2 : 1) : -1; }
     function ensureLowerPanes(on) {
-      if (carryOn === on && equitySeries) return;
+      if (carryOn === on && pnlShown === pnlOn) return;
       clearPnlPieces();
       zLines.splice(0);
       if (carrySeries) { chart.removeSeries(carrySeries); carrySeries = null; }
       if (equitySeries) { chart.removeSeries(equitySeries); equitySeries = null; }
+      equityMarkers = null;
       carryOn = on;
+      pnlShown = pnlOn;
       if (on) carrySeries = chart.addSeries(LightweightCharts.LineSeries, { color: colors.carry, lineWidth: 2, priceLineVisible: false, priceFormat }, 1);
+      if (!pnlOn) { applyPaneSizes(); return; }
       equitySeries = chart.addSeries(LightweightCharts.LineSeries, { color: "rgba(0,0,0,0)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, priceFormat }, pnlPane());
       equitySeries.createPriceLine({ price: 0, color: colors.zero, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: false });
       equityMarkers = LightweightCharts.createSeriesMarkers(equitySeries, []);
@@ -485,22 +504,22 @@
         if (end < 0) end = days.length;
         const slice = values.slice(Math.max(0, end - windowDays), end);
         const avg = slice.length ? slice.reduce((sum, item) => sum + item, 0) / slice.length : 0;
+        // value = funding − basis; части идут в легенду при наведении.
+        const parts = (fundingPart, basisPart) => ({ time, value: fundingPart - basisPart, funding: fundingPart, basis: basisPart });
         if (kind === "rate") {
           // Bybit: фандинг каждые 8 часов без выходных, календарные дни и 365.
-          if (summed) return { time, value: avg * 3 * windowDays * (point.price || 0) - point.raw };
+          if (summed) return parts(avg * 3 * windowDays * (point.price || 0), point.raw);
           const price = Number(point.price) || 0;
           if (!price) return { time };
-          return { time, value: avg * 3 * 365 * 100 - point.raw / price * 365 / windowDays * 100 };
+          return parts(avg * 3 * 365 * 100, point.raw / price * 365 / windowDays * 100);
         }
         // Мосбиржа: фандинг начисляется по торговым дням, как в движке.
         // Срок — будни до склейки, год — 250 торговых дней. Праздники не учтены.
         const workDays = Math.max(1, weekdays(day, windowDays));
-        if (summed) return { time, value: avg / scale * workDays - point.raw };
+        if (summed) return parts(avg / scale * workDays, point.raw);
         const price = Number(point.price) || 0;
         if (!price) return { time };
-        const basis = point.raw / price * TRADING_YEAR / workDays * 100;
-        const fundingAnn = avg / scale / price * TRADING_YEAR * 100;
-        return { time, value: fundingAnn - basis };
+        return parts(avg / scale / price * TRADING_YEAR * 100, point.raw / price * TRADING_YEAR / workDays * 100);
       });
     }
     const INDICATOR_TITLES = {
@@ -512,6 +531,7 @@
     let lastCount = 0;
     let pointByTime = new Map();
     let carryByTime = new Map();
+    let carryParts = new Map();
     let pnlByTime = new Map();
     function timesOf() {
       const times = new Set();
@@ -580,10 +600,16 @@
         ensureLowerPanes(mode !== "off");
         clearZ();
         carryByTime = new Map();
+        carryParts = new Map();
         if (carrySeries) {
           const data = align(times, indicatorData());
-          data.forEach((point) => { if (point.value !== undefined && point.value !== null) carryByTime.set(point.time, point.value); });
-          carrySeries.setData(data);
+          data.forEach((point) => {
+            if (point.value === undefined || point.value === null) return;
+            carryByTime.set(point.time, point.value);
+            if (point.funding !== undefined) carryParts.set(point.time, point);
+          });
+          // В график — только время и значение, части остаются в carryParts.
+          carrySeries.setData(data.map((point) => point.value === undefined ? { time: point.time } : { time: point.time, value: point.value }));
           const lines = mode === "zscore" ? [1.5, -1.5, 0] : [0];
           lines.forEach((price) => zLines.push(carrySeries.createPriceLine({ price, color: colors.zero, lineWidth: 1, lineStyle: price ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Dotted, axisLabelVisible: price !== 0 })));
         }
@@ -599,10 +625,10 @@
           color: sideOf(point.marker) === "short" ? colors.short : colors.long, shape: "circle",
         });
         rateMarkers.setMarkers([...new Map(events.map((point) => [unix(point.t), point])).values()].map(marker));
-        equitySeries.setData(align(times, pnl.map((point) => ({ time: unix(point.t), value: point.equity }))));
         clearPnlPieces();
+        if (equitySeries) equitySeries.setData(align(times, pnl.map((point) => ({ time: unix(point.t), value: point.equity }))));
         const pnlColors = { "": colors.raw, long: colors.long, short: colors.short };
-        pnlSegments(pnl).forEach((segment) => {
+        if (equitySeries) pnlSegments(pnl).forEach((segment) => {
           const series = chart.addSeries(LightweightCharts.LineSeries, {
             color: pnlColors[segment.side] || pnlColors[""],
             lineWidth: 2,
@@ -614,7 +640,7 @@
           series.setData(segment.data);
           pnlPieces.push(series);
         });
-        equityMarkers.setMarkers(events.map(marker));
+        if (equityMarkers) equityMarkers.setMarkers(events.map(marker));
         // Новый бар встаёт на свой пустой час, индексы старых баров не меняются.
         // Если смотрели на последний бар — сдвигаемся за ним, как TradingView.
         const added = Math.max(0, times.length - lastCount);
@@ -661,9 +687,17 @@
       const carry = document.getElementById("legend-1");
       carry.style.display = carryOn ? "" : "none";
       if (carryOn) {
-        const value = carryByTime.get(time ?? lastKey(carryByTime));
+        const at = time ?? lastKey(carryByTime);
+        const value = carryByTime.get(at);
         const unit = indicatorSelect.value === "carry" ? " %" : "";
         carry.replaceChildren(span(INDICATOR_TITLES[indicatorSelect.value] || INDICATOR_TITLES.carry), span(value === undefined ? "—" : fmt(value, 2) + unit, "v", colors.carry));
+        const parts = carryParts.get(at);
+        if (parts) {
+          // Годовые: фандинг и контанго в % годовых. Накопленный: фандинг до склейки и raw, в единицах спреда.
+          const basisLabel = indicatorSelect.value === "carry" ? "контанго" : "контанго (raw)";
+          const fundingLabel = indicatorSelect.value === "carry" ? "фандинг" : "фандинг до склейки";
+          carry.append(pair(fundingLabel, fmt(parts.funding, 2) + unit, colors.long), pair(basisLabel, fmt(parts.basis, 2) + unit, colors.shortTp));
+        }
       }
       const row = pnlByTime.get(time ?? lastKey(pnlByTime));
       const side = row ? sideOf(row.marker) : "";
@@ -1109,6 +1143,87 @@
       if (matchMedia("(max-width: 900px)").matches) setSide(false);
     });
     document.getElementById("fit").addEventListener("click", fitAll);
+    const pnlToggle = document.getElementById("pnl-chart");
+    pnlToggle.checked = pnlOn;
+    pnlToggle.addEventListener("change", () => {
+      pnlOn = pnlToggle.checked;
+      writeStore(PNL_KEY, pnlOn);
+      paint(false);
+      // Новую панель библиотека раскладывает позже двух кадров: легенды ставим ещё раз.
+      setTimeout(placeLegendsSoon, 250);
+    });
+
+    // Снимок графика: все панели и рисунки (takeScreenshot) и поверх — легенды
+    // панелей, которые на странице лежат отдельными элементами. В буфер обмена
+    // браузер пускает только на https и localhost; иначе снимок скачивается файлом.
+    function drawLegend(ctx, legend, box, ratio) {
+      const area = legend.getBoundingClientRect();
+      if (!area.width || legend.style.display === "none") return;
+      let x = (area.left - box.left) * ratio;
+      const y = (area.top - box.top + area.height / 2) * ratio;
+      ctx.textBaseline = "middle";
+      const walker = document.createTreeWalker(legend, NodeFilter.SHOW_TEXT);
+      let previous = null;
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        const text = node.textContent.trim();
+        if (!text) continue;
+        const parent = node.parentElement;
+        const style = getComputedStyle(parent);
+        if (previous && previous !== parent.closest("b, i")) x += 10 * ratio;
+        previous = parent.closest("b, i");
+        ctx.font = `${style.fontWeight} ${parseFloat(style.fontSize) * ratio}px ${style.fontFamily}`;
+        ctx.fillStyle = style.color;
+        ctx.fillText(text, x, y);
+        x += ctx.measureText(text).width + 4 * ratio;
+      }
+    }
+    function snapshotCanvas() {
+      const shot = chart.takeScreenshot();
+      const box = document.getElementById("chart").getBoundingClientRect();
+      const ratio = shot.width / box.width;
+      const canvas = document.createElement("canvas");
+      canvas.width = shot.width;
+      canvas.height = shot.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(shot, 0, 0);
+      document.querySelectorAll(".chart-wrap .legend").forEach((legend) => drawLegend(ctx, legend, box, ratio));
+      return canvas;
+    }
+    function flash(button, text) {
+      const old = button.title;
+      button.title = text;
+      button.classList.add("on");
+      const note = document.getElementById("status");
+      const before = note.textContent;
+      note.textContent = text;
+      setTimeout(() => { button.title = old; button.classList.remove("on"); if (note.textContent === text) note.textContent = before; }, 2500);
+    }
+    async function copySnapshot() {
+      const button = document.getElementById("snapshot");
+      const canvas = snapshotCanvas();
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) return flash(button, "Снимок не получился");
+      if (window.isSecureContext && navigator.clipboard && window.ClipboardItem) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+          return flash(button, "Изображение графика скопировано");
+        } catch (error) {
+          /* браузер не дал доступ к буферу — скачиваем файл */
+        }
+      }
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `${currentPair() || "spread"}_${stamp}.png`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+      flash(button, "Буфер обмена недоступен по http: снимок сохранён файлом");
+    }
+    document.getElementById("snapshot").addEventListener("click", copySnapshot);
+    document.addEventListener("keydown", (event) => {
+      if (event.altKey && event.code === "KeyS") { event.preventDefault(); copySnapshot(); }
+    });
     document.getElementById("ranges").addEventListener("click", (event) => {
       const button = event.target.closest("[data-days]");
       if (!button) return;
@@ -1129,10 +1244,13 @@
     }
     function loadDrawings() {
       if (!drawings) return;
+      restoring = true;
       try { drawings.importJSON(localStorage.getItem(drawingKey()) || "[]"); } catch (error) { drawings.clear(); }
       drawings.drawings().forEach((item) => {
         if (item.kind === "parallel-channel" && item.style && item.style.levels) drawings.update({ ...item, style: dashMiddle({ ...item.style }) });
       });
+      restoring = false;
+      resetDrawHistory();
     }
     const styleKey = "drawing-styles";
     function savedStyles() { return readStore(styleKey, {}) || {}; }
@@ -1223,30 +1341,88 @@
       if (item.kind !== "parallel-channel" || !item.style || !item.style.levels) return;
       drawings.update({ ...item, style: dashMiddle({ ...item.style, levels: item.style.levels.map((level) => ({ ...level })) }) });
     });
-    const drawHistory = [];
+    // История рисунков для Ctrl+Z / Ctrl+Y — своя у каждой пары, сбрасывается при смене.
+    // Библиотека шлёт change на каждое движение мыши, поэтому шаг истории
+    // записывается, когда изменения затихли и кнопка мыши отпущена: перетаскивание
+    // или подбор цвета — один шаг. В браузер рисунки сохраняются сразу.
+    const DRAW_STEPS = 100;
+    const DRAW_SETTLE = 350;
+    const drawPast = [];
+    const drawFuture = [];
+    let drawState = "[]";
+    let drawTimer = null;
+    let pointerDown = false;
     let restoring = false;
-    function rememberDrawings() {
-      if (!drawings || restoring) return;
-      const json = drawings.exportJSON();
-      if (drawHistory.at(-1) === json) return;
-      drawHistory.push(json);
-      if (drawHistory.length > 40) drawHistory.shift();
+    function saveDrawingsNow(json) {
       try { localStorage.setItem(drawingKey(), json); } catch (error) { /* хранилище недоступно */ }
     }
-    function undoDrawing() {
-      if (!drawings || drawHistory.length < 2) return;
-      drawHistory.pop();
-      restoring = true;
-      drawings.importJSON(drawHistory.at(-1) || "[]");
-      restoring = false;
-      try { localStorage.setItem(drawingKey(), drawHistory.at(-1) || "[]"); } catch (error) { /* хранилище недоступно */ }
+    function markHistory() {
+      const undo = document.getElementById("draw-undo"), redo = document.getElementById("draw-redo");
+      if (undo) undo.disabled = !drawPast.length;
+      if (redo) redo.disabled = !drawFuture.length;
     }
+    function resetDrawHistory() {
+      clearTimeout(drawTimer);
+      drawPast.splice(0);
+      drawFuture.splice(0);
+      drawState = drawings ? drawings.exportJSON() : "[]";
+      markHistory();
+    }
+    function commitDrawings() {
+      clearTimeout(drawTimer);
+      drawTimer = null;
+      if (!drawings) return;
+      const json = drawings.exportJSON();
+      if (json === drawState) return;
+      drawPast.push(drawState);
+      if (drawPast.length > DRAW_STEPS) drawPast.shift();
+      drawFuture.splice(0);
+      drawState = json;
+      markHistory();
+    }
+    function scheduleCommit() {
+      clearTimeout(drawTimer);
+      drawTimer = setTimeout(() => { if (pointerDown) scheduleCommit(); else commitDrawings(); }, DRAW_SETTLE);
+    }
+    function rememberDrawings() {
+      if (!drawings || restoring) return;
+      saveDrawingsNow(drawings.exportJSON());
+      scheduleCommit();
+    }
+    function applyDrawings(json) {
+      restoring = true;
+      try { drawings.importJSON(json); } finally { restoring = false; }
+      drawings.select([]);
+      saveDrawingsNow(json);
+      showEditor();
+      markHistory();
+    }
+    function undoDrawing() {
+      if (!drawings) return;
+      if (drawTimer) commitDrawings();
+      if (!drawPast.length) return;
+      drawFuture.push(drawState);
+      drawState = drawPast.pop();
+      applyDrawings(drawState);
+    }
+    function redoDrawing() {
+      if (!drawings) return;
+      if (drawTimer) commitDrawings();
+      if (!drawFuture.length) return;
+      drawPast.push(drawState);
+      drawState = drawFuture.pop();
+      applyDrawings(drawState);
+    }
+    wrap.addEventListener("pointerdown", () => { pointerDown = true; });
+    addEventListener("pointerup", () => { if (pointerDown) { pointerDown = false; if (drawTimer) scheduleCommit(); } });
     const hotTools = ["", "trend-line", "ray", "horizontal-line", "vertical-line", "parallel-channel", "fib-retracement", "rectangle", "price-range"];
     document.addEventListener("keydown", (event) => {
       if (event.target.closest("input, select, textarea")) return;
       if (event.altKey && event.key.toLowerCase() === "r") { event.preventDefault(); fitAll(); return; }
       if (!drawings) return;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undoDrawing(); return; }
+      // По коду клавиши, а не по букве: в русской раскладке Ctrl+Z приходит как «я».
+      if ((event.ctrlKey || event.metaKey) && (event.code === "KeyY" || (event.code === "KeyZ" && event.shiftKey))) { event.preventDefault(); redoDrawing(); return; }
+      if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") { event.preventDefault(); undoDrawing(); return; }
       if (event.key === "Escape") { drawings.setTool(null); drawings.select([]); markTool(""); showEditor(); return; }
       if (event.key === "Delete" || event.key === "Backspace") { drawings.selection().forEach((id) => drawings.remove(id)); return; }
       if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -1256,7 +1432,9 @@
     document.getElementById("drawbar").addEventListener("click", (event) => {
       const button = event.target.closest("button");
       if (!button || !drawings) return;
-      if (button.dataset.clear) { if (confirm("Удалить все рисунки этой пары?")) drawings.clear(); return; }
+      if (button.id === "draw-undo") { undoDrawing(); return; }
+      if (button.id === "draw-redo") { redoDrawing(); return; }
+      if (button.dataset.clear) { if (confirm("Удалить все рисунки этой пары? Вернуть — Ctrl+Z.")) drawings.clear(); return; }
       if (!("tool" in button.dataset)) return;
       drawings.setTool(button.dataset.tool || null);
       markTool(button.dataset.tool || "");
@@ -1265,7 +1443,6 @@
     if (drawings) drawings.on("change", rememberDrawings);
     markTool("");
     loadDrawings();
-    rememberDrawings();
 
     const strategySaved = readStore(STRATEGY_KEY, {});
     if (strategySaved.entry) document.getElementById("entry-mode").value = strategySaved.entry;

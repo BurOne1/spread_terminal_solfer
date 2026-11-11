@@ -110,6 +110,19 @@ def _brent(pair, start, end):
     ]
 
 
+def _cross(pair, start, end):
+    """Кварталы CME пары и ноги Мосбиржи тех же окон."""
+    from market.cross import CROSS, legs, parse_code
+    spec = CROSS[pair.code]
+    windows = [target for target, _optional in _brent(pair, start, end)]
+    symbols = set()
+    for window in windows:
+        a, _b, c = legs(spec, *parse_code(spec, window.code))
+        symbols.update((a, c))
+    moex = list(Instrument.objects.filter(finam_symbol__in=symbols))
+    return [(item, True) for item in windows + moex]
+
+
 def _quarters(owner, start, end, early=False):
     """Кварталы, чьё окно задевает [start, end). early — с окна предыдущего, там он секонд."""
     if owner is None:
@@ -134,9 +147,14 @@ def _owner(code):
 def _targets(pair, start, end):
     if pair.calendar:
         return _quarters(_owner(pair.base), start, end, early=True)
-    if pair.nymex:
+    if pair.nymex or pair.listed:
         return _brent(pair, start, end)
+    if pair.cross:
+        return _cross(pair, start, end)
     if pair.foreign_source == "TRI":
+        if pair.code == "TRIGDS":
+            # Кварталы GD — у TRIGD, SI — у USD, спот золота — у GOLD.
+            return [target for code in ("TRIGD", "USD") for target in _quarters(_owner(code), start, end)]
         if pair.base:
             legs = ["TRIGD", "USD", "GOLD"] if pair.tri_code == "TRIGL" else [pair.tri_code, "USD"]
             return [target for code in legs for target in _quarters(_owner(code), start, end, early=True)]

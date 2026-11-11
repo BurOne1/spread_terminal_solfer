@@ -114,6 +114,42 @@ class FinamClient:
         """Последние сделки: {"symbol", "trades": [...]}."""
         return self._json(f"{self._base}/v1/instruments/{quote(symbol, safe='')}/trades/latest", symbol)
 
+    def account_id(self) -> str:
+        """Первый счёт ключа: описание инструмента Finam может требовать account_id."""
+        if getattr(self, "_account", None) is None:
+            self._account = ""
+            try:
+                response = self._http.post(f"{self._base}/v1/sessions/details", json={"token": self.token()})
+                if response.status_code < 400:
+                    body = response.json()
+                    ids = body.get("account_ids") or body.get("accountIds") or []
+                    self._account = str(ids[0]) if ids else ""
+            except (httpx.HTTPError, ValueError):
+                pass
+        return self._account
+
+    def asset(self, symbol: str) -> dict:
+        """Описание инструмента: тип, шаг цены, у фьючерса — дата экспирации."""
+        path = f"{self._base}/v1/assets/{quote(symbol, safe='')}"
+        account = self.account_id()
+        response = self._get(path, {"account_id": account} if account else {})
+        if response.status_code == 401:
+            self._token = None
+            response = self._get(path, {"account_id": account} if account else {})
+        self._raise(response, symbol=symbol)
+        return response.json()
+
+    def all_assets(self, cursor=0, only_active=True) -> dict:
+        """Страница списка всех инструментов: {"assets": [...], "next_cursor": ...}."""
+        params = {"cursor": cursor, "only_active": "true" if only_active else "false"}
+        path = f"{self._base}/v1/assets/all"
+        response = self._get(path, params)
+        if response.status_code == 401:
+            self._token = None
+            response = self._get(path, params)
+        self._raise(response)
+        return response.json()
+
     def _json(self, path, symbol):
         response = self._get(path, {})
         if response.status_code == 401:

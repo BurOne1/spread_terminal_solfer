@@ -160,3 +160,71 @@ class BrentLiveSymbolsTests(TestCase):
         leg = Instrument.objects.get(code="BZG2027")
         self.assertEqual((leg.pair, leg.kind, leg.finam_symbol), (self.pair, "foreign", "BZG27@XNYM"))
         self.assertEqual(live.find_instrument("BZG27@XNYM"), leg)
+
+
+
+class ExpiryTests(SimpleTestCase):
+    def test_exchange_rules(self):
+        from market.expiry import cme_fx_expiry, moex_ng_expiry
+        self.assertEqual(cme_fx_expiry(2026, 12), datetime(2026, 12, 14).date())
+        self.assertEqual(cme_fx_expiry(2027, 3), datetime(2027, 3, 15).date())
+        self.assertEqual(moex_ng_expiry(2026, 11), datetime(2026, 11, 26).date())
+
+    def test_finam_expiry_fields(self):
+        from market.expiry import finam_expiry
+        from market.finam import FinamError
+
+        class Client:
+            def __init__(self, body):
+                self.body = body
+
+            def asset(self, symbol):
+                if self.body is None:
+                    raise FinamError("нет", status=404)
+                return self.body
+        self.assertEqual(finam_expiry(Client({"futureDetails": {"expirationDate": "2026-11-25T00:00:00Z"}}), "X"), datetime(2026, 11, 25).date())
+        # Полночь по Москве приходит как 21:00 UTC предыдущего дня.
+        self.assertEqual(finam_expiry(Client({"futureDetails": {"expirationDate": "2026-12-13T21:00:00Z"}}), "X"), datetime(2026, 12, 14).date())
+        self.assertEqual(finam_expiry(Client({"expiration_date": {"year": 2026, "month": 12, "day": 14}}), "X"), datetime(2026, 12, 14).date())
+        self.assertIsNone(finam_expiry(Client(None), "X"))
+        self.assertIsNone(finam_expiry(None, "X"))
+
+    def test_cross_and_ng_windows(self):
+        from market import cross, ngcal
+        rows = cross.windows(cross.CROSS["SI6E"], datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 11, 2, tzinfo=UTC))
+        self.assertEqual(
+            (rows[0]["code"], rows[0]["a"], rows[0]["symbol"], rows[0]["c"]),
+            ("6EZ2026", "SiZ6@RTSX", "6EZ26@XCME", "EuZ6@RTSX"),
+        )
+        self.assertEqual(rows[0]["roll_at"], datetime(2026, 12, 14, 14, 0, tzinfo=UTC))
+        moved = cross.windows(cross.CROSS["SI6E"], datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 11, 2, tzinfo=UTC),
+                              {"6EZ26@XCME": datetime(2026, 12, 11).date()})
+        self.assertEqual(moved[0]["roll_at"], datetime(2026, 12, 11, 14, 0, tzinfo=UTC))
+        ng = ngcal.windows(datetime(2026, 11, 10, tzinfo=UTC), datetime(2026, 11, 11, tzinfo=UTC))
+        self.assertEqual((ng[0]["symbol"], ng[0]["front"]), ("NGX6NGZ6@RTSX", "NGX6@RTSX"))
+        self.assertEqual(ng[0]["roll_at"], datetime(2026, 11, 26, 20, 50, tzinfo=UTC))
+        december = ngcal.windows(datetime(2026, 12, 10, tzinfo=UTC), datetime(2026, 12, 11, tzinfo=UTC))
+        self.assertEqual(december[0]["symbol"], "NGZ6NGF7@RTSX")
+
+
+class ExtraLiveSymbolsTests(TestCase):
+    def test_cross_and_ng_move_after_expiry(self):
+        Pair.objects.filter(code="CNY").update(active=False)
+        Pair.objects.create(code="CRCNH", title="x", future_root="CR", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="CMEFX", lot=1)
+        Pair.objects.create(code="NGCAL", title="x", future_root="NG", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="LISTED", lot=100)
+        with frozen(datetime(2026, 12, 14, 12, 0, tzinfo=UTC)):
+            before = live.live_symbols()
+        with frozen(datetime(2026, 12, 14, 15, 0, tzinfo=UTC)):
+            after = live.live_symbols()
+        self.assertEqual(before, ["CNHZ26@XCME", "CRZ6@RTSX", "SiZ6@RTSX", "NGZ6NGF7@RTSX", "NGZ6@RTSX"])
+        self.assertEqual(after[:3], ["CNHH27@XCME", "CRH7@RTSX", "SiH7@RTSX"])
+
+
+class OwnPairTypeTests(TestCase):
+    def test_own_pair_with_similar_type_is_not_cross(self):
+        from market.management.commands.sync_bars import _targets
+        own = Pair.objects.create(code="CRUSI", title="своя", future_root="CR", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="CROSS")
+        made = Pair.objects.create(code="CRCNH", title="x", future_root="CR", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="CMEFX")
+        self.assertEqual((own.cross, own.zero_fair, made.cross, made.zero_fair), (False, False, True, True))
+        start = datetime(2026, 11, 1, tzinfo=UTC)
+        self.assertEqual(_targets(own, start, start + timedelta(days=10)), [])

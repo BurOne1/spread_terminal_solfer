@@ -348,3 +348,107 @@ class BrentTests(TestCase):
         _points, trades, _opened = run(bars(rates), [], long_needs_sign=False, min_spread=0.0, **LEVELS)
         self.assertEqual([trade["side"] for trade in trades], ["LONG"])
         self.assertEqual(entry_rules(self.pair), {"long_needs_sign": False, "min_spread": 0.0})
+
+
+# CNHZ26 и 6EZ26 истекают 14.12.2026 (понедельник, за два рабочих дня до третьей среды).
+CROSS_TS = datetime(2026, 12, 10, 10, 0, tzinfo=UTC)  # четверг
+CROSS_SATURDAY = datetime(2026, 12, 12, 10, 0, tzinfo=UTC)
+
+
+def make_cross():
+    """CRCNH с ногами Z2026: CR 12.4, CNH 6.7, Si 82 900 → raw 12.4×6.7×1000 − 82 900 = 180."""
+    from market import cross
+    usd = Pair.objects.create(code="USD", title="доллар", future_root="Si", perp_code="USDRUBF", perp_symbol="", spot_code="", spot_symbol="", foreign_source="DFEDTARU")
+    cny = Pair.objects.get(code="CNY")
+    si = Instrument.objects.create(pair=usd, code="SiZ2026", finam_symbol="SiZ6@RTSX", kind="future")
+    cr = Instrument.objects.create(pair=cny, code="CRZ2026.T", finam_symbol="CRZ6@RTSX", kind="future")
+    pair = Pair.objects.create(code="CRCNH", title="CR × CNH − Si", future_root="CR", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="CMEFX", lot=1)
+    cross.ensure(pair, datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 12, 20, tzinfo=UTC))
+    cnh = Instrument.objects.get(code="CNHZ2026")
+    for ts in (CROSS_TS, CROSS_SATURDAY):
+        candle(cr, ts, Decimal("12.40"), Decimal("12.40"))
+        candle(cnh, ts, Decimal("6.70"), Decimal("6.70"))
+        candle(si, ts, Decimal("82800"), Decimal("82900"))
+    candle(cnh, CROSS_TS + timedelta(hours=1), Decimal("6.71"), Decimal("6.71"))
+    return pair, cnh
+
+
+class CrossTests(TestCase):
+    def test_cross_rate_minus_moex_leg_in_points(self):
+        pair, cnh = make_cross()
+        self.assertEqual(cnh.roll_at, datetime(2026, 12, 14, 14, 0, tzinfo=UTC))
+        self.assertEqual(rebuild.rebuild_spread("CRCNH"), 1)
+        bar = SpreadBar.objects.get(pair=pair)
+        # Суббота и час только с CNH пропущены.
+        self.assertEqual(bar.ts, CROSS_TS)
+        self.assertAlmostEqual(float(bar.raw_spread), 180.0, places=4)
+        self.assertAlmostEqual(float(bar.raw_open), 280.0, places=4)
+        self.assertEqual((float(bar.fair), float(bar.spot)), (0.0, 82900.0))
+        self.assertEqual(bar.days_left, 4)
+        self.assertEqual(entry_rules(pair), {"long_needs_sign": False, "min_spread": 0.0})
+
+    def test_moex_leg_rebuilds_cross(self):
+        make_cross()
+        rebuild._dirty.clear()
+        rebuild.mark_dirty("USD", CROSS_TS)
+        self.assertIn("CRCNH", rebuild.flush_dirty())
+
+
+NG_TS = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
+
+
+class ListedSpreadTests(TestCase):
+    def test_ng_calendar_price_is_spread_and_front_gives_spot(self):
+        from market import ngcal
+        pair = Pair.objects.create(code="NGCAL", title="NG", future_root="NG", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="LISTED", lot=100, quote="USD")
+        ngcal.ensure(pair, datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 11, 20, tzinfo=UTC))
+        spread = Instrument.objects.get(code="NGX6NGZ6")
+        front = Instrument.objects.get(code="NGX2026")
+        self.assertEqual((spread.finam_symbol, front.finam_symbol), ("NGX6NGZ6@RTSX", "NGX6@RTSX"))
+        self.assertEqual(spread.roll_at, front.roll_at)
+        candle(spread, NG_TS - timedelta(hours=1), Decimal("-0.30"), Decimal("-0.31"))
+        candle(front, NG_TS, Decimal("3.40"), Decimal("3.45"))
+        candle(spread, NG_TS, Decimal("-0.31"), Decimal("-0.35"))
+        candle(spread, NG_TS + timedelta(hours=1), Decimal("-0.36"), Decimal("-0.33"))
+        self.assertEqual(rebuild.rebuild_spread("NGCAL"), 2)
+        bars = list(SpreadBar.objects.filter(pair=pair).order_by("ts"))
+        # Час до первой цены фронта пропущен: уровням не от чего считаться.
+        self.assertEqual([bar.ts for bar in bars], [NG_TS, NG_TS + timedelta(hours=1)])
+        self.assertAlmostEqual(float(bars[0].raw_spread), -0.35, places=6)
+        self.assertAlmostEqual(float(bars[1].spot), 3.45, places=6)
+        self.assertEqual(float(bars[0].fair), 0.0)
+
+
+class TriangleSpotTests(TestCase):
+    def test_spot_gold_instead_of_perpetual(self):
+        make_usd()
+        gold = Pair.objects.create(
+            code="GOLD", title="золото", future_root="GL", perp_code="GLDRUBF", perp_symbol="GLDRUBF@RTSX",
+            spot_code="GLDRUB_TOM", spot_symbol="GLDRUB_TOM@MISX", foreign_source="NONE", lot=1,
+        )
+        perp = Instrument.objects.create(pair=gold, code="GLDRUBF", finam_symbol="GLDRUBF@RTSX", kind="perp")
+        spot = Instrument.objects.create(pair=gold, code="GLDRUB_TOM", finam_symbol="GLDRUB_TOM@MISX", kind="spot")
+        candle(perp, BEFORE_ROLL, Decimal("9000"), Decimal("9100"))
+        candle(spot, BEFORE_ROLL, Decimal("9050"), Decimal("9080"))
+        tri = Pair.objects.create(
+            code="TRIGD", title="GD + SI − GLDRUBF", future_root="GD", perp_code="GLDRUBF", perp_symbol="",
+            spot_code="SI", spot_symbol="", foreign_source="TRI", lot=1,
+        )
+        make_quarters(tri, "GD", {"Z2026": [(BEFORE_ROLL, "2900", "2950")]})
+        spot_tri = Pair.objects.create(
+            code="TRIGDS", title="GD + SI − GLDRUB_TOM", future_root="GD", perp_code="GLDRUB_TOM", perp_symbol="",
+            spot_code="SI", spot_symbol="", foreign_source="TRI", lot=1,
+        )
+        self.assertEqual(rebuild.rebuild_spread("TRIGDS"), 1)
+        rebuild.rebuild_spread("TRIGD")
+        on_spot = SpreadBar.objects.get(pair=spot_tri)
+        on_perp = SpreadBar.objects.get(pair=tri)
+        self.assertAlmostEqual(float(on_spot.raw_spread), rebuild._tri_values(2950, 95.5, 9080, 16.0, 4.0, 1)[0], places=5)
+        self.assertAlmostEqual(float(on_perp.raw_spread), rebuild._tri_values(2950, 95.5, 9100, 16.0, 4.0, 1)[0], places=5)
+        self.assertEqual(on_spot.contract.code, "GDZ2026")
+        from strategy.runner import funding_of
+        self.assertEqual(funding_of(spot_tri), ([], "daily"))
+        self.assertEqual(spot_tri.quarters_code, "TRIGD")
+        rebuild._dirty.clear()
+        rebuild.mark_dirty("GOLD", BEFORE_ROLL)
+        self.assertIn("TRIGDS", rebuild.flush_dirty())

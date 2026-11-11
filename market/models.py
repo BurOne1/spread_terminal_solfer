@@ -51,15 +51,35 @@ class Pair(models.Model):
         return self.foreign_source == "NYMEX"
 
     @property
+    def cross(self):
+        """CR × CNH − Si, Si × 6E − Eu: третья нога с CME, см. market/cross.py.
+
+        Только пары из market.cross.CROSS: у своих пар тип может называться похоже.
+        """
+        from market.cross import CROSS
+        return self.foreign_source == "CMEFX" and self.code in CROSS
+
+    @property
+    def listed(self):
+        """Готовый спред биржи одним инструментом, см. market/ngcal.py."""
+        return self.foreign_source == "LISTED"
+
+    @property
+    def zero_fair(self):
+        """Справедливое значение ноль: spread_rate = raw, фандинга нет."""
+        return self.nymex or self.cross or self.listed
+
+    @property
     def tri_code(self):
         """TRIGD, TRISV или TRIGL. У треугольника на секондах — его база."""
         return self.base or self.code
 
     @property
     def quarters_code(self):
-        """Пара, чьи кварталы задают окна. У TRIGL свои ноги чужие, окна — GL из GOLD."""
+        """Пара, чьи кварталы задают окна. У TRIGL свои ноги чужие, окна — GL из GOLD.
+        У TRIGDS — GD из TRIGD: тот же треугольник, только третья нога спот."""
         code = self.base or self.code
-        return "GOLD" if code == "TRIGL" else code
+        return {"TRIGL": "GOLD", "TRIGDS": "TRIGD"}.get(code, code)
 
 
 class Instrument(models.Model):

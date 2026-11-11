@@ -70,11 +70,11 @@ def funding_of(pair):
     """
     from rates.funding import funding_field
     from rates.models import FundingDay
-    if pair.calendar or pair.nymex:
+    if pair.calendar or pair.zero_fair:
         return [], "daily"
     if pair.foreign_source == "TRI":
-        from strategy.rebuild import OZ_GRAMS, TRI_PERP
-        if pair.tri_code == "TRIGL":
+        from strategy.rebuild import OZ_GRAMS, TRI_PERP, TRI_SPOT
+        if pair.tri_code == "TRIGL" or pair.tri_code in TRI_SPOT:
             return [], "daily"
         metal = Pair.objects.filter(code=TRI_PERP.get(pair.tri_code, "")).first()
         field = funding_field(metal)
@@ -134,6 +134,6 @@ def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close"
 
 def entry_rules(pair):
     """У BR − BZ fair = 0 и спред в центах: правило знака и рублёвый порог не подходят."""
-    if pair.nymex:
+    if pair.zero_fair:
         return {"long_needs_sign": False, "min_spread": 0.0}
     return {}
