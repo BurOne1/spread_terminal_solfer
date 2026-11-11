@@ -228,3 +228,14 @@ class OwnPairTypeTests(TestCase):
         self.assertEqual((own.cross, own.zero_fair, made.cross, made.zero_fair), (False, False, True, True))
         start = datetime(2026, 11, 1, tzinfo=UTC)
         self.assertEqual(_targets(own, start, start + timedelta(days=10)), [])
+
+
+class AddUsdTests(TestCase):
+    def test_creates_pair_and_contracts(self):
+        from django.core.management import call_command
+        from io import StringIO
+        call_command("add_usd", stdout=StringIO())
+        pair = Pair.objects.get(code="USD")
+        self.assertEqual((pair.future_root, pair.future_scale, pair.spot_symbol), ("Si", 1000, "USD000UTSTOM@MISX"))
+        self.assertTrue(Instrument.objects.filter(pair=pair, kind="future", finam_symbol__startswith="Si").exists())
+        self.assertEqual(Instrument.objects.get(code="USDRUB_TOM").finam_symbol, "USD000UTSTOM@MISX")

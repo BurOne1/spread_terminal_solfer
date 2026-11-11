@@ -1,0 +1,17 @@
+# __USER__ при установке заменяется на вашего пользователя Linux: см. deploy/README.md, шаг «Службы».
+# Только если нужна пара BTC (Bybit).
+[Unit]
+Description=spread_terminal: run_bybit
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=/opt/spread_terminal
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/spread_terminal/venv/bin/python manage.py run_bybit
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

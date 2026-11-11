@@ -1,0 +1,17 @@
+# __USER__ при установке заменяется на вашего пользователя Linux: см. deploy/README.md, шаг «Службы».
+# Сайт: gunicorn слушает только 127.0.0.1:8000, снаружи его отдаёт nginx.
+# Два воркера по два потока — под 2 vCPU и 2 ГБ памяти, рядом с run_live и run_radar.
+[Unit]
+Description=spread_terminal: сайт (gunicorn)
+After=network.target postgresql.service
+
+[Service]
+User=__USER__
+WorkingDirectory=/opt/spread_terminal
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/spread_terminal/venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:8000 --workers 2 --threads 2 --timeout 60 --access-logfile -
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -50,12 +50,14 @@ Finam (`/v1/assets/{symbol}`), без ключа — по правилу бир�
 
 ## Запуск
 
+Развёртывание на сервере (nginx, gunicorn, systemd, перенос базы) — `deploy/README.md`.
+
 `.env` в корне: `DJANGO_SECRET_KEY`, `POSTGRES_PASSWORD`, `FINAM_API_SECRET`
 (и при необходимости `POSTGRES_DB/USER/HOST/PORT`).
 
 ```
 python manage.py migrate
-python manage.py add_eur | add_gold | add_silver | add_tri | add_btc   # нужные пары
+python manage.py add_usd | add_eur | add_gold | add_silver | add_tri | add_btc   # нужные пары
 python manage.py add_seconds        # календари и треугольники на секондах, после базовых пар
 python manage.py add_brent          # BR − BZ NYMEX и месячные контракты
 python manage.py add_extra_spreads  # CRCNH, SI6E, NGCAL, TRIGDS
@@ -77,7 +79,7 @@ python manage.py runserver
 (календари и треугольники — вслед за своими ногами). Раз в сутки обновляет
 ставки и фандинг. Символы фронта и секонда пересчитываются при каждом
 переоткрытии сокета (раз в 11 минут), недостающий квартал или месяц заводится сам.
-Пары USD в командах нет: её надо завести вручную, `fix_usd` правит спот и масштаб.
+Пару USD заводит `add_usd` (`fix_usd` правит спот и масштаб у заведённой раньше вручную).
 
 ## График
 

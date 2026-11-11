@@ -24,7 +24,16 @@ SECRET_KEY = os.environ.get(
     "",
 )
 DEBUG = os.environ.get("DJANGO_DEBUG", "1") == "1"
-ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+# На сервере: DJANGO_ALLOWED_HOSTS=172.16.207.66,spread.example.ru — адреса, по которым открывают сайт.
+ALLOWED_HOSTS = ["127.0.0.1", "localhost"] + [
+    host.strip() for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()
+]
+# Вход в админку по https требует адрес сайта: https://spread.example.ru
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip() for origin in os.environ.get("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if origin.strip()
+]
+if not DEBUG and not SECRET_KEY:
+    raise RuntimeError("DJANGO_DEBUG=0 без DJANGO_SECRET_KEY: задайте ключ в .env")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -97,6 +106,8 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+# Сюда collectstatic складывает стили админки, отдаёт их nginx (deploy/nginx-spread.conf).
+STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Секрет Finam Trade API. В коде и в git его нет.
