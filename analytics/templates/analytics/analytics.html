@@ -63,12 +63,15 @@
     .card .sub { padding: 0 10px; color: var(--muted); font-size: 11.5px; min-height: 17px; }
     .card .best { padding: 2px 10px 0; font-size: 12px; min-height: 18px; }
     .plot { height: 360px; }
+    .card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding-right: 10px; }
+    .card-head h3 { flex: 1; }
+    .card-head .tb { height: 26px; margin-top: 6px; font-size: 12px; border: 1px solid var(--line-strong); }
     .empty { display: grid; place-items: center; height: 360px; color: var(--muted); padding: 20px; text-align: center; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     th, td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
     th:first-child, td:first-child { text-align: left; }
     th { color: var(--muted); font-weight: 400; }
-    .up { color: var(--green); } .down { color: var(--red); }
+    .up { color: var(--green); } .down { color: var(--red); } .dim { color: var(--muted); }
     @media (max-width: 1000px) {
       body { grid-template-columns: 1fr; grid-template-rows: 46px auto minmax(0, 1fr); grid-template-areas: "top" "side" "main"; overflow: auto; height: auto; }
       .grid { grid-template-columns: 1fr; }
@@ -111,6 +114,7 @@
         <option value="1">1 период</option><option value="2" selected>2 периода</option></select></label>
       <label class="field"><span>Дней до экспир. ≤</span><input type="number" id="max_days" min="0" max="400" value="0" title="0 — всё окно контракта"></label>
       <label class="field"><span>Капитал, % цены</span><input type="number" id="capital" min="1" max="1000" step="1" value="100" title="100 — номинал, ~30 — примерно ГО двух ног"></label>
+      <label class="field"><span>Порог зоны, % лучшей</span><input type="number" id="share" min="5" max="100" step="5" value="35" title="Клетка входит в зону, если сглаженная метрика дохода не ниже этой доли лучшей клетки"></label>
       <label class="field"><span>Издержки за круг</span><input type="number" id="cost" min="0" step="any" value="0" title="В единицах спреда, вход и выход вместе"></label>
     </div>
     <label class="field"><span>Метрика сетки дохода</span>
@@ -124,8 +128,15 @@
       <section class="card"><h3>Вход × выход: доход сделки</h3><div class="sub" id="sub-returns"></div><div class="best" id="best-returns"></div><div class="plot" id="plot-returns"></div></section>
       <section class="card"><h3>Движение спреда к нулю</h3><div class="sub">медиана по годам, каждый контракт в своём масштабе: + сужение, − расхождение</div><div class="best" id="best-move"></div><div class="plot" id="plot-move"></div></section>
       <section class="card"><h3>Куда шёл спред: лонг или шорт</h3><div class="sub">медиана по годам, каждый контракт в своём масштабе: + рос (лонг), − падал (шорт)</div><div class="best" id="best-direction"></div><div class="plot" id="plot-direction"></div></section>
+      <section class="card"><h3>Риск: MAE</h3><div class="sub">худшее движение против позиции на пути до выхода, % капитала, максимум по годам: зелёный — спокойно, красный — тянуло в минус</div><div class="best" id="best-mae"></div><div class="plot" id="plot-mae"></div></section>
+      <section class="card"><h3>Локальное движение в сигмах (z)</h3><div class="sub">(выход − вход) / (σ дневных изменений за 20 дн. до входа × √дней); уровень и ноль не важны. + рос (лонг), − падал (шорт); |z| ≥ 2 — сильнее шума</div><div class="best" id="best-zscore"></div><div class="plot" id="plot-zscore"></div></section>
     </div>
-    <section class="card" style="margin-top:8px"><h3>Лучшие диапазоны</h3><div class="sub">клетки сетки дохода с наибольшей сглаженной метрикой, не ближе 5 дней друг к другу</div><div id="ranges" style="padding:6px 0 4px; overflow-x:auto"></div></section>
+    <section class="card" style="margin-top:8px">
+      <div class="card-head"><h3>Зоны входа и выхода</h3><a class="tb" id="export" href="#" title="Таблица зон и параметры расчёта в Excel">⤓ Excel</a></div>
+      <div class="sub">основа — сетка дохода: клетки не ниже порога от лучшей, в плюс ≥ 40 % лет. Проверка: «куда шёл спред» и z не против стороны (важен знак; слабые движения не мешают). Дни — до экспирации, от дальнего к ближнему; номера — рамки на карте дохода</div>
+      <div class="best" id="zone-target"></div>
+      <div id="ranges" style="padding:6px 0 4px; overflow-x:auto"></div>
+    </section>
   </main>
 
   <script>
@@ -139,7 +150,9 @@
     const fmt = (value, digits = 2, sign = false) => value === null || value === undefined ? "—"
       : (sign && value > 0 ? "+" : "") + Number(value).toLocaleString("ru-RU", { minimumFractionDigits: digits, maximumFractionDigits: digits });
     const pct = (value) => value === null || value === undefined ? "—" : Math.round(value * 100) + "%";
-    const PARAMS = ["hold", "years", "smooth", "periods", "max_days", "capital", "cost", "metric"];
+    const PARAMS = ["hold", "years", "smooth", "periods", "max_days", "capital", "cost", "metric", "share"];
+    // MAE: зелёный — путь спокойный, красный — сильно тянуло против позиции.
+    const RISK = [[0, "#1a9850"], [0.35, "#d9ef8b"], [0.6, "#fee08b"], [0.8, "#f46d43"], [1, "#a50026"]];
     // Настройки и исключения — свои у каждой пары, в браузере.
     const settingsKey = () => "analytics:" + $("pair").value;
     let settings = {};
@@ -243,7 +256,7 @@
       $("best-lines").innerHTML = best ? `<span style="color:${css("--gold")}">┆ вход за ${best[0]} дн.</span> → <span style="color:${css("--red")}">┆ выход за ${best[1]} дн.</span> — лучшая клетка сетки дохода` : "";
     }
 
-    function heat(id, grid, best, text, colorbar) {
+    function heat(id, grid, best, text, colorbar, opts = {}) {
       const width = grid.length;
       const z = [], hover = [];
       for (let dout = 0; dout < width; dout++) {
@@ -258,16 +271,22 @@
       }
       const values = grid.flat().filter((v) => v !== null).map(Math.abs).sort((a, b) => a - b);
       const vmax = values.length ? values[Math.floor(values.length * 0.95)] || values[values.length - 1] || 1 : 1;
+      const scale = opts.sequential ? { zmin: 0, zmax: vmax, colorscale: opts.colorscale || RISK }
+        : { zmin: -vmax, zmax: vmax, zmid: 0, colorscale: RDYLGN };
       const traces = [{
-        type: "heatmap", z, text: hover, hovertemplate: "%{text}<extra></extra>", zmin: -vmax, zmax: vmax, zmid: 0,
-        colorscale: RDYLGN, colorbar: { title: { text: colorbar, side: "right", font: { size: 10 } }, thickness: 12 },
+        type: "heatmap", z, text: hover, hovertemplate: "%{text}<extra></extra>", ...scale,
+        colorbar: { title: { text: colorbar, side: "right", font: { size: 10 } }, thickness: 12 },
       }];
       if (best) traces.push({ type: "scatter", mode: "markers", x: [best[0]], y: [best[1]], hoverinfo: "skip",
         marker: { symbol: "star", size: 16, color: "#ffd23f", line: { color: "#000", width: 1 } } });
       const hold = Number($("hold").value) || 0;
-      const shapes = [{ type: "line", x0: hold, y0: 0, x1: width - 1, y1: width - 1 - hold, line: { color: css("--muted"), width: 1, dash: "dot" } }];
-      Plotly.react(id, traces, layout({ shapes, margin: { l: 56, r: 12, t: 8, b: 40 }, yaxis: { title: { text: "день выхода", font: { size: 11 } }, gridcolor: css("--grid") },
-        xaxis: { title: { text: "день входа, дней до экспирации", font: { size: 11 } }, autorange: "reversed", gridcolor: css("--grid") } }), config);
+      const shapes = [{ type: "line", x0: hold, y0: 0, x1: width - 1, y1: width - 1 - hold, line: { color: css("--muted"), width: 1, dash: "dot" } }]
+        .concat(opts.shapes || []);
+      // Одинаковый отступ у всех карт: диапазон осей задан явно, ★ на краю его не раздвигает.
+      const pad = Math.max(2, width * 0.03);
+      Plotly.react(id, traces, layout({ shapes, annotations: opts.annotations || [], margin: { l: 56, r: 12, t: 8, b: 40 },
+        yaxis: { title: { text: "день выхода", font: { size: 11 } }, gridcolor: css("--grid"), range: [-pad, width - 1 + pad], autorange: false },
+        xaxis: { title: { text: "день входа, дней до экспирации", font: { size: 11 } }, gridcolor: css("--grid"), range: [width - 1 + pad, -pad], autorange: false } }), config);
     }
 
     function empty(id, note) {
@@ -280,18 +299,18 @@
     function paint(body) {
       paintLines(body);
       if (body.note) {
-        for (const id of ["plot-returns", "plot-move", "plot-direction"]) empty(id, body.note + ". Статистика появится, когда накопятся контракты или загрузится история (import_tv).");
-        for (const id of ["best-returns", "best-move", "best-direction", "sub-returns"]) $(id).textContent = "";
-        $("ranges").innerHTML = "";
+        for (const id of ["plot-returns", "plot-move", "plot-direction", "plot-mae", "plot-zscore"]) empty(id, body.note + ". Статистика появится, когда накопятся контракты или загрузится история (import_tv).");
+        for (const id of ["best-returns", "best-move", "best-direction", "sub-returns", "best-mae", "best-zscore"]) $(id).textContent = "";
+        $("ranges").innerHTML = ""; $("zone-target").innerHTML = "";
         return;
       }
-      for (const id of ["plot-returns", "plot-move", "plot-direction"]) if ($(id).querySelector(".empty")) $(id).innerHTML = "";
+      for (const id of ["plot-returns", "plot-move", "plot-direction", "plot-mae", "plot-zscore"]) if ($(id).querySelector(".empty")) $(id).innerHTML = "";
       const R = body.returns, metric = body.params.metric;
       heat("plot-returns", R.smooth, body.best.returns, (i, o) =>
         `вход ${i} → выход ${o} дн. (${R.side[i][o] > 0 ? "продажа" : "покупка"})<br>` +
         `${fmt(R.ret[i][o], 2, true)}% за период, ${fmt(R.ann[i][o], 1, true)}% год.<br>` +
         `худший год ${fmt(R.worst[i][o], 1, true)}% год., в плюс ${pct(R.win[i][o])}<br>` +
-        `MAE ${fmt(R.mae[i][o], 2)}%, доход/разброс ${fmt(R.ratio[i][o], 2)}, лет ${R.n[i][o]}`, METRIC[metric] + " (сглаж.)");
+        `MAE ${fmt(R.mae[i][o], 2)}%, доход/разброс ${fmt(R.ratio[i][o], 2)}, лет ${R.n[i][o]}`, METRIC[metric] + " (сглаж.)", zoneMarks(body.ranges));
       $("sub-returns").textContent = `${METRIC[metric]}, выход по фактическому спреду; капитал ${body.params.capital}% цены, удержание ≥ ${body.params.hold} дн.` +
         (body.absolute ? "; цены у пары нет, база — 1 $: при капитале 100 % 1 % = 0.01 $/MMBtu" : "");
       const b = body.best.returns;
@@ -311,10 +330,72 @@
       $("best-direction").innerHTML = d ? `★ вход за ${d[0]} → выход за ${d[1]} дн.: <span class="${D.move[d[0]][d[1]] > 0 ? "up" : "down"}">${D.move[d[0]][d[1]] > 0 ? "лонг" : "шорт"}</span>, ` +
         `${fmt(D.move[d[0]][d[1]], 2, true)} масштаба в ${pct(D.agree[d[0]][d[1]])} лет, Δ ${fmt(D.raw[d[0]][d[1]], 4, true)}` : "устойчивого направления нет";
 
-      $("ranges").innerHTML = body.ranges.length ? `<table><thead><tr><th>вход → выход</th><th>держим</th><th>сделка</th><th>за период</th><th>годовых</th><th>худший год</th><th>в плюс</th><th>MAE</th><th>доход/разброс</th><th>лет</th></tr></thead><tbody>` +
-        body.ranges.map((r) => `<tr><td>за ${r.entry} → за ${r.exit} дн.</td><td>${r.hold} дн.</td><td>${r.side}</td><td class="${r.ret > 0 ? "up" : "down"}">${fmt(r.ret, 2, true)}%</td>` +
-          `<td>${fmt(r.ann, 1, true)}%</td><td>${fmt(r.worst, 1, true)}%</td><td>${pct(r.win)}</td><td>${fmt(r.mae, 2)}%</td><td>${fmt(r.ratio, 2)}</td><td>${r.n}</td></tr>`).join("") + `</tbody></table>`
-        : `<div style="padding:8px 10px" class="dim">Прибыльных диапазонов нет.</div>`;
+      paintZones(body);
+      $("export").href = "/api/analytics/export.xlsx?" + query();
+
+      heat("plot-mae", R.mae, null, (i, o) =>
+        `вход ${i} → выход ${o} дн. (${R.side[i][o] > 0 ? "продажа" : "покупка"})<br>MAE ${fmt(R.mae[i][o], 2)}% капитала<br>` +
+        `${fmt(R.ret[i][o], 2, true)}% за период, в плюс ${pct(R.win[i][o])}, лет ${R.n[i][o]}`, "MAE, % капитала", { sequential: true, ...zoneMarks(body.ranges) });
+      const zone = body.ranges[0];
+      $("best-mae").textContent = zone ? `зона 1, лучшая клетка: MAE ${fmt(zone.mae, 2)}% капитала при ${fmt(zone.ret, 2, true)}% за период` : "";
+
+      const Z = body.zscore;
+      heat("plot-zscore", Z.smooth, body.best.zscore, (i, o) =>
+        `вход ${i} → выход ${o} дн.: ${Z.move[i][o] > 0 ? "рос — лонг" : "падал — шорт"}<br>z ${fmt(Z.move[i][o], 2, true)} (медиана), в ${pct(Z.agree[i][o])} лет<br>Δспреда ${fmt(Z.raw[i][o], 4, true)}, лет ${Z.n[i][o]}`, "z: + лонг / − шорт");
+      const zb = body.best.zscore;
+      $("best-zscore").innerHTML = zb ? `★ вход за ${zb[0]} → выход за ${zb[1]} дн.: <span class="${Z.move[zb[0]][zb[1]] > 0 ? "up" : "down"}">${Z.move[zb[0]][zb[1]] > 0 ? "лонг" : "шорт"}</span>, ` +
+        `z ${fmt(Z.move[zb[0]][zb[1]], 2, true)} в ${pct(Z.agree[zb[0]][zb[1]])} лет, Δ ${fmt(Z.raw[zb[0]][zb[1]], 4, true)}` : "устойчивого движения нет";
+    }
+
+    const days = (range) => range[0] === range[1] ? `${range[0]}` : `${range[1]}–${range[0]}`;
+
+    // Рамки зон на картах: номер зоны в углу, цвет — сторона.
+    function zoneMarks(ranges) {
+      const shapes = [], annotations = [];
+      (ranges || []).forEach((zone, index) => {
+        const color = zone.side === "лонг" ? css("--green") : css("--red");
+        shapes.push({ type: "rect", x0: zone.entry[0] - 0.5, x1: zone.entry[1] + 0.5, y0: zone.exit[0] - 0.5, y1: zone.exit[1] + 0.5,
+          line: { color, width: 2, dash: "dash" } });
+        annotations.push({ x: zone.entry[1], y: zone.exit[1], text: `<b>${index + 1}</b>`, showarrow: false, xanchor: "left", yanchor: "bottom",
+          font: { color: "#fff", size: 11 }, bgcolor: color, borderpad: 2 });
+      });
+      return { shapes, annotations };
+    }
+
+    const MONTHS_RU = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+    function dateRu(iso, year = false) {
+      const [y, m, d] = iso.split("-").map(Number);
+      return `${d} ${MONTHS_RU[m - 1]}` + (year ? ` ${y}` : "");
+    }
+    // «с 10 по 18 ноя»; через год — с годом.
+    function dateSpan(pair) {
+      if (!pair) return "—";
+      const [from, to] = pair;
+      if (from === to) return dateRu(from);
+      return `с ${dateRu(from, from.slice(0, 4) !== to.slice(0, 4))} по ${dateRu(to, from.slice(0, 4) !== to.slice(0, 4))}`;
+    }
+
+    function paintZones(body) {
+      const ranges = body.ranges || [];
+      $("zone-target").innerHTML = "";
+      if (!ranges.length) {
+        $("ranges").innerHTML = `<div style="padding:8px 10px" class="dim">Зон нет: снизьте порог зоны или удержание.</div>`;
+        return;
+      }
+      const target = body.target;
+      $("zone-target").innerHTML = target ? `даты — для ${esc(target.code)}, склейка ${dateRu(target.roll, true)}` +
+        (target.estimated ? " <span class=\"dim\">(контракта ещё нет в базе: оценка по прошлому году, ± несколько дней)</span>" : "") : "";
+      const dateCols = target ? "<th>покупка, даты</th><th>продажа, даты</th>" : "";
+      $("ranges").innerHTML = `<table><thead><tr><th>№</th><th>сторона</th><th>покупка, дн. до эксп.</th><th>продажа, дн. до эксп.</th>${dateCols}<th>держим</th>` +
+        `<th>лучшая клетка</th><th>за период</th><th>годовых</th><th>худший год</th><th>в плюс</th><th>MAE</th><th>доход/разброс</th><th>направление</th><th>z</th><th>лет</th></tr></thead><tbody>` +
+        ranges.map((r, i) => `<tr><td>${i + 1}</td><td class="${r.side === "лонг" ? "up" : "down"}">${r.side}</td>` +
+          `<td>${days(r.buy)}</td><td>${days(r.sell)}</td>` +
+          (target ? `<td class="${r.late && r.side === "лонг" ? "dim" : ""}">${dateSpan(r.buy_dates)}</td><td class="${r.late && r.side === "шорт" ? "dim" : ""}">${dateSpan(r.sell_dates)}</td>` : "") +
+          `<td>${days(r.hold)} дн.</td>` +
+          `<td>за ${r.best[0]} → за ${r.best[1]} дн. <span class="dim">(${r.cells} кл.)</span></td>` +
+          `<td class="${r.ret > 0 ? "up" : "down"}">${fmt(r.ret, 2, true)}%</td><td>${fmt(r.ann, 1, true)}%</td><td>${fmt(r.worst, 1, true)}%</td>` +
+          `<td>${pct(r.win)}</td><td>${fmt(r.mae, 2)}%</td><td>${fmt(r.ratio, 2)}</td><td>${pct(r.agree)} лет</td><td>${fmt(r.z, 2, true)}</td><td>${r.n}</td></tr>`).join("") +
+        `</tbody></table>`;
     }
 
     $("pair").addEventListener("change", async () => {

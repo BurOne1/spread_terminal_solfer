@@ -83,7 +83,7 @@ def contracts(pair, series="raw", now=None):
             unique[left] = (left, value, price)
         letter, year = contract_month(code, roll_at)
         found.append({
-            "id": contract_id, "code": code, "month": letter, "year": year,
+            "id": contract_id, "code": code, "month": letter, "year": year, "roll_at": roll_at,
             "live": roll_at is None or roll_at > now,
             "points": sorted(unique.values()),
         })

@@ -63,9 +63,15 @@ class Command(BaseCommand):
                     f"FRED не ответил: {exc}. Старые DFEDTARU оставлены, €STR загружается дальше."
                 )
 
-        if options["estr_file"]:
-            estr = read_estr_csv(options["estr_file"], start, end)
-            origin = options["estr_file"]
+        estr_file = options["estr_file"]
+        if not estr_file:
+            # Как с DFEDTARU: файл в корне проекта (приходит с git pull), если ЕЦБ с ВМ не открывается.
+            bundled = settings.BASE_DIR / "ESTR.csv"
+            if bundled.exists():
+                estr_file = str(bundled)
+        if estr_file:
+            estr = read_estr_csv(estr_file, start, end)
+            origin = estr_file
         else:
             try:
                 estr = fetch_estr(start, end)

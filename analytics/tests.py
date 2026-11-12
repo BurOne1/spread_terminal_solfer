@@ -48,14 +48,72 @@ class CoreTests(SimpleTestCase):
         self.assertIsNotNone(best_move)
         self.assertIsNotNone(best_side)
 
-    def test_best_ranges_are_spread_out(self):
-        G, _best = core.returns_grid(self.S, self.P, min_hold=5, min_years=2, smooth_half=1)
-        ranges = core.best_ranges(G, top=3, gap=5)
-        self.assertTrue(ranges)
-        for a in ranges:
-            for b in ranges:
-                if a is not b:
-                    self.assertTrue(abs(a["entry"] - b["entry"]) > 5 or abs(a["exit"] - b["exit"]) > 5)
+    def grids(self, S):
+        P = [[100.0] * len(S[0]) for _ in S]
+        G, _ = core.returns_grid(S, P, min_hold=5, min_years=2, smooth_half=1)
+        M, _ = core.move_grid(S, min_hold=5, min_years=2, smooth_half=1)
+        D, _ = core.side_grid(S, min_hold=5, min_years=2, smooth_half=1)
+        return G, M, D
+
+    def test_zones_short_for_falling_spread(self):
+        G, M, D = self.grids(self.S)
+        Z, _ = core.zscore_grid(self.S, min_hold=5, min_years=2, smooth_half=1)
+        found = core.zones(G, D, Z, M, share=0.5)
+        self.assertTrue(found)
+        zone = found[0]
+        # Спред падал: шорт — продаём на входе (дальше от экспирации), покупаем на выходе.
+        self.assertEqual(zone["side"], "шорт")
+        self.assertEqual((zone["sell"], zone["buy"]), (zone["entry"], zone["exit"]))
+        self.assertGreater(zone["sell"][1], zone["buy"][0])
+        self.assertGreaterEqual(zone["cells"], 4)
+        din, dout = zone["best"]
+        self.assertTrue(zone["entry"][0] <= din <= zone["entry"][1] and zone["exit"][0] <= dout <= zone["exit"][1])
+        self.assertGreater(zone["ret"], 0)
+
+    def test_zones_long_for_rising_spread_and_threshold(self):
+        S = [[-value for value in row] for row in self.S]
+        G, M, D = self.grids(S)
+        found = core.zones(G, D, None, M, share=0.5)
+        self.assertEqual({zone["side"] for zone in found}, {"лонг"})
+        self.assertEqual(found[0]["buy"], found[0]["entry"])
+        # Чем выше порог, тем меньше клеток в зонах.
+        wide = sum(zone["cells"] for zone in core.zones(G, D, None, M, share=0.2))
+        narrow = sum(zone["cells"] for zone in core.zones(G, D, None, M, share=0.9))
+        self.assertGreater(wide, narrow)
+
+    def test_zones_need_direction_to_agree(self):
+        G, M, D = self.grids(self.S)
+        # «Куда шёл спред» против стороны сделки — зон нет.
+        flipped = {**D, "smooth": [[None if v is None else (-v if core.finite(v) else v) for v in row] for row in D["smooth"]]}
+        self.assertEqual(core.zones(G, flipped, None, M), [])
+
+    def test_ratio_is_capped_when_spread_of_returns_is_tiny(self):
+        S = [falling(scale=1.0), falling(scale=1.0)]
+        P = [[100.0] * 30 for _ in S]
+        G, _ = core.returns_grid(S, P, min_hold=5, min_years=2, smooth_half=0, metric="ratio")
+        # Одинаковые годы: разброс 0, раньше доход/разброс — nan или 1e15; теперь не выше 10.
+        self.assertAlmostEqual(G["ratio"][20][0], 10.0, places=6)
+        self.assertTrue(core.finite(G["smooth"][20][0]))
+
+    def test_zscore_ignores_level_and_sees_trend(self):
+        S = [falling(width=60, scale=k, noise=0.05) for k in (1.0, 1.5, 0.8, 1.2)]
+        Z, best = core.zscore_grid(S, min_hold=5, min_years=2, smooth_half=0)
+        self.assertLess(Z["move"][20][0], 0)  # спред падал — шорт
+        self.assertEqual(Z["agree"][20][0], 1.0)
+        self.assertIsNotNone(best)
+        # Сдвиг уровня (спред далеко от нуля) z не меняет: в отличие от «движения к нулю».
+        shifted = [[value + 50 for value in row] for row in S]
+        Z2, _ = core.zscore_grid(shifted, min_hold=5, min_years=2, smooth_half=0)
+        self.assertAlmostEqual(Z2["move"][20][0], Z["move"][20][0], places=9)
+        # Ближе к началу окна, чем lookback, σ ещё не набрана — клетки нет.
+        self.assertFalse(core.finite(Z["move"][58][0]))
+
+    def test_local_sigma_looks_only_before_entry(self):
+        row = [0.0] * 10 + [float(k % 2) for k in range(30)]
+        sigma = core._local_sigma(row, lookback=5)
+        # Дни 0…4: изменения только в нулевом участке — σ = 0, всплеск дальше не виден.
+        self.assertEqual(sigma[0], 0.0)
+        self.assertGreater(sigma[12], 0)
 
     def test_clean_replaces_nan(self):
         self.assertEqual(core.clean({"a": [core.NAN, 1.234567891]}), {"a": [None, 1.23457]})
@@ -113,6 +171,55 @@ class AnalyticsApiTests(TestCase):
         self.assertEqual(body["returns"]["side"][din][dout], 1)
         self.assertLess(body["direction"]["move"][30][0], 0)
         self.assertTrue(body["ranges"])
+
+    def test_zones_in_api_and_excel(self):
+        import io
+        import zipfile
+        body = self.client.get("/api/analytics/?pair=TEST&hold=5&share=60").json()
+        self.assertEqual(body["params"]["share"], 60)
+        self.assertEqual(body["ranges"][0]["side"], "шорт")
+        response = self.client.get("/api/analytics/export.xlsx?pair=TEST&hold=5&share=60")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("spreadsheetml", response["Content-Type"])
+        self.assertIn('filename="analytics_TEST.xlsx"', response["Content-Disposition"])
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        self.assertIn("xl/worksheets/sheet2.xml", archive.namelist())
+        sheet = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        self.assertIn("покупка, дн. до эксп.", sheet)
+        self.assertIn("шорт", sheet)
+
+    def test_zone_dates_for_chosen_month(self):
+        # Без месяца — только дни до экспирации.
+        body = self.client.get("/api/analytics/?pair=TEST&hold=5").json()
+        self.assertNotIn("target", body)
+        self.assertNotIn("buy_dates", body["ranges"][0])
+        body = self.client.get("/api/analytics/?pair=TEST&hold=5&month=Z").json()
+        zone = body["ranges"][0]
+        roll = datetime.fromisoformat(body["target"]["roll"]).date()
+        # Даты = склейка − дней до экспирации; у ранней границы больше дней.
+        self.assertEqual(datetime.fromisoformat(zone["sell_dates"][0]).date(), roll - timedelta(days=zone["sell"][1]))
+        self.assertEqual(datetime.fromisoformat(zone["buy_dates"][1]).date(), roll - timedelta(days=zone["buy"][0]))
+        self.assertIn("late", zone)
+        response = self.client.get("/api/analytics/export.xlsx?pair=TEST&hold=5&month=Z")
+        import io
+        import zipfile
+        sheet = zipfile.ZipFile(io.BytesIO(response.content)).read("xl/worksheets/sheet1.xml").decode("utf-8")
+        self.assertIn("покупка, даты", sheet)
+
+    def test_target_roll_live_or_estimated(self):
+        found = contracts(self.pair, now=datetime(2026, 11, 20, tzinfo=UTC))
+        # Идущий TTZ2026 — его склейка.
+        self.assertEqual(views.target_roll(found, now=datetime(2026, 11, 20, tzinfo=UTC)),
+                         ("TTZ2026", datetime(2026, 12, 17).date(), False))
+        # Идущего нет — прошлая склейка, сдвинутая на год вперёд.
+        expired = [item for item in found if item["code"] != "TTZ2026"]
+        self.assertEqual(views.target_roll(expired, now=datetime(2026, 11, 20, tzinfo=UTC)),
+                         ("Z2026", datetime(2026, 12, 17).date(), True))
+
+    def test_zscore_in_api(self):
+        body = self.client.get("/api/analytics/?pair=TEST&hold=5").json()
+        self.assertEqual(len(body["zscore"]["smooth"]), body["width"])
+        self.assertIn("zscore", body["best"])
 
     def test_depth_in_contract_periods(self):
         from unittest import mock

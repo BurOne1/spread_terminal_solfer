@@ -94,6 +94,10 @@ def _cells(width, min_hold):
             yield din, dout
 
 
+# Разброс доходов не меньше 10 % |среднего|: «доход / разброс» не выше 10.
+RATIO_SD_FLOOR = 0.1
+
+
 def returns_grid(S, P, min_hold=10, capital_pct=100.0, cost=0.0, min_years=2, smooth_half=5, metric="ret"):
     """Доход сделки «вход за din дней → выход за dout дней» по фактическому спреду на выходе.
 
@@ -143,7 +147,8 @@ def returns_grid(S, P, min_hold=10, capital_pct=100.0, cost=0.0, min_years=2, sm
             G["n"][din][dout] = len(returns)
             G["side"][din][dout] = side
     G["ratio"] = [
-        [ret / sd if finite(ret) and finite(sd) and sd > 0 else NAN for ret, sd in zip(row_ret, row_sd)]
+        [ret / max(sd, abs(ret) * RATIO_SD_FLOOR) if finite(ret) and finite(sd) and (sd > 0 or ret != 0) else NAN
+         for ret, sd in zip(row_ret, row_sd)]
         for row_ret, row_sd in zip(G["ret"], G["sd"])
     ]
     G["smooth"] = smooth2d(G[metric if metric in G else "ret"], smooth_half)
@@ -220,6 +225,48 @@ def side_grid(S, min_hold=10, min_years=2, smooth_half=5, floor_share=0.2):
     return M, _argmax(score)
 
 
+Z_LOOKBACK = 20
+Z_MIN_CHANGES = 5
+
+
+def _local_sigma(row, lookback=Z_LOOKBACK):
+    """σ дневных изменений за lookback дней ДО входа (дальше от экспирации): без заглядывания вперёд.
+
+    sigma[d] — по изменениям row[k] − row[k+1] для k = d … d+lookback−1. Меньше
+    Z_MIN_CHANGES изменений — nan.
+    """
+    width = len(row)
+    changes = [row[k] - row[k + 1] if finite(row[k]) and finite(row[k + 1]) else NAN for k in range(width - 1)]
+    sigma = []
+    for day in range(width):
+        window = [value for value in changes[day:day + lookback] if finite(value)]
+        sigma.append(stdev(window) if len(window) >= Z_MIN_CHANGES else NAN)
+    return sigma
+
+
+def zscore_grid(S, min_hold=10, min_years=2, smooth_half=5, lookback=Z_LOOKBACK):
+    """Локальное движение в сигмах, без привязки к уровню и к нулю.
+
+    z = (s_выход − s_вход) / (σ_вход × √дней удержания), σ_вход — σ дневных
+    изменений контракта за lookback дней до входа. + — спред вырос (лонг),
+    − — упал (шорт); медиана по годам, agree — доля лет с тем же знаком.
+    |z| ≈ 1 — обычный шум, 2 и больше — движение заметно сильнее случайного.
+    """
+    sigmas = [_local_sigma(row, lookback) for row in S]
+
+    def change(din, dout):
+        hold = math.sqrt(din - dout)
+        for row, sigma in zip(S, sigmas):
+            if finite(row[din]) and finite(row[dout]) and finite(sigma[din]) and sigma[din] > 0:
+                move = row[dout] - row[din]
+                yield move / (sigma[din] * hold), move
+
+    Z = _normalized_grid(S, change, min_hold, min_years, smooth_half)
+    score = [[abs(value) if finite(value) and finite(Z["agree"][din][dout]) and Z["agree"][din][dout] >= 0.5 else NAN
+              for dout, value in enumerate(row)] for din, row in enumerate(Z["smooth"])]
+    return Z, _argmax(score)
+
+
 def _argmax(grid):
     best, where = -math.inf, None
     for din, row in enumerate(grid):
@@ -229,29 +276,84 @@ def _argmax(grid):
     return where
 
 
-def best_ranges(G, top=5, gap=5):
-    """Несколько лучших клеток доходности, не ближе gap дней друг к другу по входу и выходу."""
-    cells = sorted(
-        ((value, din, dout) for din, row in enumerate(G["smooth"]) for dout, value in enumerate(row)
-         if finite(value) and finite(G["ret"][din][dout]) and G["ret"][din][dout] > 0),
-        reverse=True,
-    )
-    picked = []
-    for _value, din, dout in cells:
-        if all(abs(din - a) > gap or abs(dout - b) > gap for a, b in picked):
-            picked.append((din, dout))
-        if len(picked) == top:
-            break
-    return [
-        {
-            "entry": din, "exit": dout, "hold": din - dout,
-            "side": "продажа" if G["side"][din][dout] > 0 else "покупка",
+def _sign(value):
+    return (value > 0) - (value < 0)
+
+
+def valid_cells(G, D, Z, share=0.35, min_win=0.4, d_ignore=0.1, z_ignore=0.5):
+    """Клетки зон: основа — сетка дохода, остальные сетки только проверяют.
+
+    - доход: сглаженная метрика ≥ share × лучшей, средний доход > 0, в плюс ≥ min_win;
+    - направление: «куда шёл спред» не против стороны (лонг — рос, шорт — падал).
+      Важен знак; слабое движение |D| < d_ignore масштаба контракта не мешает;
+    - z: если |z| ≥ z_ignore, знак не должен противоречить стороне.
+    Вернуть {(вход, выход): +1 лонг / −1 шорт}.
+    """
+    width = len(G["smooth"])
+    profit = [G["smooth"][din][dout] for din in range(width) for dout in range(width)
+              if finite(G["smooth"][din][dout]) and finite(G["ret"][din][dout]) and G["ret"][din][dout] > 0]
+    top = max(profit, default=NAN)
+    if not finite(top) or top <= 0:
+        return {}
+    cells = {}
+    for din in range(width):
+        for dout in range(din + 1):
+            metric, ret, win, side = (G[key][din][dout] for key in ("smooth", "ret", "win", "side"))
+            if not (finite(metric) and finite(ret) and ret > 0 and metric >= top * share and finite(win) and win >= min_win):
+                continue
+            direction = -_sign(side)  # продажа (+1) — шорт
+            move = D["smooth"][din][dout]
+            if not finite(move) or (abs(move) >= d_ignore and _sign(move) != direction):
+                continue
+            z = Z["smooth"][din][dout] if Z else NAN
+            if finite(z) and abs(z) >= z_ignore and _sign(z) != direction:
+                continue
+            cells[(din, dout)] = direction
+    return cells
+
+
+def zones(G, D, Z, M, share=0.35, min_cells=3, top=10):
+    """Связные области годных клеток одной стороны → диапазоны входа и выхода.
+
+    У каждой зоны: сторона, дни до экспирации покупки и продажи (у лонга покупка —
+    вход, у шорта — выход), удержание, лучшая клетка по сглаженной метрике и её
+    статистика. Зоны меньше min_cells клеток — шум, отбрасываются.
+    """
+    cells = valid_cells(G, D, Z, share)
+    seen, found = set(), []
+    for start in sorted(cells):
+        if start in seen:
+            continue
+        direction, stack, area = cells[start], [start], []
+        seen.add(start)
+        while stack:
+            din, dout = stack.pop()
+            area.append((din, dout))
+            # Соседи и по диагонали: зона не рвётся на ступеньках границы сетки.
+            for step in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                near = (din + step[0], dout + step[1])
+                if near not in seen and cells.get(near) == direction:
+                    seen.add(near)
+                    stack.append(near)
+        if len(area) < min_cells:
+            continue
+        din, dout = max(area, key=lambda cell: G["smooth"][cell[0]][cell[1]])
+        entries, exits = [cell[0] for cell in area], [cell[1] for cell in area]
+        holds = [a - b for a, b in area]
+        entry, exit_ = [min(entries), max(entries)], [min(exits), max(exits)]
+        long = direction > 0
+        found.append({
+            "side": "лонг" if long else "шорт",
+            "buy": entry if long else exit_, "sell": exit_ if long else entry,
+            "entry": entry, "exit": exit_, "hold": [min(holds), max(holds)], "cells": len(area),
+            "best": [din, dout], "metric": G["smooth"][din][dout],
             "ret": G["ret"][din][dout], "ann": G["ann"][din][dout], "worst": G["worst"][din][dout],
             "win": G["win"][din][dout], "mae": G["mae"][din][dout], "ratio": G["ratio"][din][dout],
-            "n": G["n"][din][dout],
-        }
-        for din, dout in picked
-    ]
+            "n": G["n"][din][dout], "agree": D["agree"][din][dout],
+            "z": Z["move"][din][dout] if Z else NAN, "narrowing": M["move"][din][dout] if M else NAN,
+        })
+    found.sort(key=lambda zone: zone["metric"], reverse=True)
+    return found[:top]
 
 
 def clean(value, digits=5):
