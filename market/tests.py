@@ -121,13 +121,14 @@ class GapWindowTests(SimpleTestCase):
 
 
 class BrentCalendarTests(SimpleTestCase):
-    def test_expiry_is_last_london_business_day_two_months_before(self):
+    def test_roll_is_last_moex_business_day_of_front_month(self):
         from market.brent import expiry
         self.assertEqual(expiry(2027, 1), datetime(2026, 11, 30).date())
-        self.assertEqual(expiry(2027, 2), datetime(2026, 12, 31).date())
-        # 31.05.2027 — весенний банковский выходной, 30.03.2029 — Страстная пятница.
-        self.assertEqual(expiry(2027, 7), datetime(2027, 5, 28).date())
-        self.assertEqual(expiry(2029, 5), datetime(2029, 3, 29).date())
+        # 31.12.2026 Мосбиржа не работает.
+        self.assertEqual(expiry(2027, 2), datetime(2026, 12, 30).date())
+        # Лондонские праздники не в счёт: 31.05.2027 и 30.03.2029 — рабочие дни Мосбиржи.
+        self.assertEqual(expiry(2027, 7), datetime(2027, 5, 31).date())
+        self.assertEqual(expiry(2029, 5), datetime(2029, 3, 30).date())
 
     def test_moex_month_is_one_before_nymex(self):
         from market.brent import windows
@@ -165,10 +166,12 @@ class BrentLiveSymbolsTests(TestCase):
 
 class ExpiryTests(SimpleTestCase):
     def test_exchange_rules(self):
-        from market.expiry import cme_fx_expiry, moex_ng_expiry
+        from market.expiry import cme_fx_expiry, moex_last_business_day
         self.assertEqual(cme_fx_expiry(2026, 12), datetime(2026, 12, 14).date())
         self.assertEqual(cme_fx_expiry(2027, 3), datetime(2027, 3, 15).date())
-        self.assertEqual(moex_ng_expiry(2026, 11), datetime(2026, 11, 26).date())
+        self.assertEqual(moex_last_business_day(2026, 11), datetime(2026, 11, 30).date())
+        self.assertEqual(moex_last_business_day(2026, 12), datetime(2026, 12, 30).date())
+        self.assertEqual(moex_last_business_day(2027, 1), datetime(2027, 1, 29).date())
 
     def test_finam_expiry_fields(self):
         from market.expiry import finam_expiry
@@ -202,7 +205,7 @@ class ExpiryTests(SimpleTestCase):
         self.assertEqual(moved[0]["roll_at"], datetime(2026, 12, 11, 14, 0, tzinfo=UTC))
         ng = ngcal.windows(datetime(2026, 11, 10, tzinfo=UTC), datetime(2026, 11, 11, tzinfo=UTC))
         self.assertEqual((ng[0]["symbol"], ng[0]["front"]), ("NGX6NGZ6@RTSX", "NGX6@RTSX"))
-        self.assertEqual(ng[0]["roll_at"], datetime(2026, 11, 26, 20, 50, tzinfo=UTC))
+        self.assertEqual(ng[0]["roll_at"], datetime(2026, 11, 30, 20, 50, tzinfo=UTC))
         december = ngcal.windows(datetime(2026, 12, 10, tzinfo=UTC), datetime(2026, 12, 11, tzinfo=UTC))
         self.assertEqual(december[0]["symbol"], "NGZ6NGF7@RTSX")
 
@@ -216,7 +219,8 @@ class ExtraLiveSymbolsTests(TestCase):
             before = live.live_symbols()
         with frozen(datetime(2026, 12, 14, 15, 0, tzinfo=UTC)):
             after = live.live_symbols()
-        self.assertEqual(before, ["CNHZ26@XCME", "CRZ6@RTSX", "SiZ6@RTSX", "NGZ6NGF7@RTSX", "NGZ6@RTSX"])
+        # NGCAL — одна котировка, без ноги фронта.
+        self.assertEqual(before, ["CNHZ26@XCME", "CRZ6@RTSX", "SiZ6@RTSX", "NGZ6NGF7@RTSX"])
         self.assertEqual(after[:3], ["CNHH27@XCME", "CRH7@RTSX", "SiH7@RTSX"])
 
 
@@ -239,3 +243,20 @@ class AddUsdTests(TestCase):
         self.assertEqual((pair.future_root, pair.future_scale, pair.spot_symbol), ("Si", 1000, "USD000UTSTOM@MISX"))
         self.assertTrue(Instrument.objects.filter(pair=pair, kind="future", finam_symbol__startswith="Si").exists())
         self.assertEqual(Instrument.objects.get(code="USDRUB_TOM").finam_symbol, "USD000UTSTOM@MISX")
+
+
+class GasNymexWindowTests(TestCase):
+    def test_windows_and_live_symbols(self):
+        from market import ngnymex
+        from analytics.data import contract_month
+        rows = ngnymex.windows(datetime(2026, 12, 10, tzinfo=UTC), datetime(2026, 12, 11, tzinfo=UTC))
+        self.assertEqual((rows[0]["code"], rows[0]["moex"], rows[0]["symbol"]), ("NGZ2026-NYM", "NGZ6@RTSX", "NGF27@XNYM"))
+        self.assertEqual(contract_month("NGZ2026-NYM", None), ("Z", 2026))
+        Pair.objects.filter(code="CNY").update(active=False)
+        Pair.objects.create(code="NGNYMEX", title="x", future_root="NG", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="NGNYM", lot=100)
+        with frozen(datetime(2026, 11, 30, 12, 0, tzinfo=UTC)):
+            before = live.live_symbols()
+        with frozen(datetime(2026, 12, 1, 5, 0, tzinfo=UTC)):
+            after = live.live_symbols()
+        self.assertEqual(before, ["NGZ26@XNYM", "NGX6@RTSX"])
+        self.assertEqual(after, ["NGF27@XNYM", "NGZ6@RTSX"])

@@ -332,7 +332,7 @@ class BrentTests(TestCase):
         self.assertEqual((last.contract.code, last.days_left), ("BRZ2026", 1))
         self.assertEqual(nxt.contract.code, "BRF2027")
         self.assertAlmostEqual(float(nxt.raw_spread), -0.03, places=6)
-        self.assertEqual(nxt.days_left, 30)
+        self.assertEqual(nxt.days_left, 29)  # до 30.12: 31.12 Мосбиржа не работает
 
     def test_tail_rebuild_matches_full(self):
         full = list(SpreadBar.objects.filter(pair=self.pair).order_by("ts").values_list("ts", "raw_spread"))
@@ -398,25 +398,28 @@ NG_TS = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
 
 
 class ListedSpreadTests(TestCase):
-    def test_ng_calendar_price_is_spread_and_front_gives_spot(self):
+    def test_ng_calendar_is_one_quote_with_absolute_levels(self):
         from market import ngcal
+        from charts.views import _levels
         pair = Pair.objects.create(code="NGCAL", title="NG", future_root="NG", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="LISTED", lot=100, quote="USD")
         ngcal.ensure(pair, datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 11, 20, tzinfo=UTC))
         spread = Instrument.objects.get(code="NGX6NGZ6")
-        front = Instrument.objects.get(code="NGX2026")
-        self.assertEqual((spread.finam_symbol, front.finam_symbol), ("NGX6NGZ6@RTSX", "NGX6@RTSX"))
-        self.assertEqual(spread.roll_at, front.roll_at)
+        self.assertEqual(spread.finam_symbol, "NGX6NGZ6@RTSX")
+        # Ног календарь не заводит: цена инструмента и есть спред.
+        self.assertFalse(Instrument.objects.filter(code="NGX2026").exists())
         candle(spread, NG_TS - timedelta(hours=1), Decimal("-0.30"), Decimal("-0.31"))
-        candle(front, NG_TS, Decimal("3.40"), Decimal("3.45"))
         candle(spread, NG_TS, Decimal("-0.31"), Decimal("-0.35"))
-        candle(spread, NG_TS + timedelta(hours=1), Decimal("-0.36"), Decimal("-0.33"))
         self.assertEqual(rebuild.rebuild_spread("NGCAL"), 2)
         bars = list(SpreadBar.objects.filter(pair=pair).order_by("ts"))
-        # Час до первой цены фронта пропущен: уровням не от чего считаться.
-        self.assertEqual([bar.ts for bar in bars], [NG_TS, NG_TS + timedelta(hours=1)])
-        self.assertAlmostEqual(float(bars[0].raw_spread), -0.35, places=6)
-        self.assertAlmostEqual(float(bars[1].spot), 3.45, places=6)
-        self.assertEqual(float(bars[0].fair), 0.0)
+        self.assertAlmostEqual(float(bars[1].raw_spread), -0.35, places=6)
+        self.assertAlmostEqual(float(bars[1].raw_open), -0.31, places=6)
+        self.assertEqual((float(bars[0].spot), float(bars[0].fair)), (1.0, 0.0))
+        # Уровни абсолютные: 0.07 — это 0.07 $/MMBtu, а не 7 % цены.
+        Pair.objects.filter(pk=pair.pk).update(short_levels={"signed": True, "values": [0.07]})
+        pair.refresh_from_db()
+        payload = _levels(pair)
+        self.assertTrue(payload["absolute"])
+        self.assertAlmostEqual(payload["short"][0], 0.07, places=9)
 
 
 class TriangleSpotTests(TestCase):
@@ -452,3 +455,78 @@ class TriangleSpotTests(TestCase):
         rebuild._dirty.clear()
         rebuild.mark_dirty("GOLD", BEFORE_ROLL)
         self.assertIn("TRIGDS", rebuild.flush_dirty())
+
+
+class GasNymexTests(TestCase):
+    def test_moex_minus_nymex_next_month_with_own_moex_leg(self):
+        from market import ngnymex
+        start, end = datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 11, 20, tzinfo=UTC)
+        pair = Pair.objects.create(code="NGNYMEX", title="NG MOEX − NG NYMEX", future_root="NG", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="NGNYM", lot=100, quote="USD")
+        ngnymex.ensure(pair, start, end)
+        window = Instrument.objects.get(code="NGX2026-NYM")
+        moex = Instrument.objects.get(code="NGX2026")
+        # Нога Мосбиржи — своя у NGNYMEX, с тем же окном.
+        self.assertEqual((window.finam_symbol, moex.finam_symbol, moex.pair.code, moex.kind),
+                         ("NGZ26@XNYM", "NGX6@RTSX", "NGNYMEX", "foreign"))
+        self.assertEqual(moex.roll_at, window.roll_at)
+        self.assertEqual(window.roll_at, datetime(2026, 11, 30, 20, 50, tzinfo=UTC))
+        candle(moex, NG_TS, Decimal("3.40"), Decimal("3.45"))
+        candle(window, NG_TS, Decimal("3.38"), Decimal("3.41"))
+        candle(window, NG_TS + timedelta(hours=1), Decimal("3.40"), Decimal("3.42"))
+        self.assertEqual(rebuild.rebuild_spread("NGNYMEX"), 1)
+        bar = SpreadBar.objects.get(pair=pair)
+        self.assertAlmostEqual(float(bar.raw_spread), 0.04, places=6)
+        self.assertAlmostEqual(float(bar.raw_open), 0.02, places=6)
+        self.assertEqual((float(bar.fair), float(bar.spot)), (0.0, 3.41))
+        rebuild._dirty.clear()
+        rebuild.mark_dirty("NGNYMEX", NG_TS)
+        self.assertEqual(rebuild.flush_dirty(), {"NGNYMEX": 1})
+
+
+class HistoryBarsTests(TestCase):
+    """Режим истории аналитики: окна перекрываются, в базу ничего не пишется."""
+
+    def test_quarter_pair_gets_bars_of_next_quarter_before_its_window(self):
+        usd, _calendar, quarters = make_usd()
+        perp = Instrument.objects.create(pair=usd, code="USDRUBF", finam_symbol="USDRUBF@RTSX", kind="perp")
+        candle(perp, BEFORE_ROLL, Decimal("95"), Decimal("95.2"))
+        candle(perp, AFTER_ROLL, Decimal("95"), Decimal("95.3"))
+        self.assertEqual(rebuild.rebuild_spread("USD"), 2)
+        stored = SpreadBar.objects.filter(pair=usd).count()
+        rows = rebuild.history_bars(usd)
+        self.assertEqual(SpreadBar.objects.filter(pair=usd).count(), stored)
+        by_contract = {(row.ts, row.contract.code): row for row in rows}
+        # До склейки SiZ2026 есть и бар SiH2027: за два квартала до своей склейки он уже в истории.
+        self.assertIn((BEFORE_ROLL, "SiZ2026"), by_contract)
+        early = by_contract[(BEFORE_ROLL, "SiH2027")]
+        self.assertAlmostEqual(float(early.raw_spread), 97.8 - 95.2, places=6)
+        self.assertGreater(early.days_left, 80)
+        self.assertEqual(rebuild.history_span(usd), rebuild.HISTORY_QUARTERLY)
+
+
+class GasLegOwnerTests(TestCase):
+    def test_fix_moves_legs_to_gas_pair(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from market import ngcal
+        gas = Pair.objects.create(code="NGNYMEX", title="NG − NYMEX", future_root="NG", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="NGNYM", lot=100)
+        calendar = Pair.objects.create(code="NGCAL", title="NG", future_root="NG", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="LISTED", lot=100, quote="USD")
+        # Как после старого import_tv: одна нога у календаря, другая у NGNYMEX без окна.
+        old = Instrument.objects.create(pair=calendar, code="NGX2026", finam_symbol="NGX6@RTSX", kind="foreign")
+        Instrument.objects.create(pair=gas, code="NGF2025", finam_symbol="NGF5@RTSX", kind="foreign")
+        ngcal.ensure(calendar, datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 11, 20, tzinfo=UTC))
+        spread = Instrument.objects.get(code="NGX6NGZ6")
+        candle(old, NG_TS, Decimal("3.40"), Decimal("3.45"))
+        candle(spread, NG_TS, Decimal("-0.31"), Decimal("-0.35"))
+        out = StringIO()
+        call_command("fix_ng_legs", "--dry-run", stdout=out)
+        self.assertIn("у NGCAL: NGX2026", out.getvalue())
+        self.assertIn("у NGNYMEX: NGF2025 (без окна)", out.getvalue())
+        call_command("fix_ng_legs", stdout=StringIO())
+        old.refresh_from_db()
+        early = Instrument.objects.get(code="NGF2025")
+        self.assertEqual((old.pair, early.pair), (gas, gas))
+        self.assertEqual(early.roll_at, datetime(2025, 1, 31, 20, 50, tzinfo=UTC))
+        # Календарю ноги не нужны: он строится из своей котировки.
+        self.assertEqual(rebuild.rebuild_spread("NGCAL"), 1)
+        self.assertAlmostEqual(float(SpreadBar.objects.get(pair=calendar).raw_spread), -0.35, places=6)

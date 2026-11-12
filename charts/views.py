@@ -114,7 +114,7 @@ def _points(pair, start="", end="", basis="close", rows=None):
         legs = _calendar_legs(pair, codes, since)
     elif pair.nymex:
         legs = _nymex_legs(pair, codes, since)
-    elif pair.foreign_source != "TRI" and not pair.cross and not pair.listed:
+    elif pair.foreign_source != "TRI" and not pair.cross and not pair.listed and not pair.ngnymex:
         scale = pair.future_scale or 1
         perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
         if perp is not None:
@@ -253,6 +253,7 @@ def _levels(pair, chosen=None):
         "pcts": list(long_pcts),
         "tp_pcts": list(long_tp),
         "spot": last,
+        "absolute": pair.absolute_levels,
     }
     if last is None:
         payload.update({"long": [], "short": [], "long_tp": [], "short_tp": [], "tp": []})
@@ -273,8 +274,10 @@ def _level_spot(pair):
 
     У треугольника это вечный металл, руб/грамм. У календаря — спот
     последнего бара: спот базы или, у GD и SV, фронт. У BRNYMEX — цена BZ,
-    у кросс-пар — Si или Eu, у календаря NG — фронт NG.
+    у кросс-пар — Si или Eu. У календаря NG уровни абсолютные: 1.
     """
+    if pair.absolute_levels:
+        return 1.0
     if pair.calendar or pair.zero_fair:
         last = SpreadBar.objects.filter(pair=pair).order_by("-ts").values_list("spot", flat=True).first()
         return None if last is None else float(last)
@@ -397,7 +400,9 @@ def _subtitle(pair):
         from market.cross import CROSS
         return f"{CROSS[pair.code]['note']}, третья нога CME, справедливый 0"
     if pair.listed:
-        return "календарь биржи одним инструментом, $/MMBtu, уровни от цены фронта"
+        return "календарь биржи одним инструментом, $/MMBtu, уровни в $/MMBtu"
+    if pair.ngnymex:
+        return "месячные, NYMEX месяцем позже, только общие часы бирж, справедливый 0, $/MMBtu"
     rate = "только RUONIA" if pair.foreign_source == "NONE" else _rate_label(pair)
     return f"Спот {pair.spot_code}, ставка {rate}, {pair.quote}"
 
@@ -452,7 +457,7 @@ def _rate_label(pair):
         return "EWMA14 фандинга"
     if pair.nymex:
         return "BR MOEX − BZ NYMEX"
-    if pair.cross or pair.listed:
+    if pair.cross or pair.listed or pair.ngnymex:
         return pair.title
     return pair.foreign_source
 

@@ -72,10 +72,17 @@ def fetch_swap(secid: str, start: date, end: date, lot: Decimal = LOT) -> list[t
     return sorted(rows.items())
 
 
-def fill_funding(lookback=14):
+def fill_funding(lookback=14, since=None, fields=None):
+    """Добрать фандинг. since — перезагрузить ряды с этой даты (ISS отдаёт с запуска вечника).
+
+    Без since — только дни после последней сохранённой: дыры раньше не заполняются.
+    fields — ограничить ряды (swaprate_usd и т. п.), по умолчанию все.
+    """
     end = datetime.now(timezone.utc).date()
     result = {"from": end, "to": end, "days": 0, "last": None}
     for field, spec in SERIES.items():
+        if fields and field not in fields:
+            continue
         secid, lot = spec
         last = (
             FundingDay.objects.filter(**{f"{field}__isnull": False})
@@ -83,7 +90,10 @@ def fill_funding(lookback=14):
             .values_list("date", flat=True)
             .first()
         )
-        start = (last + timedelta(days=1)) if last else date(2023, 1, 1)
+        if since is not None:
+            start = since
+        else:
+            start = (last + timedelta(days=1)) if last else date(2023, 1, 1)
         if start > end:
             start = end - timedelta(days=lookback)
         rows = fetch_swap(secid, start, end, lot)

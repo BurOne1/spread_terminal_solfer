@@ -16,3 +16,10 @@ class Command(BaseCommand):
         if not count:
             raise CommandError("нечего считать: нет вечного, квартала или общих часов")
         self.stdout.write(f"баров {count}")
+        from analytics.history import refresh
+        from market.models import Pair
+        pairs = Pair.objects.filter(active=True)
+        if options["pair"]:
+            pairs = pairs.filter(code=options["pair"])
+        for pair in pairs:
+            self.stdout.write(f"  аналитика {pair.code}: баров {refresh(pair)}")

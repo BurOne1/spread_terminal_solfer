@@ -4,6 +4,10 @@
 С since пересчитывается только хвост: бары не раньше since. Свечи читаются
 с запасом LOOKBACK назад, чтобы спот и окно контракта были известны.
 
+history_bars считает тот же ряд для аналитики, но окно каждого контракта
+начинается за HISTORY_MONTHLY или HISTORY_QUARTERLY до склейки: окна
+перекрываются, бары не пишутся в базу.
+
 Живые потоки не пересчитывают на каждый тик: они зовут mark_dirty,
 а flush_dirty раз в несколько секунд пересчитывает хвосты отмеченных пар.
 
@@ -26,30 +30,63 @@ from strategy.models import SpreadBar
 LOOKBACK = timedelta(days=7)
 RATE_LOOKBACK = timedelta(days=30)
 
+# История для аналитики: два месяца у месячных контрактов, два квартала у квартальных.
+HISTORY_MONTHLY = timedelta(days=61)
+HISTORY_QUARTERLY = timedelta(days=183)
+
 _lock = threading.Lock()
 _dirty = {}
 _dirty_lock = threading.Lock()
+# Режим истории: span — насколько раньше склейки открыть окно, rows — куда собрать бары.
+_history = threading.local()
+
+
+def history_span(pair):
+    """Глубина истории контракта пары: месячные — нефть и газ, остальные квартальные."""
+    return HISTORY_MONTHLY if (pair.nymex or pair.listed or pair.ngnymex) else HISTORY_QUARTERLY
+
+
+def history_bars(pair, span=None):
+    """Бары пары с окнами от склейки − span до склейки, без записи в базу.
+
+    Окна соседних контрактов перекрываются: у одного часа может быть
+    несколько баров, по одному на контракт.
+    """
+    _history.span = span or history_span(pair)
+    _history.rows = []
+    try:
+        _rebuild_one(pair, None)
+        return _history.rows
+    finally:
+        _history.span = None
+        _history.rows = None
+
+
+def _span():
+    return getattr(_history, "span", None)
 
 
 def rebuild_spread(pair_code="", since=None):
     pairs = Pair.objects.filter(active=True)
     if pair_code:
         pairs = pairs.filter(code=pair_code)
-    total = 0
-    for pair in pairs:
-        if pair.foreign_source == "TRI":
-            total += _rebuild_tri(pair, since)
-        elif pair.calendar:
-            total += _rebuild_calendar(pair, since)
-        elif pair.nymex:
-            total += _rebuild_nymex(pair, since)
-        elif pair.cross:
-            total += _rebuild_cross(pair, since)
-        elif pair.listed:
-            total += _rebuild_listed(pair, since)
-        else:
-            total += _rebuild_pair(pair, since)
-    return total
+    return sum(_rebuild_one(pair, since) for pair in pairs)
+
+
+def _rebuild_one(pair, since):
+    if pair.foreign_source == "TRI":
+        return _rebuild_tri(pair, since)
+    if pair.calendar:
+        return _rebuild_calendar(pair, since)
+    if pair.nymex:
+        return _rebuild_nymex(pair, since)
+    if pair.cross:
+        return _rebuild_cross(pair, since)
+    if pair.listed:
+        return _rebuild_listed(pair, since)
+    if pair.ngnymex:
+        return _rebuild_ngnymex(pair, since)
+    return _rebuild_pair(pair, since)
 
 
 # Треугольник собирается из чужих ног: свечи этих пар меняют и его.
@@ -151,11 +188,14 @@ def _quarters(pair, load_from, scale=1):
         instruments = instruments.filter(roll_at__gt=load_from)
     instruments = list(instruments.order_by("roll_at"))
     bars = _ohlc_many(instruments, load_from)
+    span = _span()
     return [
         {
             "id": instrument.id,
             "code": instrument.code,
-            "listed_at": instrument.listed_at,
+            "listed_at": instrument.listed_at if span is None else min(
+                instrument.roll_at - span, instrument.listed_at or instrument.roll_at,
+            ),
             "roll_at": instrument.roll_at,
             "expires": instrument.roll_at,
             "bars": bars[instrument.id] if scale == 1 else {
@@ -231,7 +271,21 @@ def _rebuild_pair(pair, since=None):
         rates = _pair_rates(pair.foreign_source, _rate_rows(load_from))
 
     def points_at(index):
-        contracts = [
+        if _span() is not None:
+            # Окна перекрываются: каждый контракт отдельно, ключ — (час, контракт).
+            found = {}
+            for contract in contracts_at(index):
+                for item in build_points(
+                    _side(perp_rows, index), [contract], rates, _side(spot_rows, index), funding=funding,
+                ):
+                    found[(item["ts"], item["contract_id"])] = item
+            return found
+        return {(item["ts"], item["contract_id"]): item for item in build_points(
+            _side(perp_rows, index), contracts_at(index), rates, _side(spot_rows, index), funding=funding, since=since,
+        )}
+
+    def contracts_at(index):
+        return [
             {
                 "id": row["id"],
                 "code": row["code"],
@@ -241,19 +295,16 @@ def _rebuild_pair(pair, since=None):
             }
             for row in futures
         ]
-        points = build_points(
-            _side(perp_rows, index), contracts, rates, _side(spot_rows, index), funding=funding, since=since,
-        )
-        return {item["ts"]: item for item in points}
 
     closes = points_at(1)
     opens = points_at(0)
     rows = []
-    for ts in sorted(closes):
+    for key in sorted(closes):
+        ts = key[0]
         if since is not None and ts < since:
             continue
-        item = closes[ts]
-        opened = opens.get(ts) or {}
+        item = closes[key]
+        opened = opens.get(key) or {}
         rows.append(SpreadBar(
             pair=pair,
             ts=ts,
@@ -467,27 +518,64 @@ def _rebuild_cross(pair, since=None):
     return _store(pair, rows, since)
 
 
-def _rebuild_listed(pair, since=None):
-    """Готовый спред биржи (NGX6NGZ6): raw — его цена, fair = 0.
+def _rebuild_ngnymex(pair, since=None):
+    """NG Мосбиржи минус NG NYMEX месяцем позже, $/MMBtu, только общие будние часы Мосбиржи.
 
-    spot — последняя цена фронта окна (NGX6), от неё уровни в процентах;
-    час без цены фронта до этого момента пропускается.
+    Окна — ноги NYMEX пары (market/ngnymex.py), ноги Мосбиржи — по символу.
+    fair = 0, spread_rate = raw, spot — цена NYMEX, от неё уровни.
+    """
+    from market.ngnymex import moex_code
+
+    load_from = _load_from(since)
+    windows = _traded(_quarters(pair, load_from))
+    if not windows:
+        return 0
+    # Нога Мосбиржи — по коду (NGZ2026): символ NGZ6@RTSX повторяется раз в десять лет.
+    moex_of = {window["id"]: moex_code(window["code"]) for window in windows}
+    instruments = list(Instrument.objects.filter(code__in=set(moex_of.values())))
+    bars = _ohlc_many(instruments, load_from)
+    by_symbol = {instrument.code: bars[instrument.id] for instrument in instruments}
+    rows = []
+    for window in windows:
+        moex_bars = by_symbol.get(moex_of[window["id"]])
+        if not moex_bars:
+            continue
+        roll = window["roll_at"]
+        for ts in sorted(window["bars"]):
+            if since is not None and ts < since:
+                continue
+            if window["listed_at"] is not None and ts < window["listed_at"]:
+                continue
+            if ts >= roll or not _common_hour(ts):
+                continue
+            moex = moex_bars.get(ts)
+            if moex is None:
+                continue
+            nymex = window["bars"][ts]
+            raw_open, raw = float(moex[0]) - float(nymex[0]), float(moex[1]) - float(nymex[1])
+            rows.append(SpreadBar(
+                pair=pair, ts=ts, contract_id=window["id"],
+                future_close=money(float(moex[1])), perp_close=money(float(nymex[1])), spot=money(float(nymex[1])),
+                raw_spread=money(raw), days_left=_days(roll, ts)[0], ruonia=None, foreign_rate=None,
+                fair=money(0.0), spread_rate=money(raw), raw_open=money(raw_open), rate_open=money(raw_open),
+            ))
+    return _store(pair, rows, since)
+
+
+def _rebuild_listed(pair, since=None):
+    """Готовый спред биржи (NGX6NGZ6@RTSX): raw — его цена, fair = 0.
+
+    Ноги не нужны: Мосбиржа котирует календарь одним инструментом. Уровни
+    у такой пары абсолютные, в единицах спреда ($/MMBtu), поэтому spot = 1:
+    движок умножает уровень на spot (strategy/engine.py).
     """
     load_from = _load_from(since)
     windows = _traded(_quarters(pair, load_from))
     if not windows:
         return 0
-    fronts = Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FOREIGN, roll_at__isnull=False)
-    if load_from is not None:
-        fronts = fronts.filter(roll_at__gt=load_from)
-    fronts = list(fronts)
-    front_bars = _ohlc_many(fronts, load_from)
-    front_of = {front.roll_at: front_bars[front.id] for front in fronts}
     rows = []
     for window in windows:
         roll = window["roll_at"]
-        front = front_of.get(roll) or {}
-        spot = _stepper(sorted((ts, prices[1]) for ts, prices in front.items()))
         for ts in sorted(window["bars"]):
             if since is not None and ts < since:
                 continue
@@ -495,13 +583,10 @@ def _rebuild_listed(pair, since=None):
                 continue
             if ts >= roll:
                 continue
-            price = spot(ts)
-            if price is None:
-                continue
             opened, closed = (float(value) for value in window["bars"][ts])
             rows.append(SpreadBar(
                 pair=pair, ts=ts, contract_id=window["id"],
-                future_close=money(closed), perp_close=money(price), spot=money(price),
+                future_close=money(closed), perp_close=money(closed), spot=money(1.0),
                 raw_spread=money(closed), days_left=_days(roll, ts)[0], ruonia=None, foreign_rate=None,
                 fair=money(0.0), spread_rate=money(closed), raw_open=money(opened), rate_open=money(opened),
             ))
@@ -525,7 +610,17 @@ def _common_hour(ts):
     return 4 <= ts.hour <= 20
 
 
-def _window_price(contracts, ts):
+def _window_price(contracts, ts, roll=None):
+    """Цена ноги в час ts: контракт, в окне которого этот час.
+
+    В режиме истории окна перекрываются — берётся нога с той же склейкой (roll).
+    """
+    if roll is not None and _span() is not None:
+        for contract in contracts:
+            if contract["roll_at"] == roll and ts < roll and (contract["listed_at"] is None or ts >= contract["listed_at"]):
+                price = contract["bars"].get(ts)
+                if price is not None:
+                    return price, contract
     for contract in contracts:
         left = contract["listed_at"]
         if left is not None and ts < left:
@@ -639,7 +734,7 @@ def _rebuild_tri(pair, since=None):
                 continue
             metal_usd = contract["bars"].get(ts)
             perp_rub = perp_bars.get(ts)
-            dollar, si = _window_price(si_contracts, ts)
+            dollar, si = _window_price(si_contracts, ts, contract["roll_at"])
             if metal_usd is None or perp_rub is None or dollar is None:
                 continue
             roll = contract["expires"]
@@ -678,8 +773,8 @@ def _rebuild_trigl(pair, since=None):
             if ts >= gl["roll_at"]:
                 continue
             gl_rub = gl["bars"].get(ts)
-            gd_usd, gd_contract = _window_price(gd_contracts, ts)
-            dollar, si = _window_price(si_contracts, ts)
+            gd_usd, gd_contract = _window_price(gd_contracts, ts, gl["roll_at"])
+            dollar, si = _window_price(si_contracts, ts, gl["roll_at"])
             if gl_rub is None or gd_usd is None or dollar is None:
                 continue
             roll = gl["expires"]
@@ -693,6 +788,9 @@ def _rebuild_trigl(pair, since=None):
 
 def _store(pair, rows, since=None):
     """Без since — заменить ряд пары целиком, с since — только хвост."""
+    if _span() is not None:
+        _history.rows.extend(rows)
+        return len(rows)
     if not rows and since is None:
         return 0
     by_ts = {}

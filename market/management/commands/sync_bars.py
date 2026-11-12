@@ -16,6 +16,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from market.finam import FinamClient, FinamError
 from market.models import Candle, Instrument, Pair
+from strategy.rebuild import HISTORY_MONTHLY, HISTORY_QUARTERLY
 
 H1_DEPTH = timedelta(days=30)
 WINDOW = timedelta(days=29)
@@ -99,14 +100,20 @@ class Command(BaseCommand):
         return count
 
 
+def _opened(instrument, start, span):
+    """Начало загрузки: окно или история для аналитики (span до склейки), что раньше."""
+    opened = instrument.listed_at or start
+    return min(opened, instrument.roll_at - span) if instrument.roll_at else opened
+
+
 def _brent(pair, start, end):
-    """BR и BZ окон, задевающих [start, end)."""
+    """BR и BZ (и другие месячные ноги) окон, задевающих [start, end), с историей за два месяца."""
     legs = Instrument.objects.filter(
         pair=pair, kind__in=(Instrument.Kind.FUTURE, Instrument.Kind.FOREIGN), roll_at__gt=start,
     ).exclude(finam_symbol="")
     return [
         (leg, True) for leg in legs.order_by("roll_at", "kind")
-        if (leg.listed_at or start) < end
+        if _opened(leg, start, HISTORY_MONTHLY) < end
     ]
 
 
@@ -123,6 +130,19 @@ def _cross(pair, start, end):
     return [(item, True) for item in windows + moex]
 
 
+def _ngnymex(pair, start, end):
+    """Окна NYMEX пары и ноги NG Мосбиржи тех же окон."""
+    from market.ngnymex import moex_code
+    windows = [target for target, _optional in _brent(pair, start, end) if target.kind == Instrument.Kind.FUTURE]
+    moex = list(Instrument.objects.filter(code__in={moex_code(window.code) for window in windows}))
+    return [(item, True) for item in windows + moex]
+
+
+def _listed(pair, start, end):
+    """Котировки календаря (NGX6NGZ6@RTSX): ног у него нет."""
+    return [(item, True) for item, _optional in _brent(pair, start, end) if item.kind == Instrument.Kind.FUTURE]
+
+
 def _quarters(owner, start, end, early=False):
     """Кварталы, чьё окно задевает [start, end). early — с окна предыдущего, там он секонд."""
     if owner is None:
@@ -131,9 +151,9 @@ def _quarters(owner, start, end, early=False):
     previous = None
     quarters = Instrument.objects.filter(pair=owner, kind=Instrument.Kind.FUTURE, roll_at__isnull=False)
     for instrument in quarters.order_by("roll_at"):
-        opened = instrument.listed_at or start
+        opened = _opened(instrument, start, HISTORY_QUARTERLY)
         if early and previous is not None and previous.listed_at is not None:
-            opened = previous.listed_at
+            opened = min(opened, previous.listed_at)
         previous = instrument
         if instrument.finam_symbol and opened < end and instrument.roll_at > start:
             targets.append((instrument, True))
@@ -147,10 +167,14 @@ def _owner(code):
 def _targets(pair, start, end):
     if pair.calendar:
         return _quarters(_owner(pair.base), start, end, early=True)
-    if pair.nymex or pair.listed:
+    if pair.nymex:
         return _brent(pair, start, end)
+    if pair.listed:
+        return _listed(pair, start, end)
     if pair.cross:
         return _cross(pair, start, end)
+    if pair.ngnymex:
+        return _ngnymex(pair, start, end)
     if pair.foreign_source == "TRI":
         if pair.code == "TRIGDS":
             # Кварталы GD — у TRIGD, SI — у USD, спот золота — у GOLD.

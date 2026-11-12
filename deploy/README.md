@@ -92,11 +92,13 @@ venv/bin/python manage.py createsuperuser
 
 ## 5. Пары и первые данные
 
-База пустая, кроме пары CNY (её создаёт миграция). Порядок важен: треугольники
-и кросс-пары берут ноги у USD, GOLD, EUR.
+База пустая, кроме пары CNY: её создаёт миграция, но без контрактов — их
+заводит `ensure_contracts --pair CNY`. Порядок важен: календари, треугольники и
+кросс-пары берут ноги у CNY, USD, GOLD, EUR.
 
 ```bash
 M="venv/bin/python manage.py"
+$M ensure_contracts --pair CNY
 $M add_usd
 $M add_eur
 $M add_gold

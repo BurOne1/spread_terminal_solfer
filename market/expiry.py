@@ -41,10 +41,17 @@ def last_business_day(year, month):
     return day
 
 
-def moex_ng_expiry(year, month):
-    """NG Мосбиржи месяца M: около экспирации газа CME месяца M+1 —
-    за три рабочих дня до его первого числа. Правило приблизительное, точную дату даёт Finam."""
-    return _business_back(last_business_day(year, month) + timedelta(days=1), 3)
+# Нерабочие будни Мосбиржи в конце месяца: от них зависит склейка нефти и газа.
+# Список дополняется по календарю биржи на следующий год.
+MOEX_HOLIDAYS = {date(2024, 12, 31), date(2025, 12, 31), date(2026, 12, 31)}
+
+
+def moex_last_business_day(year, month):
+    """Последний рабочий день месяца на Мосбирже: будни без MOEX_HOLIDAYS."""
+    day = last_business_day(year, month)
+    while day.weekday() >= 5 or day in MOEX_HOLIDAYS:
+        day -= timedelta(days=1)
+    return day
 
 
 def _parse(value):

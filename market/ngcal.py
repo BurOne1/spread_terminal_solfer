@@ -1,16 +1,16 @@
 """Календарь NG Мосбиржи как готовый инструмент: NGX6NGZ6@RTSX.
 
 Мосбиржа торгует календарные спреды соседних месяцев газа отдельными
-инструментами (тип SPREADS). Цена инструмента и есть спред, ног считать
-не нужно. Окно — до экспирации первой ноги: в этот день пара переходит
-на следующий спред, NGX6NGZ6 → NGZ6NGF7. Дата — из Finam, иначе правило.
-
-Фронт (NGX6@RTSX) — вторая нога окна: от его цены считаются уровни в процентах.
+инструментами (тип SPREADS). Цена инструмента и есть спред, ног не нужно.
+Окно — до последнего рабочего дня месяца первой ноги на Мосбирже: в этот
+день пара переходит на следующий спред, NGX6NGZ6 → NGZ6NGF7 (30.11.2026).
+Сам спред истекает с первой ногой на несколько дней раньше, до склейки
+баров у окна просто нет. Уровни — абсолютные, в $/MMBtu.
 """
 
 from datetime import datetime, timedelta, timezone
 
-from market.expiry import finam_expiry, moex_ng_expiry
+from market.expiry import moex_last_business_day
 from market.models import Instrument
 from strategy.params import ROLL_TIME
 
@@ -27,17 +27,12 @@ def _secid(year, month):
     return f"{ROOT}{MONTHS[month - 1]}{year % 10}"
 
 
-def windows(start, end, expiries=None):
-    """Окна, задевающие [start, end): спред, его фронт, начало и склейка.
-
-    expiries — {символ фронта: дата} из Finam, иначе правило NG.
-    """
-    expiries = expiries or {}
+def windows(start, end):
+    """Окна, задевающие [start, end): спред, его фронт, начало и склейка."""
     months = []
     for year in range(start.year - 1, end.year + 2):
         for month in range(1, 13):
-            front = f"{_secid(year, month)}@RTSX"
-            months.append((_roll(expiries.get(front) or moex_ng_expiry(year, month)), year, month))
+            months.append((_roll(moex_last_business_day(year, month)), year, month))
     months.sort()
     covered = []
     for (opened, _y, _m), (expires, year, month) in zip(months, months[1:]):
@@ -54,32 +49,22 @@ def windows(start, end, expiries=None):
 
 
 def ensure(pair, start, end, client=None, update=False):
-    """Спреды и фронты окон в базе. client — Finam для точных дат. Вернуть окна."""
-    expiries = {}
-    if client is not None:
-        for row in windows(start, end):
-            found = finam_expiry(client, row["front"])
-            if found:
-                expiries[row["front"]] = found
-    rows = windows(start, end, expiries)
+    """Спреды окон в базе. Вернуть окна. client не нужен: склейка по календарю Мосбиржи."""
+    rows = windows(start, end)
     for row in rows:
-        for code, symbol, kind in (
-            (row["code"], row["symbol"], Instrument.Kind.FUTURE),
-            (row["front_code"], row["front"], Instrument.Kind.FOREIGN),
-        ):
-            defaults = {
-                "pair": pair, "kind": kind, "finam_symbol": symbol, "lot": pair.lot,
-                "listed_at": row["listed_at"], "roll_at": row["roll_at"],
-            }
-            if update:
-                Instrument.objects.update_or_create(code=code, defaults=defaults)
-            else:
-                Instrument.objects.get_or_create(code=code, defaults=defaults)
+        defaults = {
+            "pair": pair, "kind": Instrument.Kind.FUTURE, "finam_symbol": row["symbol"], "lot": pair.lot,
+            "listed_at": row["listed_at"], "roll_at": row["roll_at"],
+        }
+        if update:
+            Instrument.objects.update_or_create(code=row["code"], defaults=defaults)
+        else:
+            Instrument.objects.get_or_create(code=row["code"], defaults=defaults)
     return rows
 
 
 def front_symbols(pair, now):
-    """Спред и фронт текущего окна. Недостающее окно заводится по правилу."""
+    """Котировка текущего окна. Недостающее окно заводится по правилу."""
     def current():
         return (
             Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE, roll_at__gt=now)
@@ -91,5 +76,4 @@ def front_symbols(pair, now):
         window = current()
     if window is None:
         return []
-    front = Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FOREIGN, roll_at=window.roll_at).first()
-    return [window.finam_symbol] + ([front.finam_symbol] if front else [])
+    return [window.finam_symbol]

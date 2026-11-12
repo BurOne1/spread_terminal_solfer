@@ -60,14 +60,24 @@ class Pair(models.Model):
         return self.foreign_source == "CMEFX" and self.code in CROSS
 
     @property
+    def ngnymex(self):
+        """NG Мосбиржи минус NG NYMEX, см. market/ngnymex.py."""
+        return self.foreign_source == "NGNYM"
+
+    @property
     def listed(self):
         """Готовый спред биржи одним инструментом, см. market/ngcal.py."""
         return self.foreign_source == "LISTED"
 
     @property
+    def absolute_levels(self):
+        """Уровни в единицах спреда, а не в долях цены: готовый календарь NGCAL."""
+        return self.listed
+
+    @property
     def zero_fair(self):
         """Справедливое значение ноль: spread_rate = raw, фандинга нет."""
-        return self.nymex or self.cross or self.listed
+        return self.nymex or self.cross or self.listed or self.ngnymex
 
     @property
     def tri_code(self):

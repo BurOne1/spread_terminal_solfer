@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from market import cross, ngcal
+from market import cross, ngcal, ngnymex
 from market.brent import ensure_window
 from market.brent import windows as brent_windows
 from market.finam import future_symbol
@@ -51,15 +51,18 @@ class Command(BaseCommand):
                         f"{row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}"
                     )
                 continue
-            if pair.cross or pair.listed:
-                module = cross if pair.cross else ngcal
+            if pair.cross or pair.listed or pair.ngnymex:
+                module = cross if pair.cross else ngcal if pair.listed else ngnymex
                 client = _client()
                 try:
                     rows = module.ensure(pair, start, end, client=client, update=True)
                 finally:
                     if client is not None:
                         client.close()
-                source = "даты из Finam" if client is not None else "даты по правилу биржи: нет ключа Finam"
+                if not pair.cross:
+                    source = "склейка — последний рабочий день месяца MOEX"
+                else:
+                    source = "даты из Finam" if client is not None else "даты по правилу биржи: нет ключа Finam"
                 self.stdout.write(f"{pair.code}: окон {len(rows)}, {source}")
                 for row in rows:
                     self.stdout.write(f"  {row['code']} {row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}")

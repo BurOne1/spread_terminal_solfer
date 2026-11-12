@@ -24,7 +24,7 @@ import websockets
 from django.conf import settings
 from django.db import close_old_connections
 
-from market import cross, ngcal
+from market import cross, ngcal, ngnymex
 from market.brent import front_symbols
 from market.finam import PERP_SYMBOL, SPOT_SYMBOL, FinamClient, FinamError, future_symbol, parse_decimal
 from market.models import Candle, Instrument, Pair
@@ -114,6 +114,9 @@ def live_symbols():
             continue
         if pair.listed:
             symbols.extend(ngcal.front_symbols(pair, now))
+            continue
+        if pair.ngnymex:
+            symbols.extend(ngnymex.front_symbols(pair, now))
             continue
         if pair.calendar:
             symbols.extend(quarter_symbols(owner(pair.base), now, 2))

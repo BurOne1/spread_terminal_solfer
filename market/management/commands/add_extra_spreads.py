@@ -3,9 +3,11 @@
 CRCNH  CR × CNH × 1000 − Si   рубли за 1000 долларов (пункты Si), CNH — CME
 SI6E   Si × 6E − Eu           рубли за 1000 евро (пункты Eu), 6E — CME
 NGCAL  NGX6NGZ6@RTSX          календарь газа Мосбиржи одним инструментом, $/MMBtu
+NGNYMEX NG MOEX − NG NYMEX     NGZ6 ↔ NGF27: NYMEX месяцем позже, $/MMBtu
 TRIGDS GD × SI − GLDRUB_TOM   как TRIGD, но третья нога — спот золота, без фандинга
 
-Кросс-пары и NGCAL — справедливый ноль, уровни — доли цены Si, Eu или фронта NG.
+Кросс-пары и NGCAL — справедливый ноль. Уровни кросс-пар — доли цены Si или Eu,
+у NGCAL — абсолютные, в $/MMBtu.
 Лот кросс-пары — один контракт Si или Eu: PnL в рублях на него. Лот NGCAL —
 100 MMBtu, один календарь. TRIGDS берёт уровни TRIGD.
 """
@@ -15,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from market import cross, ngcal
+from market import cross, ngcal, ngnymex
 from market.models import Pair
 
 
@@ -33,8 +35,11 @@ SPECS = (
      "levels": levels(0.001, 0.00025)},
     {"code": "SI6E", "title": "Si × 6E − Eu", "root": "Si", "source": "CMEFX", "quote": "RUB", "lot": 1,
      "levels": levels(0.001, 0.00025)},
+    # Уровни NGCAL абсолютные, $/MMBtu: спред торгуется одной котировкой, цены ног нет.
     {"code": "NGCAL", "title": "NG календарь MOEX", "root": "NG", "source": "LISTED", "quote": "USD", "lot": 100,
-     "levels": levels(0.02, 0.005)},
+     "levels": levels(0.07, 0.02)},
+    {"code": "NGNYMEX", "title": "NG MOEX − NG NYMEX", "root": "NG", "source": "NGNYM", "quote": "USD", "lot": 100,
+     "levels": levels(0.003, 0.001)},
 )
 
 
@@ -57,9 +62,12 @@ class Command(BaseCommand):
                 })
                 if created:
                     Pair.objects.filter(pk=pair.pk).update(**spec["levels"])
-                module = cross if spec["source"] == "CMEFX" else ngcal
+                module = {"CMEFX": cross, "LISTED": ngcal, "NGNYM": ngnymex}[spec["source"]]
                 rows = module.ensure(pair, now - timedelta(days=60), now + timedelta(days=400), client=client, update=True)
-                source = "даты из Finam" if client else "даты по правилу биржи, без ключа Finam"
+                if spec["source"] != "CMEFX":
+                    source = "склейка — последний рабочий день месяца MOEX"
+                else:
+                    source = "даты из Finam" if client else "даты по правилу биржи, без ключа Finam"
                 self.stdout.write(f"{pair.code} {'создана' if created else 'обновлена'}: {spec['title']}, окон {len(rows)}, {source}")
                 for row in rows[:4]:
                     self.stdout.write(f"  {row['code']} {row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}")

@@ -195,6 +195,7 @@
     </select>
     <div class="grow"></div>
     <a class="tb" href="/radar/" title="Радар: крупные участники, стены, всплески">Радар</a>
+    <a class="tb" href="/analytics/" title="Статистика контрактов по дням до экспирации">Аналитика</a>
     <button type="button" class="tb" id="snapshot" title="Скопировать изображение графика (Alt+S)"><svg viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="10" rx="1.5"/><circle cx="9" cy="9.5" r="2.6"/><path d="M6.5 4.5 7.5 3h3l1 1.5"/></svg></button>
     <button type="button" class="tb" id="fit" title="Вписать график (Alt+R)"><svg viewBox="0 0 18 18"><path d="M3 7V3h4M15 7V3h-4M3 11v4h4M15 11v4h-4"/></svg></button>
     <button type="button" class="tb" id="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 18 18"><path d="M15 10.5A6.5 6.5 0 0 1 7.5 3a6.5 6.5 0 1 0 7.5 7.5Z"/></svg></button>
@@ -250,7 +251,7 @@
     </div>
     <div class="view" data-view="strategy">
     <div class="side-body">
-      <p class="hint">Уровни — процент спота со знаком. Хранятся в этом браузере. Enter в поле — применить.</p>
+      <p class="hint"><span id="level-unit">Уровни — процент спота со знаком.</span> Хранятся в этом браузере. Enter в поле — применить.</p>
       <label class="field"><span>Вход</span>
         <select id="entry-mode"><option value="touch">при достижении уровня</option><option value="reverse">обратное пробитие</option></select>
       </label>
@@ -746,7 +747,13 @@
       node.querySelector(".drop").addEventListener("click", () => { node.remove(); updateCounts(); });
       return node;
     }
-    function percents(rows) { return (rows || []).map((item) => +(item * 100).toFixed(4)); }
+    // Уровни в долях цены показываются в процентах, абсолютные (NGCAL) — как есть.
+    function levelUnit() { return levels.absolute ? 1 : 100; }
+    function showUnit() {
+      const node = document.getElementById("level-unit");
+      if (node) node.textContent = levels.absolute ? `Уровни — в единицах спреда (${window.pairQuote || ""}) со знаком.` : "Уровни — процент спота со знаком.";
+    }
+    function percents(rows) { return (rows || []).map((item) => +(item * levelUnit()).toFixed(4)); }
     function updateCounts() {
       ["long-entry", "short-entry", "long-take", "short-take"].forEach((kind) => {
         const count = document.querySelectorAll(`.level[data-kind="${kind}"]`).length;
@@ -789,7 +796,7 @@
       if (param.paneIndex !== undefined && param.paneIndex !== 0) return;
       const price = rateSeries.coordinateToPrice(param.point.y);
       if (price === null) return;
-      armed.querySelector("input").value = (price / levels.spot * 100).toFixed(3);
+      armed.querySelector("input").value = (price / levels.spot * levelUnit()).toFixed(3);
       armed.classList.remove("armed");
       armed = null;
     });
@@ -847,6 +854,8 @@
     function copyLevelLines(body) {
       if (!body.levels) return;
       levels.spot = body.levels.spot;
+      levels.absolute = !!body.levels.absolute;
+      showUnit();
       levels.long = body.levels.long || [];
       levels.short = body.levels.short || [];
       levels.long_tp = body.levels.long_tp || [];
@@ -943,7 +952,7 @@
     indicatorSelect.addEventListener("change", () => { writeStore("spread-indicator", indicatorSelect.value); paint(false); });
     basisSelect.addEventListener("change", () => { saveStrategy(); refresh(false); });
     function applyLevels() {
-      const fractions = (kind) => collect(kind).map(Number).filter(Number.isFinite).map((value) => value / 100);
+      const fractions = (kind) => collect(kind).map(Number).filter(Number.isFinite).map((value) => value / levelUnit());
       writeStore(levelKey(), {
         long_pcts: fractions("long-entry"),
         short_pcts: fractions("short-entry"),
@@ -1454,6 +1463,7 @@
     if (savedIndicator) indicatorSelect.value = savedIndicator;
     setView(readStore("spread-side-view", "strategy"));
     markRail();
+    showUnit();
     renderLevels(readStore(levelKey(), null) || levels);
     paint(true);
     refresh(true);

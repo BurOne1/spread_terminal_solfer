@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Аналитика</title>
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("spread-theme") || "dark"; } catch (error) { /* хранилище недоступно */ }</script>
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+  <style>
+    :root[data-theme="dark"] {
+      --bg: #2b2b2b; --panel: #313335; --raised: #3c3f41; --hover: #3c3f41; --line: #3c3f41; --line-strong: #4e5254;
+      --ink: #bbbbbb; --muted: #808080; --accent: #4a88c7; --accent-soft: rgba(74, 136, 199, .22);
+      --green: #59a869; --red: #c75450; --orange: #cc7832; --gold: #d6a536; --grid: rgba(255, 255, 255, .06);
+    }
+    :root[data-theme="light"] {
+      --bg: #f0f3fa; --panel: #ffffff; --raised: #f0f3fa; --hover: #f0f3fa; --line: #e0e3eb; --line-strong: #d1d4dc;
+      --ink: #131722; --muted: #787b86; --accent: #2962ff; --accent-soft: rgba(41, 98, 255, .1);
+      --green: #089981; --red: #f23645; --orange: #f57c00; --gold: #c8920c; --grid: #e8ebf2;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink); font: 13px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif;
+      display: grid; height: 100vh; height: 100dvh; grid-template-rows: 46px minmax(0, 1fr); grid-template-columns: 290px minmax(0, 1fr);
+      grid-template-areas: "top top" "side main"; overflow: hidden;
+    }
+    button, select, input { font: inherit; color: inherit; }
+    .topbar { grid-area: top; display: flex; align-items: center; gap: 4px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .title { display: flex; flex-direction: column; flex: none; padding: 0 10px 0 4px; margin-right: 4px; border-right: 1px solid var(--line); }
+    .title b { font-size: 14px; }
+    .title span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .tb { height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); cursor: pointer; text-decoration: none; white-space: nowrap; }
+    .tb:hover { background: var(--hover); }
+    .tb.on { color: var(--accent); }
+    .tb svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+    .grow { flex: 1; }
+    #status { color: var(--muted); font-size: 12px; }
+
+    .side { grid-area: side; overflow-y: auto; padding: 10px 12px; border-right: 1px solid var(--line); background: var(--panel); }
+    .field { display: grid; gap: 4px; margin-bottom: 12px; }
+    .field > span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    .side select, .side input[type="number"] { width: 100%; background: var(--raised); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
+    .pair-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .chip { padding: 3px 9px; border: 1px solid var(--line-strong); border-radius: 12px; background: transparent; cursor: pointer; font-size: 12px; }
+    .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .seg { display: flex; border: 1px solid var(--line-strong); border-radius: 4px; overflow: hidden; }
+    .seg button { flex: 1; border: 0; background: transparent; padding: 5px; cursor: pointer; }
+    .seg button.on { background: var(--accent-soft); color: var(--accent); }
+    .list { max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; }
+    .list label { display: flex; align-items: center; gap: 8px; padding: 3px 8px; cursor: pointer; font-size: 12px; }
+    .list label:hover { background: var(--hover); }
+    .list .dim { color: var(--muted); margin-left: auto; }
+    .list input { accent-color: var(--accent); }
+    .links { display: flex; gap: 10px; font-size: 12px; margin-top: 4px; }
+    .links a { color: var(--accent); cursor: pointer; }
+    .hint { color: var(--muted); font-size: 11.5px; margin: 0 0 10px; }
+
+    .main { grid-area: main; overflow-y: auto; padding: 8px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; min-width: 0; }
+    .card h3 { margin: 0; padding: 8px 10px 0; font-size: 13px; font-weight: 600; }
+    .card .sub { padding: 0 10px; color: var(--muted); font-size: 11.5px; min-height: 17px; }
+    .card .best { padding: 2px 10px 0; font-size: 12px; min-height: 18px; }
+    .plot { height: 360px; }
+    .empty { display: grid; place-items: center; height: 360px; color: var(--muted); padding: 20px; text-align: center; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--muted); font-weight: 400; }
+    .up { color: var(--green); } .down { color: var(--red); }
+    @media (max-width: 1000px) {
+      body { grid-template-columns: 1fr; grid-template-rows: 46px auto minmax(0, 1fr); grid-template-areas: "top" "side" "main"; overflow: auto; height: auto; }
+      .grid { grid-template-columns: 1fr; }
+      .side { border-right: 0; border-bottom: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title"><b>Аналитика</b><span>контракты спреда по дням до экспирации</span></div>
+    <a class="tb" href="/">Спреды</a>
+    <a class="tb" href="/radar/">Радар</a>
+    <a class="tb on" href="/analytics/">Аналитика</a>
+    <div class="grow"></div>
+    <span id="status"></span>
+    <button type="button" class="tb" id="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 18 18"><path d="M15 10.5A6.5 6.5 0 0 1 7.5 3a6.5 6.5 0 1 0 7.5 7.5Z"/></svg></button>
+  </header>
+
+  <aside class="side">
+    <label class="field"><span>Пара</span>
+      <select id="pair">{% for item in pairs %}<option value="{{ item.code }}" {% if item.code == pair %}selected{% endif %}>{{ item.code }} · {{ item.title }}</option>{% endfor %}</select>
+    </label>
+    <div class="field"><span>Ряд</span>
+      <div class="seg" id="series">
+        <button type="button" data-value="raw" class="on" title="Фактический спред ног — PnL сделки">сырой</button>
+        <button type="button" data-value="rate" title="Спред минус справедливая стоимость переноса">очищенный</button>
+      </div>
+    </div>
+    <div class="field"><span>Месяц контракта</span><div class="chips" id="months"></div></div>
+    <div class="field"><span>Контракты в статистике</span>
+      <div class="list" id="contracts"></div>
+      <div class="links"><a id="all-on">все</a><a id="all-off">ни одного</a></div>
+    </div>
+    <p class="hint">Идущий контракт показан на графике, но в статистику не входит: у него ещё нет выхода.</p>
+    <div class="pair-row">
+      <label class="field"><span>Удержание ≥, дн.</span><input type="number" id="hold" min="1" max="120" value="10"></label>
+      <label class="field"><span>Лет ≥</span><input type="number" id="years" min="1" max="20" value="2"></label>
+      <label class="field"><span>Сглаживание ±, дн.</span><input type="number" id="smooth" min="0" max="20" value="5"></label>
+      <label class="field"><span>Глубина истории</span><select id="periods" title="Сколько дней до склейки брать: один период контракта или два">
+        <option value="1">1 период</option><option value="2" selected>2 периода</option></select></label>
+      <label class="field"><span>Дней до экспир. ≤</span><input type="number" id="max_days" min="0" max="400" value="0" title="0 — всё окно контракта"></label>
+      <label class="field"><span>Капитал, % цены</span><input type="number" id="capital" min="1" max="1000" step="1" value="100" title="100 — номинал, ~30 — примерно ГО двух ног"></label>
+      <label class="field"><span>Издержки за круг</span><input type="number" id="cost" min="0" step="any" value="0" title="В единицах спреда, вход и выход вместе"></label>
+    </div>
+    <label class="field"><span>Метрика сетки дохода</span>
+      <select id="metric"><option value="ret">% за период</option><option value="ann">% годовых</option><option value="ratio">доход / разброс по годам</option></select>
+    </label>
+  </aside>
+
+  <main class="main">
+    <div class="grid">
+      <section class="card"><h3>Контракты по дням до экспирации</h3><div class="sub" id="sub-lines"></div><div class="best" id="best-lines"></div><div class="plot" id="plot-lines"></div></section>
+      <section class="card"><h3>Вход × выход: доход сделки</h3><div class="sub" id="sub-returns"></div><div class="best" id="best-returns"></div><div class="plot" id="plot-returns"></div></section>
+      <section class="card"><h3>Движение спреда к нулю</h3><div class="sub">медиана по годам, каждый контракт в своём масштабе: + сужение, − расхождение</div><div class="best" id="best-move"></div><div class="plot" id="plot-move"></div></section>
+      <section class="card"><h3>Куда шёл спред: лонг или шорт</h3><div class="sub">медиана по годам, каждый контракт в своём масштабе: + рос (лонг), − падал (шорт)</div><div class="best" id="best-direction"></div><div class="plot" id="plot-direction"></div></section>
+    </div>
+    <section class="card" style="margin-top:8px"><h3>Лучшие диапазоны</h3><div class="sub">клетки сетки дохода с наибольшей сглаженной метрикой, не ближе 5 дней друг к другу</div><div id="ranges" style="padding:6px 0 4px; overflow-x:auto"></div></section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const esc = (text) => String(text ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    const store = {
+      get(key, fallback) { try { const value = localStorage.getItem(key); return value === null ? fallback : JSON.parse(value); } catch (error) { return fallback; } },
+      set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (error) { /* хранилище недоступно */ } },
+    };
+    const fmt = (value, digits = 2, sign = false) => value === null || value === undefined ? "—"
+      : (sign && value > 0 ? "+" : "") + Number(value).toLocaleString("ru-RU", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    const pct = (value) => value === null || value === undefined ? "—" : Math.round(value * 100) + "%";
+    const PARAMS = ["hold", "years", "smooth", "periods", "max_days", "capital", "cost", "metric"];
+    // Настройки и исключения — свои у каждой пары, в браузере.
+    const settingsKey = () => "analytics:" + $("pair").value;
+    let settings = {};
+    let contractList = [];
+    let last = null;
+
+    function loadSettings() {
+      settings = { series: "raw", month: "", exclude: [], ...store.get(settingsKey(), {}) };
+      for (const name of PARAMS) if (settings[name] !== undefined) $(name).value = settings[name];
+      document.querySelectorAll("#series button").forEach((button) => button.classList.toggle("on", button.dataset.value === settings.series));
+    }
+    function saveSettings() {
+      for (const name of PARAMS) settings[name] = $(name).value;
+      store.set(settingsKey(), settings);
+    }
+
+    async function loadContracts() {
+      const body = await fetch("/api/analytics/contracts/?pair=" + encodeURIComponent($("pair").value)).then((r) => r.json());
+      contractList = body.contracts;
+      const chips = [`<button type="button" class="chip ${settings.month ? "" : "on"}" data-month="">все</button>`]
+        .concat(body.months.map((m) => `<button type="button" class="chip ${settings.month === m.code ? "on" : ""}" data-month="${m.code}" title="${esc(m.name)}">${m.code} · ${esc(m.name)}</button>`));
+      $("months").innerHTML = chips.join("");
+      paintContracts();
+    }
+
+    function paintContracts() {
+      const shown = contractList.filter((c) => !settings.month || c.month === settings.month);
+      $("contracts").innerHTML = shown.length ? shown.slice().reverse().map((c) =>
+        `<label><input type="checkbox" data-code="${esc(c.code)}" ${settings.exclude.includes(c.code) ? "" : "checked"} ${c.live ? "disabled" : ""}>` +
+        `${esc(c.code)}<span class="dim">${c.live ? "идёт" : c.days + " дн."}</span></label>`).join("")
+        : `<div style="padding:8px" class="dim">Нет контрактов: у пары ещё нет баров.</div>`;
+    }
+
+    function query() {
+      const params = new URLSearchParams({ pair: $("pair").value, series: settings.series, month: settings.month, exclude: settings.exclude.join(",") });
+      for (const name of PARAMS) params.set(name, $(name).value);
+      return params.toString();
+    }
+
+    let timer = null;
+    function schedule() { clearTimeout(timer); timer = setTimeout(refresh, 300); }
+
+    async function refresh() {
+      saveSettings();
+      $("status").textContent = "считаю…";
+      try {
+        const response = await fetch("/api/analytics/?" + query());
+        last = await response.json();
+        paint(last);
+        $("status").textContent = `контрактов в статистике ${last.used.length}` + (last.years.length ? ` · годы ${last.years.join(", ")}` : "");
+      } catch (error) {
+        $("status").textContent = "не удалось посчитать";
+      }
+    }
+
+    function layout(extra = {}) {
+      return {
+        paper_bgcolor: css("--panel"), plot_bgcolor: css("--panel"), font: { color: css("--ink"), size: 11 },
+        margin: { l: 48, r: 12, t: 8, b: 38 }, showlegend: false,
+        xaxis: { title: { text: "дней до экспирации", font: { size: 11 } }, autorange: "reversed", gridcolor: css("--grid"), zerolinecolor: css("--line-strong") },
+        yaxis: { gridcolor: css("--grid"), zerolinecolor: css("--line-strong") },
+        ...extra,
+      };
+    }
+    const config = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d"] };
+    // Красный — убыток или расхождение, зелёный — доход или сужение, как в gas_spreads.py (RdYlGn).
+    const RDYLGN = [[0, "#a50026"], [0.15, "#d73027"], [0.3, "#f46d43"], [0.45, "#fee08b"], [0.5, "#ffffbf"],
+      [0.55, "#d9ef8b"], [0.7, "#66bd63"], [0.85, "#1a9850"], [1, "#006837"]];
+    const PALETTE = ["#4a88c7", "#cc7832", "#59a869", "#9876aa", "#c75450", "#d6a536", "#3fa9a0", "#b0715d", "#7f8fa6", "#c46bb0"];
+
+    function paintLines(body) {
+      const years = [...new Set(body.lines.map((l) => l.year))].sort();
+      const best = body.best && body.best.returns;
+      // Легенда — по годам: цвет линии и есть год, код контракта — в подсказке.
+      const seen = new Set();
+      const firstOf = (group) => (seen.has(group) ? false : (seen.add(group), true));
+      const traces = body.lines.map((line) => ({
+        type: "scatter", mode: "lines", x: line.x, y: line.y,
+        name: line.excluded ? "исключены" : String(line.year), legendgroup: line.excluded ? "excluded" : String(line.year),
+        showlegend: firstOf(line.excluded ? "excluded" : String(line.year)),
+        line: {
+          width: line.live ? 2.6 : 1.4, dash: line.excluded ? "dot" : "solid",
+          color: line.excluded ? css("--muted") : PALETTE[years.indexOf(line.year) % PALETTE.length],
+        },
+        hovertemplate: `${line.code}${line.live ? " (идёт)" : ""}${line.excluded ? " (исключён)" : ""}<br>%{x} дн.: %{y:.4f}<extra></extra>`,
+      }));
+      const shapes = [{ type: "line", xref: "paper", x0: 0, x1: 1, y0: 0, y1: 0, line: { color: css("--muted"), width: 1 } }];
+      if (best) {
+        shapes.push({ type: "line", yref: "paper", y0: 0, y1: 1, x0: best[0], x1: best[0], line: { color: css("--gold"), width: 1.5, dash: "dashdot" } });
+        shapes.push({ type: "line", yref: "paper", y0: 0, y1: 1, x0: best[1], x1: best[1], line: { color: css("--red"), width: 1.2, dash: "dash" } });
+      }
+      Plotly.react("plot-lines", traces, layout({ shapes, showlegend: true, legend: { font: { size: 10 }, orientation: "h", x: 0, y: 1.02, yanchor: "bottom" }, margin: { l: 48, r: 12, t: 26, b: 38 } }), config);
+      $("sub-lines").textContent = `${body.title}, ${body.params.series === "rate" ? "очищенный" : "сырой"} спред, дневные средние, ${body.width - 1} дн. до склейки; жирная — идёт, пунктир — исключён`;
+      if (body.period_days) {
+        // Подписи глубины под пару: квартал у квартальных, месяц у нефти и газа.
+        const unit = body.period_days > 45 ? ["квартал", "2 квартала"] : ["месяц", "2 месяца"];
+        const options = $("periods").options;
+        options[0].textContent = `${unit[0]}, ${body.period_days} дн.`;
+        options[1].textContent = `${unit[1]}, ${body.period_days * 2} дн.`;
+      }
+      $("best-lines").innerHTML = best ? `<span style="color:${css("--gold")}">┆ вход за ${best[0]} дн.</span> → <span style="color:${css("--red")}">┆ выход за ${best[1]} дн.</span> — лучшая клетка сетки дохода` : "";
+    }
+
+    function heat(id, grid, best, text, colorbar) {
+      const width = grid.length;
+      const z = [], hover = [];
+      for (let dout = 0; dout < width; dout++) {
+        const row = [], hrow = [];
+        for (let din = 0; din < width; din++) {
+          const value = grid[din][dout];
+          row.push(value);
+          hrow.push(value === null ? "" : text(din, dout));
+        }
+        z.push(row);
+        hover.push(hrow);
+      }
+      const values = grid.flat().filter((v) => v !== null).map(Math.abs).sort((a, b) => a - b);
+      const vmax = values.length ? values[Math.floor(values.length * 0.95)] || values[values.length - 1] || 1 : 1;
+      const traces = [{
+        type: "heatmap", z, text: hover, hovertemplate: "%{text}<extra></extra>", zmin: -vmax, zmax: vmax, zmid: 0,
+        colorscale: RDYLGN, colorbar: { title: { text: colorbar, side: "right", font: { size: 10 } }, thickness: 12 },
+      }];
+      if (best) traces.push({ type: "scatter", mode: "markers", x: [best[0]], y: [best[1]], hoverinfo: "skip",
+        marker: { symbol: "star", size: 16, color: "#ffd23f", line: { color: "#000", width: 1 } } });
+      const hold = Number($("hold").value) || 0;
+      const shapes = [{ type: "line", x0: hold, y0: 0, x1: width - 1, y1: width - 1 - hold, line: { color: css("--muted"), width: 1, dash: "dot" } }];
+      Plotly.react(id, traces, layout({ shapes, margin: { l: 56, r: 12, t: 8, b: 40 }, yaxis: { title: { text: "день выхода", font: { size: 11 } }, gridcolor: css("--grid") },
+        xaxis: { title: { text: "день входа, дней до экспирации", font: { size: 11 } }, autorange: "reversed", gridcolor: css("--grid") } }), config);
+    }
+
+    function empty(id, note) {
+      Plotly.purge(id);
+      $(id).innerHTML = `<div class="empty">${esc(note)}</div>`;
+    }
+
+    const METRIC = { ret: "% за период", ann: "% годовых", ratio: "доход / разброс" };
+
+    function paint(body) {
+      paintLines(body);
+      if (body.note) {
+        for (const id of ["plot-returns", "plot-move", "plot-direction"]) empty(id, body.note + ". Статистика появится, когда накопятся контракты или загрузится история (import_tv).");
+        for (const id of ["best-returns", "best-move", "best-direction", "sub-returns"]) $(id).textContent = "";
+        $("ranges").innerHTML = "";
+        return;
+      }
+      for (const id of ["plot-returns", "plot-move", "plot-direction"]) if ($(id).querySelector(".empty")) $(id).innerHTML = "";
+      const R = body.returns, metric = body.params.metric;
+      heat("plot-returns", R.smooth, body.best.returns, (i, o) =>
+        `вход ${i} → выход ${o} дн. (${R.side[i][o] > 0 ? "продажа" : "покупка"})<br>` +
+        `${fmt(R.ret[i][o], 2, true)}% за период, ${fmt(R.ann[i][o], 1, true)}% год.<br>` +
+        `худший год ${fmt(R.worst[i][o], 1, true)}% год., в плюс ${pct(R.win[i][o])}<br>` +
+        `MAE ${fmt(R.mae[i][o], 2)}%, доход/разброс ${fmt(R.ratio[i][o], 2)}, лет ${R.n[i][o]}`, METRIC[metric] + " (сглаж.)");
+      $("sub-returns").textContent = `${METRIC[metric]}, выход по фактическому спреду; капитал ${body.params.capital}% цены, удержание ≥ ${body.params.hold} дн.` +
+        (body.absolute ? "; цены у пары нет, база — 1 $: при капитале 100 % 1 % = 0.01 $/MMBtu" : "");
+      const b = body.best.returns;
+      $("best-returns").textContent = b ? `★ вход за ${b[0]} → выход за ${b[1]} дн., ${R.side[b[0]][b[1]] > 0 ? "продажа" : "покупка"}: ` +
+        `${fmt(R.ret[b[0]][b[1]], 2, true)}% за период, ${fmt(R.ann[b[0]][b[1]], 1, true)}% год., в плюс ${pct(R.win[b[0]][b[1]])}, MAE ${fmt(R.mae[b[0]][b[1]], 2)}%` : "прибыльных клеток нет";
+
+      const M = body.move;
+      heat("plot-move", M.smooth, body.best.move, (i, o) =>
+        `вход ${i} → выход ${o} дн.<br>сужение ${fmt(M.move[i][o], 2, true)} масштаба (медиана)<br>в ${pct(M.agree[i][o])} лет, |Δспреда| ${fmt(M.raw[i][o], 4, true)}`, "+ сужение / − расхождение");
+      const m = body.best.move;
+      $("best-move").textContent = m ? `★ вход за ${m[0]} → выход за ${m[1]} дн.: сужение ${fmt(M.move[m[0]][m[1]], 2, true)} масштаба в ${pct(M.agree[m[0]][m[1]])} лет, |Δ| ${fmt(M.raw[m[0]][m[1]], 4, true)}` : "сужения нет";
+
+      const D = body.direction;
+      heat("plot-direction", D.smooth, body.best.direction, (i, o) =>
+        `вход ${i} → выход ${o} дн.: ${D.move[i][o] > 0 ? "рос — лонг" : "падал — шорт"}<br>${fmt(D.move[i][o], 2, true)} масштаба (медиана), в ${pct(D.agree[i][o])} лет<br>Δспреда ${fmt(D.raw[i][o], 4, true)}`, "+ лонг / − шорт");
+      const d = body.best.direction;
+      $("best-direction").innerHTML = d ? `★ вход за ${d[0]} → выход за ${d[1]} дн.: <span class="${D.move[d[0]][d[1]] > 0 ? "up" : "down"}">${D.move[d[0]][d[1]] > 0 ? "лонг" : "шорт"}</span>, ` +
+        `${fmt(D.move[d[0]][d[1]], 2, true)} масштаба в ${pct(D.agree[d[0]][d[1]])} лет, Δ ${fmt(D.raw[d[0]][d[1]], 4, true)}` : "устойчивого направления нет";
+
+      $("ranges").innerHTML = body.ranges.length ? `<table><thead><tr><th>вход → выход</th><th>держим</th><th>сделка</th><th>за период</th><th>годовых</th><th>худший год</th><th>в плюс</th><th>MAE</th><th>доход/разброс</th><th>лет</th></tr></thead><tbody>` +
+        body.ranges.map((r) => `<tr><td>за ${r.entry} → за ${r.exit} дн.</td><td>${r.hold} дн.</td><td>${r.side}</td><td class="${r.ret > 0 ? "up" : "down"}">${fmt(r.ret, 2, true)}%</td>` +
+          `<td>${fmt(r.ann, 1, true)}%</td><td>${fmt(r.worst, 1, true)}%</td><td>${pct(r.win)}</td><td>${fmt(r.mae, 2)}%</td><td>${fmt(r.ratio, 2)}</td><td>${r.n}</td></tr>`).join("") + `</tbody></table>`
+        : `<div style="padding:8px 10px" class="dim">Прибыльных диапазонов нет.</div>`;
+    }
+
+    $("pair").addEventListener("change", async () => {
+      history.replaceState(null, "", "?pair=" + encodeURIComponent($("pair").value));
+      loadSettings();
+      await loadContracts();
+      refresh();
+    });
+    $("series").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      settings.series = button.dataset.value;
+      document.querySelectorAll("#series button").forEach((b) => b.classList.toggle("on", b === button));
+      schedule();
+    });
+    $("months").addEventListener("click", (event) => {
+      const chip = event.target.closest(".chip");
+      if (!chip) return;
+      settings.month = chip.dataset.month;
+      document.querySelectorAll("#months .chip").forEach((c) => c.classList.toggle("on", c === chip));
+      paintContracts();
+      schedule();
+    });
+    $("contracts").addEventListener("change", (event) => {
+      const box = event.target.closest("input[data-code]");
+      if (!box) return;
+      settings.exclude = settings.exclude.filter((code) => code !== box.dataset.code);
+      if (!box.checked) settings.exclude.push(box.dataset.code);
+      schedule();
+    });
+    $("all-on").addEventListener("click", () => {
+      const shown = new Set(contractList.filter((c) => !settings.month || c.month === settings.month).map((c) => c.code));
+      settings.exclude = settings.exclude.filter((code) => !shown.has(code));
+      paintContracts(); schedule();
+    });
+    $("all-off").addEventListener("click", () => {
+      const shown = contractList.filter((c) => !c.live && (!settings.month || c.month === settings.month)).map((c) => c.code);
+      settings.exclude = [...new Set([...settings.exclude, ...shown])];
+      paintContracts(); schedule();
+    });
+    for (const name of PARAMS) $(name).addEventListener("change", schedule);
+    $("theme").addEventListener("click", () => {
+      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem("spread-theme", next); } catch (error) { /* хранилище недоступно */ }
+      if (last) paint(last);
+    });
+
+    (async () => {
+      if (!$("pair").value) { $("status").textContent = "нет активных пар"; return; }
+      loadSettings();
+      await loadContracts();
+      refresh();
+    })();
+  </script>
+</body>
+</html>
