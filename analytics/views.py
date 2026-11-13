@@ -19,6 +19,7 @@ from analytics.data import MONTH_NAMES, MONTHS, contracts
 from analytics.history import refresh, stale
 from analytics.models import HistoryBar
 from analytics.xlsx import workbook
+from charts.views import last_pair_code
 from market.models import Pair
 from strategy.models import SpreadBar
 from strategy.rebuild import history_span
@@ -60,7 +61,7 @@ def _float(request, name, default, low, high):
 def page(request):
     return render(request, "analytics/analytics.html", {
         "pairs": Pair.objects.filter(active=True).order_by("code"),
-        "pair": request.GET.get("pair", ""),
+        "pair": last_pair_code(request),
     })
 
 

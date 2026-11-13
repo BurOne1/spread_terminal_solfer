@@ -6,12 +6,16 @@
 """
 
 import hashlib
+import json
+import threading
 import time
+from collections import OrderedDict
 
 from django.db.models import Count, Max
-from django.http import JsonResponse
+from django.conf import settings
+from django.core.serializers.json import DjangoJSONEncoder
+from django.http import HttpResponse, HttpResponseNotModified, JsonResponse
 from django.shortcuts import render
-from django.views.decorators.http import condition
 
 from market.models import Candle, Instrument, Pair
 from strategy.models import SpreadBar
@@ -355,10 +359,19 @@ def _range(request, contracts):
     return start, end
 
 
+LAST_PAIR_COOKIE = "spread_pair"
+
+
+def last_pair_code(request):
+    """Пара из адреса, иначе последняя выбранная (cookie ставят страницы спредов и аналитики)."""
+    code = request.GET.get("pair", "") or request.COOKIES.get(LAST_PAIR_COOKIE, "")
+    return code if Pair.objects.filter(active=True, code=code).exists() else ""
+
+
 def home(request):
     """Каркас страницы. Данные с настройками браузера приходят первым же /api/spread/."""
     pairs = list(Pair.objects.filter(active=True).order_by("code"))
-    pair = _pair(request.GET.get("pair", ""))
+    pair = _pair(last_pair_code(request))
     contracts = _contracts(pair)
     start, end = _range(request, contracts)
     return render(request, "charts/home.html", {
@@ -482,13 +495,50 @@ def _spread_etag(request):
     return request.spread_version
 
 
-@condition(etag_func=_spread_etag)
+# Готовые ответы /api/spread/: страница опрашивает раз в 5 с, а run_live двигает бары
+# почти каждый опрос. Без кэша каждый опрос читал всю историю пары и гонял стратегию
+# по всем барам. Теперь те же настройки пересчитываются не чаще SPREAD_MIN_AGE секунд,
+# между пересчётами браузер получает 304. Кэш — байты JSON, лимит по объёму на процесс.
+SPREAD_MIN_AGE = getattr(settings, "SPREAD_MIN_AGE", 30)
+SPREAD_CACHE_BYTES = 32 * 1024 * 1024
+_spread_cache = OrderedDict()
+_spread_lock = threading.Lock()
+
+
 def spread_json(request):
     code = request.GET.get("pair", "")
     pair = _pair(code)
     if code and (pair is None or pair.code != code):
         # Не подменять молча первой парой: пользователь увидел бы чужой спред.
         return JsonResponse({"error": f"пары {code} нет среди активных"}, status=404)
+    version = _spread_etag(request) or ""
+    key = ("" if pair is None else pair.code, request.GET.urlencode())
+    now = time.monotonic()
+    with _spread_lock:
+        entry = _spread_cache.get(key)
+        if entry is not None:
+            _spread_cache.move_to_end(key)
+    if entry is None or (entry[0] != version and now - entry[1] >= SPREAD_MIN_AGE):
+        data = json.dumps(_spread_body(request, pair, version), cls=DjangoJSONEncoder,
+                          ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        entry = (version, now, data)
+        with _spread_lock:
+            _spread_cache[key] = entry
+            _spread_cache.move_to_end(key)
+            while len(_spread_cache) > 1 and sum(len(item[2]) for item in _spread_cache.values()) > SPREAD_CACHE_BYTES:
+                _spread_cache.popitem(last=False)
+    etag = f'"{entry[0]}"'
+    if etag in request.headers.get("If-None-Match", ""):
+        response = HttpResponseNotModified()
+    else:
+        response = HttpResponse(entry[2], content_type="application/json")
+    response["ETag"] = etag
+    # Браузер переспрашивает с If-None-Match и без изменений получает 304.
+    response["Cache-Control"] = "no-cache"
+    return response
+
+
+def _spread_body(request, pair, version):
     contracts = _contracts(pair)
     start, end = _range(request, contracts)
     options = _settings(request)
@@ -497,8 +547,8 @@ def spread_json(request):
     pnl, trades, opened = [], 0, None
     if pair is not None:
         pnl, trades, opened = _strategy(pair, request, _window(contracts, start, end), rows)
-    response = JsonResponse({
-        "version": getattr(request, "spread_version", ""),
+    return {
+        "version": version,
         "pair": "" if pair is None else pair.code,
         "title": _title(pair),
         "subtitle": _subtitle(pair),
@@ -522,7 +572,4 @@ def spread_json(request):
         "position": opened,
         "levels": _levels(pair, None if pair is None else _user_levels(request, pair)),
         "pair_levels": _levels(pair),
-    })
-    # Браузер переспрашивает с If-None-Match и без изменений получает 304.
-    response["Cache-Control"] = "no-cache"
-    return response
+    }

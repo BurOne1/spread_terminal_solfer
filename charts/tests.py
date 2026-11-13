@@ -81,17 +81,40 @@ class CalendarApiTests(TestCase):
 
 class SpreadEtagTests(TestCase):
     def setUp(self):
+        from charts import views
+        views._spread_cache.clear()
         make_cny()
         rebuild_spread("CNY")
 
     def test_unchanged_bars_give_304_and_rebuild_gives_new_body(self):
+        from unittest import mock
+        from charts import views
         first = self.client.get("/api/spread/?pair=CNY")
         tag = first["ETag"]
         self.assertEqual(first.json()["version"].strip('"'), tag.strip('"').removeprefix("W/").strip('"'))
         self.assertEqual(self.client.get("/api/spread/?pair=CNY", HTTP_IF_NONE_MATCH=tag).status_code, 304)
+        # Другие настройки (уровни, цена часа) — сразу свой расчёт.
         self.assertEqual(self.client.get("/api/spread/?pair=CNY&basis=open", HTTP_IF_NONE_MATCH=tag).status_code, 200)
         rebuild_spread("CNY", since=SpreadBar.objects.order_by("-ts").first().ts)
-        self.assertEqual(self.client.get("/api/spread/?pair=CNY", HTTP_IF_NONE_MATCH=tag).status_code, 200)
+        # Бары сдвинулись, но с прошлого расчёта меньше SPREAD_MIN_AGE: прежний ответ, 304.
+        with mock.patch.object(views, "SPREAD_MIN_AGE", 30):
+            self.assertEqual(self.client.get("/api/spread/?pair=CNY", HTTP_IF_NONE_MATCH=tag).status_code, 304)
+        fresh = self.client.get("/api/spread/?pair=CNY", HTTP_IF_NONE_MATCH=tag)
+        self.assertEqual(fresh.status_code, 200)
+        self.assertNotEqual(fresh["ETag"], tag)
+
+    def test_last_pair_from_cookie(self):
+        from charts.views import last_pair_code
+        from django.test import RequestFactory
+        request = RequestFactory().get("/")
+        request.COOKIES["spread_pair"] = "CNY"
+        self.assertEqual(last_pair_code(request), "CNY")
+        request.COOKIES["spread_pair"] = "NOPE"
+        self.assertEqual(last_pair_code(request), "")
+        # Адрес важнее cookie.
+        request = RequestFactory().get("/?pair=CNY")
+        request.COOKIES["spread_pair"] = "NOPE"
+        self.assertEqual(last_pair_code(request), "CNY")
 
 
 class UnknownPairTests(TestCase):

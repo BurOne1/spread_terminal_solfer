@@ -851,6 +851,18 @@
     function windowKey(code) { return "spread-window-" + code; }
     function loadWindow(code) { return readStore(windowKey(code), {}) || {}; }
     function saveWindow() { if (pairSelect) writeStore(windowKey(pairSelect.value), { from: fromSelect ? fromSelect.value : "", to: toSelect ? toSelect.value : "" }); }
+    // Последняя пара — в cookie: сервер откроет её же на «Спредах» и в «Аналитике».
+    function rememberPair(code) { if (code) document.cookie = `spread_pair=${encodeURIComponent(code)}; path=/; max-age=31536000; SameSite=Lax`; }
+    // Открыли без from/to в адресе: окно этой пары из браузера, а не всё по умолчанию.
+    (function restoreWindow() {
+      const url = new URL(window.location.href);
+      if (!pairSelect || url.searchParams.get("from") || url.searchParams.get("to")) return;
+      const saved = loadWindow(pairSelect.value);
+      for (const [select, value] of [[fromSelect, saved.from], [toSelect, saved.to]]) {
+        if (select && value && [...select.options].some((option) => option.value === value)) select.value = value;
+      }
+    })();
+    rememberPair(pairSelect ? pairSelect.value : "");
     function copyLevelLines(body) {
       if (!body.levels) return;
       levels.spot = body.levels.spot;
@@ -938,6 +950,7 @@
         if (toSelect) toSelect.value = "";
         loadDrawings();
       } else saveWindow();
+      rememberPair(pairSelect ? pairSelect.value : "");
       const url = new URL(window.location.href);
       if (pairSelect) url.searchParams.set("pair", pairSelect.value);
       if (fromSelect) url.searchParams.set("from", fromSelect.value);

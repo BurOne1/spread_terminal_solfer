@@ -398,7 +398,11 @@
         `</tbody></table>`;
     }
 
+    // Последняя пара — в cookie: «Спреды» откроются на ней же.
+    function rememberPair(code) { if (code) document.cookie = `spread_pair=${encodeURIComponent(code)}; path=/; max-age=31536000; SameSite=Lax`; }
+    rememberPair($("pair").value);
     $("pair").addEventListener("change", async () => {
+      rememberPair($("pair").value);
       history.replaceState(null, "", "?pair=" + encodeURIComponent($("pair").value));
       loadSettings();
       await loadContracts();

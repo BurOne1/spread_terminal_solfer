@@ -8,3 +8,4 @@ db.sqlite3
 .claudeignore
 var/
 staticfiles/
+file_add_data/
