@@ -3,6 +3,7 @@
 SWAPRATE — рубли на единицу котировки. В базу пишется SWAPRATE × лот:
 рубли на контракт за день. У каждой пары свой столбец.
 Валюта — лот 1000, золото — 1 грамм, серебро — 100 граммов при цене за грамм.
+Крипта (BTCUSDF, ETHUSDF) — на 1 монету: пары BTCMOEX и ETHMOEX считают в долларах за монету.
 """
 
 from datetime import date, datetime, timedelta, timezone
@@ -18,12 +19,16 @@ SERIES = {
     "swaprate_eur": ("EURRUBF", Decimal("1000")),
     "swaprate_gold": ("GLDRUBF", Decimal("1")),
     "swaprate_silver": ("SLVRUBF", Decimal("100")),
+    "swaprate_btc": ("BTCUSDF", Decimal("1")),
+    "swaprate_eth": ("ETHUSDF", Decimal("1")),
 }
 FIELDS = {
     "USD": "swaprate_usd",
     "EUR": "swaprate_eur",
     "GOLD": "swaprate_gold",
     "SILVER": "swaprate_silver",
+    "BTCMOEX": "swaprate_btc",
+    "ETHMOEX": "swaprate_eth",
 }
 LOT = Decimal("1000")
 PAGE = 100

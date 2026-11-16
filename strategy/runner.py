@@ -134,6 +134,7 @@ def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close"
 
 def entry_rules(pair):
     """У BR − BZ fair = 0 и спред в центах: правило знака и рублёвый порог не подходят."""
-    if pair.zero_fair:
+    if pair.zero_fair or pair.crypto:
+        # fair = 0: знаки сырого и очищенного всегда равны, правило знака не подходит.
         return {"long_needs_sign": False, "min_spread": 0.0}
     return {}

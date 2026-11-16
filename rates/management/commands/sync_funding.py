@@ -2,7 +2,7 @@
 
 Фандинг не зависит от свечей в базе: SWAPRATE берётся с ISS по коду вечника.
 --from 2023-01-01 перезагружает ряды целиком (с запуска каждого вечника),
---only USD,EUR — только эти ряды (CNY, USD, EUR, GOLD, SILVER).
+--only USD,EUR — только эти ряды (CNY, USD, EUR, GOLD, SILVER, BTC, ETH).
 """
 
 from datetime import date
@@ -17,6 +17,8 @@ ALIASES = {
     "EUR": "swaprate_eur",
     "GOLD": "swaprate_gold",
     "SILVER": "swaprate_silver",
+    "BTC": "swaprate_btc",
+    "ETH": "swaprate_eth",
 }
 
 
@@ -25,7 +27,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--from", dest="since", help="перезагрузить с даты YYYY-MM-DD, например 2023-01-01")
-        parser.add_argument("--only", help="ряды через запятую: CNY, USD, EUR, GOLD, SILVER")
+        parser.add_argument("--only", help="ряды через запятую: CNY, USD, EUR, GOLD, SILVER, BTC, ETH")
 
     def handle(self, *args, **options):
         since = None

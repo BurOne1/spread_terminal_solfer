@@ -34,7 +34,7 @@ from django.db.models import Count, Q
 
 from market.finam import future_symbol
 from market.models import Candle, Instrument, Pair
-from market.roll import quarter_points
+from market.roll import contract_points
 from market.units import factor, instrument_scale, reference
 
 CONTRACT = re.compile(r"([A-Za-z0-9]{1,5}?)([FGHJKMNQUVXZ])(20\d{2})")
@@ -113,13 +113,14 @@ def quarter_owner(root):
 def _quarter_maker(root, letter, year):
     """Квартал Мосбиржи у пары с этим корнем: CR → CNY, Si → USD."""
     owner = quarter_owner(root)
-    if owner is None or letter not in "HMUZ":
+    # Крипта Мосбиржи (BT, EH) — месячная, остальные — кварталы H M U Z.
+    if owner is None or (letter not in "HMUZ" and not owner.crypto):
         return None, f"{root}{letter}{year}", ""
     code = f"{owner.future_root}{letter}{year}"
 
     def make():
         start = datetime(year, 1, 1, tzinfo=timezone.utc)
-        for row in quarter_points(owner.future_root, start, start + timedelta(days=366)):
+        for row in contract_points(owner, start, start + timedelta(days=366)):
             if row["code"] == code:
                 Instrument.objects.get_or_create(code=code, defaults={
                     "pair": owner, "kind": Instrument.Kind.FUTURE, "finam_symbol": future_symbol(row["secid"]),

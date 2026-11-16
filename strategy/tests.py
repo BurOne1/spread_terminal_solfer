@@ -3,6 +3,7 @@
 python manage.py test --settings=config.settings_test
 """
 
+from io import StringIO
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -550,3 +551,86 @@ class GasLegOwnerTests(TestCase):
         # Календарю ноги не нужны: он строится из своей котировки.
         self.assertEqual(rebuild.rebuild_spread("NGCAL"), 1)
         self.assertAlmostEqual(float(SpreadBar.objects.get(pair=calendar).raw_spread), -0.35, places=6)
+
+
+class CryptoMonthlyTests(TestCase):
+    """BT − BTCUSDF: месячные Мосбиржи, склейка в последнюю пятницу 15:00 UTC, fair от ставки ФРС, фандинг вечного."""
+
+    def setUp(self):
+        from django.core.management import call_command
+        call_command("add_crypto", stdout=StringIO())
+        self.pair = Pair.objects.get(code="BTCMOEX")
+
+    def test_monthly_windows_last_friday(self):
+        from market.roll import crypto_month_points
+        rows = {row["code"]: row for row in crypto_month_points("BT", datetime(2026, 12, 1, tzinfo=UTC), datetime(2027, 1, 1, tzinfo=UTC))}
+        z = rows["BTZ2026"]
+        self.assertEqual((z["secid"], z["listed_at"], z["roll_at"]),
+                         ("BTZ6", datetime(2026, 11, 27, 15, 0, tzinfo=UTC), datetime(2026, 12, 25, 15, 0, tzinfo=UTC)))
+        self.assertEqual(rows["BTF2027"]["roll_at"], datetime(2027, 1, 29, 15, 0, tzinfo=UTC))
+
+    def test_pairs_and_contracts(self):
+        eth = Pair.objects.get(code="ETHMOEX")
+        self.assertEqual((self.pair.perp_symbol, self.pair.future_root, eth.future_root, eth.perp_symbol),
+                         ("BTCUSDF@RTSX", "BT", "EH", "ETHUSDF@RTSX"))
+        self.assertTrue(self.pair.crypto)
+        self.assertFalse(self.pair.zero_fair)
+        futures = Instrument.objects.filter(pair=self.pair, kind="future")
+        self.assertTrue(futures.exists())
+        self.assertTrue(all(item.finam_symbol == f"BT{item.code[2]}{item.code[-1]}@RTSX" for item in futures))
+        # Вперёд — не дальше трёх месяцев: дальних серий в торгах нет.
+        ahead = futures.filter(roll_at__gt=datetime.now(UTC)).count()
+        self.assertLessEqual(ahead, 4)
+
+    def test_spread_is_future_minus_perp_with_zero_fair(self):
+        future = Instrument.objects.update_or_create(code="BTZ2026", defaults={
+            "pair": self.pair, "kind": "future", "finam_symbol": "BTZ6@RTSX",
+            "listed_at": datetime(2026, 11, 27, 15, 0, tzinfo=UTC), "roll_at": datetime(2026, 12, 25, 15, 0, tzinfo=UTC)})[0]
+        perp = Instrument.objects.get(code="BTCUSDF")
+        ts = datetime(2026, 12, 2, 10, 0, tzinfo=UTC)
+        RateDay.objects.create(date=ts.date() - timedelta(days=3), ruonia=Decimal("16"), dfedtaru=Decimal("4"))
+        candle(perp, ts, Decimal("90000"), Decimal("90100"))
+        candle(future, ts, Decimal("90400"), Decimal("90550"))
+        self.assertEqual(rebuild.rebuild_spread("BTCMOEX"), 1)
+        bar = SpreadBar.objects.get(pair=self.pair)
+        self.assertAlmostEqual(float(bar.raw_spread), 450.0, places=4)
+        self.assertEqual(bar.days_left, 23)
+        # Очищенный = сырой: ставка ФРС в базе есть, но в fair не идёт.
+        self.assertEqual(float(bar.fair), 0.0)
+        self.assertAlmostEqual(float(bar.spread_rate), 450.0, places=4)
+        self.assertEqual(rebuild.history_span(self.pair), rebuild.HISTORY_MONTHLY)
+
+    def test_live_subscribes_monthly_front_and_import_tv_owner(self):
+        from market.live import quarter_symbols
+        from market.management.commands.import_tv import find_instrument
+        self.assertEqual(quarter_symbols(self.pair, datetime(2026, 12, 2, tzinfo=UTC), 1), ["BTZ6@RTSX"])
+        Instrument.objects.filter(code="BTX2025").delete()
+        instrument, code, make, owner = find_instrument("RUS_BTX2025, 60_abc.csv")
+        self.assertEqual((instrument, code, owner), (None, "BTX2025", "BTCMOEX"))
+        make()
+        made = Instrument.objects.get(code="BTX2025")
+        self.assertEqual((made.finam_symbol, made.roll_at), ("BTX5@RTSX", datetime(2025, 11, 28, 15, 0, tzinfo=UTC)))
+
+
+class CryptoFundingTests(TestCase):
+    def test_perp_funding_series_per_coin(self):
+        from io import StringIO
+        from unittest import mock
+        from django.core.management import call_command
+        from rates.models import FundingDay
+        from strategy.runner import entry_rules, funding_of
+        call_command("add_crypto", stdout=StringIO())
+        calls = []
+
+        def fake(secid, start, end, lot):
+            calls.append((secid, lot))
+            return [(datetime(2026, 11, 13).date(), Decimal("12.5") * lot)]
+
+        with mock.patch("rates.funding.fetch_swap", side_effect=fake):
+            call_command("sync_funding", "--from", "2025-01-01", "--only", "BTC,ETH", stdout=StringIO())
+        self.assertEqual(calls, [("BTCUSDF", Decimal("1")), ("ETHUSDF", Decimal("1"))])
+        self.assertEqual(FundingDay.objects.get().swaprate_btc, Decimal("12.5"))
+        rows, mode = funding_of(Pair.objects.get(code="BTCMOEX"))
+        self.assertEqual((rows, mode), ([(datetime(2026, 11, 13).date(), 12.5)], "daily"))
+        # fair = 0: правило знака выключено, но фандинг выше — учитывается.
+        self.assertEqual(entry_rules(Pair.objects.get(code="BTCMOEX")), {"long_needs_sign": False, "min_spread": 0.0})

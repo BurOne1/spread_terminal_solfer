@@ -28,7 +28,7 @@ from market import cross, ngcal, ngnymex
 from market.brent import front_symbols
 from market.finam import PERP_SYMBOL, SPOT_SYMBOL, FinamClient, FinamError, future_symbol, parse_decimal
 from market.models import Candle, Instrument, Pair
-from market.roll import quarter_points
+from market.roll import contract_points
 
 WS_URL = "wss://api.finam.ru/ws"
 JWT_REFRESH = 11 * 60
@@ -75,7 +75,7 @@ def quarter_symbols(owner, now, count):
     if owner is None:
         return []
     rows = [
-        row for row in quarter_points(owner.future_root, now - timedelta(days=1), now + timedelta(days=400))
+        row for row in contract_points(owner, now - timedelta(days=1), now + timedelta(days=400))
         if row["roll_at"] > now
     ][:count]
     for row in rows:

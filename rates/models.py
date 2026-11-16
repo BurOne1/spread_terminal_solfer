@@ -28,6 +28,9 @@ class FundingDay(models.Model):
     swaprate_eur = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
     swaprate_gold = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
     swaprate_silver = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    # Вечные на криптоиндексы: SWAPRATE в долларах за 1 монету (лот пары 1).
+    swaprate_btc = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
+    swaprate_eth = models.DecimalField(max_digits=18, decimal_places=4, null=True, blank=True)
     source = models.CharField(max_length=32, default="moex")
 
     class Meta:

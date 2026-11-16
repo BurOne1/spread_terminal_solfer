@@ -151,7 +151,7 @@ def _quarters(owner, start, end, early=False):
     previous = None
     quarters = Instrument.objects.filter(pair=owner, kind=Instrument.Kind.FUTURE, roll_at__isnull=False)
     for instrument in quarters.order_by("roll_at"):
-        opened = _opened(instrument, start, HISTORY_QUARTERLY)
+        opened = _opened(instrument, start, HISTORY_MONTHLY if owner.crypto else HISTORY_QUARTERLY)
         if early and previous is not None and previous.listed_at is not None:
             opened = min(opened, previous.listed_at)
         previous = instrument

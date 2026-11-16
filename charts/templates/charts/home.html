@@ -63,6 +63,10 @@
     /* график */
     .chart-wrap { grid-area: chart; position: relative; min-width: 0; min-height: 0; background: var(--bg); }
     #chart { position: absolute; inset: 0; }
+    .swatch { padding: 0 4px; }
+    .swatch input { width: 22px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; cursor: pointer; }
+    .swatch input::-webkit-color-swatch-wrapper { padding: 0; }
+    .swatch input::-webkit-color-swatch { border: 0; border-radius: 3px; }
     .legend { position: absolute; left: 8px; z-index: 3; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; pointer-events: none; font-size: 12px; color: var(--muted); max-width: calc(100% - 90px); white-space: nowrap; }
     .legend b { color: var(--ink); font-weight: 600; font-size: 13px; }
     .legend .v { color: var(--ink); font-variant-numeric: tabular-nums; }
@@ -186,6 +190,9 @@
     <select id="to" class="tb" title="Последний контракт">{% for code in contracts %}<option value="{{ code }}" {% if code == end %}selected{% endif %}>{{ code|cut:pair.future_root }}</option>{% endfor %}</select>
     <div class="sep"></div>
     <select id="style" class="tb" title="Вид сырого спреда"><option value="line">Линия</option><option value="candle">Свечи</option></select>
+    <label class="tb swatch" title="Цвет сырого спреда (и единственной линии, когда очищенный равен сырому)"><input type="color" id="color-raw"></label>
+    <label class="tb swatch" id="swatch-rate" title="Цвет очищенного спреда"><input type="color" id="color-rate"></label>
+    <button type="button" class="tb" id="color-reset" title="Цвета линий по умолчанию">↺</button>
     <select id="basis" class="tb" title="Цена часа для спреда и стратегии"><option value="close">Закрытие</option><option value="open">Открытие</option><option value="mid">(O+C)/2</option></select>
     <select id="indicator" class="tb" title="Индикатор">
       <option value="carry">Фандинг − контанго, % год.</option>
@@ -343,10 +350,14 @@
         crosshair: { vertLine: cross, horzLine: cross },
       };
     }
+    // Свои цвета линий — одни на все пары, в браузере; пусто — цвета темы.
+    const COLOR_KEY = "spread-line-colors";
     function seriesColors() {
-      return { raw: css("--blue"), rate: css("--red"), up: css("--green"), down: css("--red"), carry: css("--violet"), long: css("--green"), short: css("--red"), longTp: css("--take"), shortTp: css("--orange"), zero: css("--muted") };
+      const own = readStore(COLOR_KEY, {}) || {};
+      return { raw: own.raw || css("--blue"), rate: own.rate || css("--red"), up: css("--green"), down: css("--red"), carry: css("--violet"), long: css("--green"), short: css("--red"), longTp: css("--take"), shortTp: css("--orange"), zero: css("--muted") };
     }
     let colors = seriesColors();
+    let sameRate = false;
 
     const priceFormat = { type: "price", precision: 3, minMove: 0.001 };
     const chart = LightweightCharts.createChart(document.getElementById("chart"), {
@@ -584,6 +595,11 @@
       const rate = align(times, points.filter((point) => point.rate !== null).map((point) => ({ time: unix(point.t), value: point.rate })));
       pointByTime = new Map(points.map((point) => [unix(point.t), point]));
       pnlByTime = new Map(pnl.map((point) => [unix(point.t), point]));
+      // Очищенный совпадает с сырым (fair = 0: крипта, кросс-пары, BR и NG к NYMEX) —
+      // одна линия, а не две друг на друге. Уровни и сделки живут на линии очищенного.
+      sameRate = points.length > 0 && points.every((point) => point.raw === null || point.rate === null || Math.abs(point.raw - point.rate) < 1e-9);
+      document.getElementById("swatch-rate").style.display = sameRate ? "none" : "";
+      rateSeries.applyOptions({ color: sameRate ? colors.raw : colors.rate, lineVisible: !(sameRate && style === "candle") });
       painting = true;
       try {
         if (style === "candle") {
@@ -592,7 +608,7 @@
           candleSeries.setData(align(times, points.filter((point) => point.candle).map((point) => ({ time: unix(point.t), open: point.candle.o, high: point.candle.h, low: point.candle.l, close: point.candle.c }))));
         } else {
           if (candleSeries) candleSeries.setData([]);
-          rawSeries.setData(raw);
+          rawSeries.setData(sameRate ? [] : raw);
         }
         const slots = emptySlots(times);
         rateSeries.setData([...slots.before, ...rate, ...slots.after]);
@@ -681,9 +697,10 @@
         if (styleSelect.value === "candle" && point.candle) {
           top.append(pair("O", fmt(point.candle.o)), pair("H", fmt(point.candle.h)), pair("L", fmt(point.candle.l)), pair("C", fmt(point.candle.c), point.candle.c >= point.candle.o ? colors.up : colors.down));
         } else {
-          top.append(pair("raw", fmt(point.raw), colors.raw));
+          top.append(pair(sameRate ? "спред" : "raw", fmt(point.raw), colors.raw));
         }
-        top.append(pair("rate", fmt(point.rate), colors.rate), pair("дней", String(point.days ?? "—")));
+        if (!sameRate) top.append(pair("rate", fmt(point.rate), colors.rate));
+        top.append(pair("дней", String(point.days ?? "—")));
       }
       const carry = document.getElementById("legend-1");
       carry.style.display = carryOn ? "" : "none";
@@ -987,13 +1004,40 @@
     });
 
     // Шапка и строка состояния.
+    function applyColors() {
+      colors = seriesColors();
+      rawSeries.applyOptions({ color: colors.raw });
+      rateSeries.applyOptions({ color: sameRate ? colors.raw : colors.rate });
+      document.getElementById("color-raw").value = hexColor(colors.raw);
+      document.getElementById("color-rate").value = hexColor(colors.rate);
+    }
+    // <input type=color> понимает только #rrggbb.
+    function hexColor(value) {
+      const probe = document.createElement("canvas").getContext("2d");
+      probe.fillStyle = value || "#000000";
+      return /^#[0-9a-f]{6}$/i.test(probe.fillStyle) ? probe.fillStyle : "#000000";
+    }
+    for (const [id, key] of [["color-raw", "raw"], ["color-rate", "rate"]]) {
+      document.getElementById(id).addEventListener("input", (event) => {
+        writeStore(COLOR_KEY, { ...(readStore(COLOR_KEY, {}) || {}), [key]: event.target.value });
+        applyColors();
+        showLegends(null);
+      });
+    }
+    document.getElementById("color-reset").addEventListener("click", () => {
+      try { localStorage.removeItem(COLOR_KEY); } catch (error) { /* хранилище недоступно */ }
+      applyColors();
+      paint(false);
+    });
+    applyColors();
     function setTheme(name) {
       document.documentElement.dataset.theme = name;
       try { localStorage.setItem("spread-theme", name); } catch (error) { /* хранилище недоступно */ }
       colors = seriesColors();
       chart.applyOptions(chartTheme());
       rawSeries.applyOptions({ color: colors.raw });
-      rateSeries.applyOptions({ color: colors.rate });
+      rateSeries.applyOptions({ color: sameRate ? colors.raw : colors.rate });
+      applyColors();
       if (candleSeries) candleSeries.applyOptions({ upColor: colors.up, downColor: colors.down, wickUpColor: colors.up, wickDownColor: colors.down });
       if (carrySeries) carrySeries.applyOptions({ color: colors.carry });
       paint(false);

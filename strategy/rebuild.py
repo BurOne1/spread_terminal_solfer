@@ -46,7 +46,7 @@ _history = threading.local()
 
 def history_span(pair):
     """Глубина истории контракта пары: месячные — нефть и газ, остальные квартальные."""
-    return HISTORY_MONTHLY if (pair.nymex or pair.listed or pair.ngnymex) else HISTORY_QUARTERLY
+    return HISTORY_MONTHLY if (pair.nymex or pair.listed or pair.ngnymex or pair.crypto) else HISTORY_QUARTERLY
 
 
 def history_bars(pair, span=None):
@@ -331,6 +331,9 @@ def _pair_rates(source, rate_days):
     """(дата, рублёвая ставка, иностранная) для fair = спот · (r − r_foreign) · t / 365."""
     if source == "NONE":
         return [(row.date, row.ruonia, 0) for row in rate_days]
+    if source == "CRYPTO":
+        # Срочный и вечный на один индекс: очищенный = сырой. Фандинг — в стратегии.
+        return [(row.date, 0, 0) for row in rate_days]
     field = {"DFEDTARU": "dfedtaru", "ESTR": "estr"}.get(source, "shibor")
     return [(row.date, row.ruonia, getattr(row, field)) for row in rate_days]
 

@@ -70,6 +70,15 @@ class Pair(models.Model):
         return self.foreign_source == "LISTED"
 
     @property
+    def crypto(self):
+        """Срочный − вечный на криптоиндекс Мосбиржи (BT − BTCUSDF), месячные, см. market/roll.py.
+
+        fair = 0 (очищенный = сырой), но в отличие от zero_fair фандинг вечного
+        учитывается: SWAPRATE Мосбиржи (rates/funding.py).
+        """
+        return self.foreign_source == "CRYPTO"
+
+    @property
     def absolute_levels(self):
         """Уровни в единицах спреда, а не в долях цены: готовый календарь NGCAL."""
         return self.listed

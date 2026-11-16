@@ -416,6 +416,8 @@ def _subtitle(pair):
         return "календарь биржи одним инструментом, $/MMBtu, уровни в $/MMBtu"
     if pair.ngnymex:
         return "месячные, NYMEX месяцем позже, только общие часы бирж, справедливый 0, $/MMBtu"
+    if pair.crypto:
+        return f"месячный {pair.future_root} − вечный {pair.perp_code}, справедливый 0, фандинг вечного, $"
     rate = "только RUONIA" if pair.foreign_source == "NONE" else _rate_label(pair)
     return f"Спот {pair.spot_code}, ставка {rate}, {pair.quote}"
 
@@ -472,6 +474,8 @@ def _rate_label(pair):
         return "BR MOEX − BZ NYMEX"
     if pair.cross or pair.listed or pair.ngnymex:
         return pair.title
+    if pair.crypto:
+        return "справедливый 0"
     return pair.foreign_source
 
 

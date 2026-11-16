@@ -14,7 +14,7 @@ from market.brent import ensure_window
 from market.brent import windows as brent_windows
 from market.finam import future_symbol
 from market.models import Instrument, Pair
-from market.roll import quarter_points
+from market.roll import contract_points, quarter_points
 
 
 class Command(BaseCommand):
@@ -117,7 +117,9 @@ class Command(BaseCommand):
                     },
                 )
                 self.stdout.write(f"{pair.code}: {perp.code}, {spot.code}")
-            for row in quarter_points(pair.future_root, start, end):
+            # Месячных крипты в торгах три: дальше не заводим.
+            until = min(end, now + timedelta(days=100)) if pair.crypto else end
+            for row in contract_points(pair, start, until):
                 instrument, created = Instrument.objects.update_or_create(
                     code=row["code"],
                     defaults={

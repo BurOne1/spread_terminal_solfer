@@ -91,3 +91,47 @@ def btc_quarter_points(root: str, start: datetime, end: datetime):
                 "roll_at": expires,
             })
     return covered
+
+# Месячные криптофьючерсы Мосбиржи (BT — биткоин, EH — эфир): последний день
+# торгов — последняя пятница месяца, расчётная цена — среднее индекса
+# 17:00–18:00 МСК. Склейка в 18:00 МСК = 15:00 UTC: последний час окна 14:00 UTC.
+MONTH_LETTERS = "FGHJKMNQUVXZ"
+CRYPTO_ROLL_HOUR = 15
+
+
+def crypto_roll_at(year: int, month: int) -> datetime:
+    """Последняя пятница месяца, праздник Мосбиржи — рабочим днём раньше."""
+    from market.expiry import MOEX_HOLIDAYS
+    day = last_friday(year, month)
+    while day.weekday() >= 5 or day in MOEX_HOLIDAYS:
+        day -= timedelta(days=1)
+    return datetime(day.year, day.month, day.day, CRYPTO_ROLL_HOUR, 0, tzinfo=timezone.utc)
+
+
+def crypto_month_points(root: str, start: datetime, end: datetime):
+    """Месячные окна, задевающие [start, end): от склейки прошлого месяца до своей."""
+    start = start.astimezone(timezone.utc)
+    end = end.astimezone(timezone.utc)
+    points = []
+    for year in range(start.year - 1, end.year + 2):
+        for month in range(1, 13):
+            points.append((crypto_roll_at(year, month), MONTH_LETTERS[month - 1], year))
+    points.sort()
+    covered = []
+    for index in range(1, len(points)):
+        opened, (expires, letter, year) = points[index - 1][0], points[index]
+        if opened < end and expires > start:
+            covered.append({
+                "code": contract_code(root, letter, year),
+                "secid": moex_secid(root, letter, year),
+                "listed_at": opened,
+                "roll_at": expires,
+            })
+    return covered
+
+
+def contract_points(pair, start: datetime, end: datetime):
+    """Окна контрактов пары: месячные у крипты Мосбиржи, иначе кварталы (третий четверг)."""
+    if pair.foreign_source == "CRYPTO":
+        return crypto_month_points(pair.future_root, start, end)
+    return quarter_points(pair.future_root, start, end)
