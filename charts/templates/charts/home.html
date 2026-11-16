@@ -64,6 +64,10 @@
     .chart-wrap { grid-area: chart; position: relative; min-width: 0; min-height: 0; background: var(--bg); }
     #chart { position: absolute; inset: 0; }
     .swatch { padding: 0 4px; }
+    #channel-box [hidden], .side [hidden] { display: none !important; }
+    #strategy-kind { display: flex; border: 1px solid var(--line-strong); border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
+    #strategy-kind button { flex: 1; border: 0; background: transparent; color: var(--ink); padding: 6px; cursor: pointer; font: inherit; }
+    #strategy-kind button.on { background: var(--accent-soft, rgba(41, 98, 255, .18)); color: var(--blue); }
     .swatch input { width: 22px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; cursor: pointer; }
     .swatch input::-webkit-color-swatch-wrapper { padding: 0; }
     .swatch input::-webkit-color-swatch { border: 0; border-radius: 3px; }
@@ -190,6 +194,9 @@
     <select id="to" class="tb" title="Последний контракт">{% for code in contracts %}<option value="{{ code }}" {% if code == end %}selected{% endif %}>{{ code|cut:pair.future_root }}</option>{% endfor %}</select>
     <div class="sep"></div>
     <select id="style" class="tb" title="Вид сырого спреда"><option value="line">Линия</option><option value="candle">Свечи</option></select>
+    <select id="lines" class="tb" title="Какие линии показывать. Канал считается по показанной: «сырой» — по сырому спреду, иначе по очищенному">
+      <option value="both">Сырой и очищенный</option><option value="rate">Только очищенный</option><option value="raw">Только сырой</option>
+    </select>
     <label class="tb swatch" title="Цвет сырого спреда (и единственной линии, когда очищенный равен сырому)"><input type="color" id="color-raw"></label>
     <label class="tb swatch" id="swatch-rate" title="Цвет очищенного спреда"><input type="color" id="color-rate"></label>
     <button type="button" class="tb" id="color-reset" title="Цвета линий по умолчанию">↺</button>
@@ -258,12 +265,34 @@
     </div>
     <div class="view" data-view="strategy">
     <div class="side-body">
-      <p class="hint"><span id="level-unit">Уровни — процент спота со знаком.</span> Хранятся в этом браузере. Enter в поле — применить.</p>
+      <div class="seg" id="strategy-kind" title="Стратегия по уровням считает сервер, по каналу — браузер">
+        <button type="button" data-value="levels" class="on">Уровни</button><button type="button" data-value="channel">Канал</button>
+      </div>
+      <div id="channel-box" hidden>
+        <p class="hint">Лонг от нижней границы, шорт от верхней. Канал — инструмент «Параллельный канал» (6) на графике; изменили канал — пересчёт сразу. Считается в браузере, ВМ не нагружает.</p>
+        <label class="field"><span>Канал</span><select id="ch-pick"></select></label>
+        <label class="field"><span>Стороны</span>
+          <select id="ch-sides"><option value="both">лонг и шорт</option><option value="long">только лонг</option><option value="short">только шорт</option></select></label>
+        <label class="field"><span>Вход</span>
+          <select id="ch-entry"><option value="touch">касание границы</option><option value="back">возврат в канал после выхода</option></select></label>
+        <label class="field"><span>Выход</span>
+          <select id="ch-exit"><option value="0.5">середина канала</option><option value="1">противоположная граница</option><option value="share">доля ширины…</option></select></label>
+        <label class="field" id="ch-share-row" hidden><span>Выход, % ширины от границы входа</span><input type="number" id="ch-share" min="5" max="150" step="5" value="75"></label>
+        <label class="field"><span>Стоп, % ширины за границей (0 — без стопа)</span><input type="number" id="ch-stop" min="0" max="200" step="5" value="0"></label>
+        <label class="field" title="Берётся при входе и при выходе с каждой ноги: % × цена ноги × объём. Биржа Мосбиржи ≈ 0.0046 %, плюс брокер"><span>Комиссия, % от цены ноги за сделку</span><input type="number" id="ch-fee" min="0" step="0.001" value="0"></label>
+        <label class="check"><input id="ch-flip" type="checkbox"> переворот у противоположной границы</label>
+        <label class="check"><input id="ch-extend" type="checkbox" checked> продлевать канал вправо</label>
+        <label class="check"><input id="ch-funding" type="checkbox" checked> учитывать фандинг</label>
+        <p class="note" id="ch-note"></p>
+      </div>
+      <div id="levels-box">
+      <p class="hint"><span id="level-unit">Уровни — процент спота со знаком.</span> Линии на графике идут за ценой спота в каждый час, как их видит стратегия. Хранятся в этом браузере. Enter в поле — применить.</p>
       <label class="field"><span>Вход</span>
         <select id="entry-mode"><option value="touch">при достижении уровня</option><option value="reverse">обратное пробитие</option></select>
       </label>
       <label class="check"><input id="average" type="checkbox" checked> усреднять глубже</label>
-      <label class="switch" title="Панель PnL под графиком. Стратегия считается и без неё: сделки остаются на спреде"><input id="pnl-chart" type="checkbox" checked><span class="knob"></span> график стратегии</label>
+      <label class="check" title="Иначе тейк закрывает 1 ед., а остаток ждёт последний тейк — у спреда, не доходящего до 0, тейк «0» не наступит"><input id="tp-all" type="checkbox"> весь объём по первому тейку</label>
+      <label class="switch" title="Включить стратегию: панель PnL и сделки на спреде. Выключено — стратегия не считается, сервер и браузер не нагружаются"><input id="pnl-chart" type="checkbox"><span class="knob"></span> график стратегии</label>
       <details class="fold" data-fold="long-entry" open>
         <summary><i class="dot" style="background:var(--green)"></i>Вход лонг<span class="badge" id="long-entry-count"></span><span class="chev">▶</span></summary>
         <div class="fold-body"><div id="long-entry-list"></div><button class="add" type="button" data-add="long-entry">+ уровень</button></div>
@@ -280,6 +309,7 @@
         <summary><i class="dot" style="background:var(--orange)"></i>Тейк шорт<span class="badge" id="short-take-count"></span><span class="chev">▶</span></summary>
         <div class="fold-body"><div id="short-take-list"></div><button class="add" type="button" data-add="short-take">+ тейк</button></div>
       </details>
+      </div>
     </div>
     <div class="side-foot">
       <button id="save-levels" class="primary" type="button">Применить</button>
@@ -317,6 +347,7 @@
   <script>
     let points = JSON.parse(document.getElementById("points-data").textContent);
     let pnl = JSON.parse(document.getElementById("pnl-data").textContent);
+    let serverPnl = pnl;
     let funding = JSON.parse(document.getElementById("funding-data").textContent);
     const levels = JSON.parse(document.getElementById("levels-data").textContent);
     const status = document.getElementById("status");
@@ -373,13 +404,17 @@
     let candleSeries = null;
     const rateSeries = chart.addSeries(LightweightCharts.LineSeries, { color: colors.rate, lineWidth: 2, priceLineVisible: false, priceFormat }, 0);
     const rateMarkers = LightweightCharts.createSeriesMarkers(rateSeries, []);
+    // Точки сделок — на видимой линии: при «только сырой» — на сыром спреде или его свечах.
+    const rawMarkers = LightweightCharts.createSeriesMarkers(rawSeries, []);
+    let candleMarkers = null;
     let carrySeries = null;
     let equitySeries = null;
     let equityMarkers = null;
     let carryOn = null;
     // Панель PnL можно выключить в «Стратегии»; выбор хранится в браузере.
     const PNL_KEY = "spread-pnl-chart";
-    let pnlOn = readStore(PNL_KEY, true) !== false;
+    // Выключен — стратегия не считается вовсе: ни уровни на сервере, ни канал в браузере.
+    let pnlOn = readStore(PNL_KEY, false) === true;
     let pnlShown = null;
     const pnlPieces = [];
     let drawings = null;
@@ -468,6 +503,32 @@
       });
     }
     function clearLines() { priceLines.splice(0).forEach((row) => rateSeries.removePriceLine(row)); }
+    // Уровень стратегии — доля спота этого часа, а не последнего: линия идёт за спотом,
+    // ровно там, где её проверяет движок. levels.*_pcts — доли со знаком из ответа сервера.
+    const levelSeries = [];
+    function drawLevelSeries(show) {
+      const rows = [];
+      if (show) {
+        const add = (shares, color, dashed) => (shares || []).forEach((share) => rows.push({ share, color, dashed }));
+        add(levels.long_pcts, colors.long, false);
+        add(levels.short_pcts, colors.short, false);
+        add(levels.long_tp_pcts, colors.longTp, true);
+        add(levels.short_tp_pcts, colors.shortTp, true);
+      }
+      while (levelSeries.length < rows.length) {
+        levelSeries.push(chart.addSeries(LightweightCharts.LineSeries, {
+          lineWidth: 1, priceLineVisible: false, crosshairMarkerVisible: false, lastValueVisible: true, priceFormat,
+          // Как ценовые линии: уровни не растягивают шкалу, она вписывает сам спред.
+          autoscaleInfoProvider: () => null,
+        }, 0));
+      }
+      levelSeries.forEach((series, index) => {
+        const row = rows[index];
+        if (!row) { series.setData([]); return; }
+        series.applyOptions({ color: row.color, lineStyle: row.dashed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid });
+        series.setData(points.filter((point) => point.price).map((point) => ({ time: unix(point.t), value: row.share * point.price })));
+      });
+    }
     function clearZ() { if (carrySeries) zLines.splice(0).forEach((row) => carrySeries.removePriceLine(row)); }
     const TRADING_YEAR = 250;
     // Будни в [day, day + count календарных дней): торговые дни до склейки.
@@ -599,16 +660,31 @@
       // одна линия, а не две друг на друге. Уровни и сделки живут на линии очищенного.
       sameRate = points.length > 0 && points.every((point) => point.raw === null || point.rate === null || Math.abs(point.raw - point.rate) < 1e-9);
       document.getElementById("swatch-rate").style.display = sameRate ? "none" : "";
-      rateSeries.applyOptions({ color: sameRate ? colors.raw : colors.rate, lineVisible: !(sameRate && style === "candle") });
+      document.getElementById("lines").style.display = sameRate ? "none" : "";
+      const shown = chartLines();
+      // Уровни, сделки и рисунки живут на линии очищенного: при «только сырой» она прозрачна.
+      const rateHidden = (sameRate && style === "candle") || shown === "raw";
+      // Скрытый очищенный не тянет шкалу и не показывает метку цены: остаются его уровни и рисунки.
+      rateSeries.applyOptions({
+        color: sameRate ? colors.raw : colors.rate, lineVisible: !rateHidden,
+        lastValueVisible: !(shown === "raw" && !sameRate),
+        // Всегда функция: undefined библиотека не применяет, и исключение из шкалы
+        // оставалось бы на следующей паре (нефть, газ сплющивались).
+        autoscaleInfoProvider: shown === "raw" && !sameRate ? () => null : (original) => original(),
+      });
+      const hideRaw = !sameRate && shown === "rate";
       painting = true;
       try {
         if (style === "candle") {
           rawSeries.setData([]);
-          if (!candleSeries) candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, { upColor: colors.up, downColor: colors.down, borderVisible: false, wickUpColor: colors.up, wickDownColor: colors.down, priceFormat }, 0);
-          candleSeries.setData(align(times, points.filter((point) => point.candle).map((point) => ({ time: unix(point.t), open: point.candle.o, high: point.candle.h, low: point.candle.l, close: point.candle.c }))));
+          if (!candleSeries && !hideRaw) {
+            candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, { upColor: colors.up, downColor: colors.down, borderVisible: false, wickUpColor: colors.up, wickDownColor: colors.down, priceFormat }, 0);
+            candleMarkers = LightweightCharts.createSeriesMarkers(candleSeries, []);
+          }
+          if (candleSeries) candleSeries.setData(hideRaw ? [] : align(times, points.filter((point) => point.candle).map((point) => ({ time: unix(point.t), open: point.candle.o, high: point.candle.h, low: point.candle.l, close: point.candle.c }))));
         } else {
           if (candleSeries) candleSeries.setData([]);
-          rawSeries.setData(sameRate ? [] : raw);
+          rawSeries.setData(sameRate || hideRaw ? [] : raw);
         }
         const slots = emptySlots(times);
         rateSeries.setData([...slots.before, ...rate, ...slots.after]);
@@ -632,16 +708,17 @@
         }
         clearLines();
         priceLines.push(rateSeries.createPriceLine({ price: 0, color: colors.zero, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: false }));
-        (levels.long || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: colors.long, lineWidth: 1, axisLabelVisible: true })));
-        (levels.short || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: colors.short, lineWidth: 1, axisLabelVisible: true })));
-        (levels.long_tp || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: colors.longTp, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true })));
-        (levels.short_tp || []).forEach((price) => priceLines.push(rateSeries.createPriceLine({ price, color: colors.shortTp, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true })));
+        drawLevelSeries(strategyKind() === "levels");
         const events = pnl.filter((point) => eventOf(point.marker));
         const marker = (point) => ({
           time: unix(point.t), position: eventOf(point.marker) === "entry" ? "belowBar" : "aboveBar",
           color: sideOf(point.marker) === "short" ? colors.short : colors.long, shape: "circle",
         });
-        rateMarkers.setMarkers([...new Map(events.map((point) => [unix(point.t), point])).values()].map(marker));
+        const tradeMarks = [...new Map(events.map((point) => [unix(point.t), point])).values()].map(marker);
+        const host = shown === "raw" && !sameRate ? (style === "candle" && candleMarkers ? "candle" : "raw") : "rate";
+        rateMarkers.setMarkers(host === "rate" ? tradeMarks : []);
+        rawMarkers.setMarkers(host === "raw" ? tradeMarks : []);
+        if (candleMarkers) candleMarkers.setMarkers(host === "candle" ? tradeMarks : []);
         clearPnlPieces();
         if (equitySeries) equitySeries.setData(align(times, pnl.map((point) => ({ time: unix(point.t), value: point.equity }))));
         const pnlColors = { "": colors.raw, long: colors.long, short: colors.short };
@@ -694,12 +771,14 @@
       top.replaceChildren(span(document.getElementById("title").textContent, "b"));
       if (point) {
         top.append(span(contractLabel(point.contract)));
-        if (styleSelect.value === "candle" && point.candle) {
+        if (!sameRate && chartLines() === "rate") {
+          // Сырой скрыт — в легенде только очищенный.
+        } else if (styleSelect.value === "candle" && point.candle) {
           top.append(pair("O", fmt(point.candle.o)), pair("H", fmt(point.candle.h)), pair("L", fmt(point.candle.l)), pair("C", fmt(point.candle.c), point.candle.c >= point.candle.o ? colors.up : colors.down));
         } else {
           top.append(pair(sameRate ? "спред" : "raw", fmt(point.raw), colors.raw));
         }
-        if (!sameRate) top.append(pair("rate", fmt(point.rate), colors.rate));
+        if (!sameRate && chartLines() !== "raw") top.append(pair("rate", fmt(point.rate), colors.rate));
         top.append(pair("дней", String(point.days ?? "—")));
       }
       const carry = document.getElementById("legend-1");
@@ -721,9 +800,16 @@
       const side = row ? sideOf(row.marker) : "";
       const sideText = side === "long" ? "лонг" : side === "short" ? "шорт" : "нет позиции";
       const sideColor = side === "long" ? colors.long : side === "short" ? colors.short : colors.raw;
+      const whole = (value) => (Math.round(value) || 0).toLocaleString("ru-RU");
+      const parts = row && row.fund !== undefined ? [
+        pair("контанго", whole(row.equity - row.fund + (row.fee || 0)), colors.shortTp),
+        pair("фандинг", whole(row.fund), colors.long),
+        pair("комиссии", whole(-(row.fee || 0))),
+      ] : [];
       document.getElementById("legend-2").replaceChildren(
-        span("PnL"),
-        span(row ? Math.round(row.equity).toLocaleString("ru-RU") + " " + money() : "—", "v"),
+        span(strategyKind() === "channel" ? "PnL канала" : "PnL"),
+        span(row ? whole(row.equity) + " " + money() : "—", "v"),
+        ...parts,
         span(sideText, "v", sideColor),
         ...(row ? [span(contractLabel(row.contract))] : []),
       );
@@ -813,7 +899,9 @@
       if (param.paneIndex !== undefined && param.paneIndex !== 0) return;
       const price = rateSeries.coordinateToPrice(param.point.y);
       if (price === null) return;
-      armed.querySelector("input").value = (price / levels.spot * levelUnit()).toFixed(3);
+      const here = param.time !== undefined ? pointByTime.get(param.time) : null;
+      const spotHere = here && here.price ? here.price : levels.spot;
+      armed.querySelector("input").value = (price / spotHere * levelUnit()).toFixed(3);
       armed.classList.remove("armed");
       armed = null;
     });
@@ -835,8 +923,16 @@
     function levelKey() { return "spread-levels-" + currentPair(); }
     function toPercents(rows) { return (rows || []).map((item) => +(item * 100).toFixed(6)).join(","); }
     function saveStrategy() {
-      writeStore(STRATEGY_KEY, { entry: document.getElementById("entry-mode").value, average: document.getElementById("average").checked, basis: basisSelect.value });
+      writeStore(STRATEGY_KEY, {
+        ...(readStore(STRATEGY_KEY, {}) || {}),
+        entry: document.getElementById("entry-mode").value, average: document.getElementById("average").checked,
+        basis: basisSelect.value, tp_all: document.getElementById("tp-all").checked,
+      });
     }
+    const LINES_KEY = "spread-lines";
+    // Что показано, когда очищенный отличается от сырого. У пар с одной линией — всегда она.
+    function chartLines() { return sameRate ? "rate" : (readStore(LINES_KEY, "both") || "both"); }
+    function strategyKind() { return (readStore(STRATEGY_KEY, {}) || {}).kind === "channel" ? "channel" : "levels"; }
     function query() {
       const params = new URLSearchParams();
       if (pairSelect) params.set("pair", pairSelect.value);
@@ -855,10 +951,14 @@
       const strategy = readStore(STRATEGY_KEY, {});
       params.set("entry", strategy.entry || "touch");
       params.set("average", strategy.average === false ? "0" : "1");
+      if (strategy.tp_all) params.set("tp", "all");
+      // Канал считает браузер, а выключенная стратегия не считается вовсе: серверу не гонять движок.
+      if (strategy.kind === "channel" || !pnlOn) params.set("strategy", "off");
       params.set("basis", basisSelect.value);
       return params.toString();
     }
     function strategyNote(body) {
+      if (!pnlOn) return "стратегия выключена";
       const trades = "сделок " + (body.trades || 0);
       const open = body.position;
       if (!open) return trades + ", позиции нет";
@@ -889,6 +989,7 @@
       levels.short = body.levels.short || [];
       levels.long_tp = body.levels.long_tp || [];
       levels.short_tp = body.levels.short_tp || [];
+      for (const key of ["long_pcts", "short_pcts", "long_tp_pcts", "short_tp_pcts"]) levels[key] = body.levels[key] || [];
     }
     function fillLevels(body) {
       copyLevelLines(body);
@@ -930,6 +1031,9 @@
         }
         lastVersion = body.version || "";
         points = body.points; pnl = body.pnl || []; funding = body.funding || [];
+        serverPnl = pnl;
+        window.strategyNotional = body.notional || 1;
+        window.strategyFunding = body.strategy_funding || { mode: "daily", rows: [] };
         window.fundingScale = body.funding_scale || window.fundingScale || 1;
         window.fundingKind = body.funding_kind || window.fundingKind || "ruble";
         if (body.pair) {
@@ -951,6 +1055,8 @@
         statusWrap.className = "tb live";
         statusWrap.title = "данные обновляются раз в 15 с";
         paint(fitPrice);
+        // Канал — по номерам баров шкалы: считается после отрисовки новых данных.
+        if (strategyKind() === "channel" && pnlOn) { fillChannelPick(); runChannel(true); }
         if (sideOpen() && sideView === "watchlist") refreshWatchlist();
       } catch (error) {
         status.textContent = "нет связи с сервером";
@@ -1030,6 +1136,12 @@
       paint(false);
     });
     applyColors();
+    document.getElementById("lines").value = readStore(LINES_KEY, "both") || "both";
+    document.getElementById("lines").addEventListener("change", (event) => {
+      writeStore(LINES_KEY, event.target.value);
+      if (strategyKind() === "channel") runChannel(false);
+      paint(false);
+    });
     function setTheme(name) {
       document.documentElement.dataset.theme = name;
       try { localStorage.setItem("spread-theme", name); } catch (error) { /* хранилище недоступно */ }
@@ -1214,7 +1326,10 @@
     pnlToggle.addEventListener("change", () => {
       pnlOn = pnlToggle.checked;
       writeStore(PNL_KEY, pnlOn);
+      if (!pnlOn) { runChannel(false); document.getElementById("strategy-note").textContent = strategyNote({}); }
       paint(false);
+      // Включили — посчитать (уровни на сервере, канал в браузере); выключили — сервер перестаёт считать.
+      refresh(false);
       // Новую панель библиотека раскладывает позже двух кадров: легенды ставим ещё раз.
       setTimeout(placeLegendsSoon, 250);
     });
@@ -1302,6 +1417,244 @@
     function tick() { document.getElementById("clock").textContent = new Date().toISOString().slice(11, 19) + " UTC"; }
     tick();
     setInterval(tick, 1000);
+
+    // Стратегия «Канал»: считается в браузере по уже загруженным барам, ВМ не нагружает.
+    // Границы — по номеру бара на шкале (как канал нарисован на экране, ночи и выходные
+    // не искажают наклон). Сигнал — очищенный спред (на нём нарисован канал), деньги — сырой.
+    const CHANNEL_KEY = "spread-channel";
+    const channelDefaults = { sides: "both", entry: "touch", exit: "0.5", share: 75, stop: 0, fee: 0, flip: false, extend: true, funding: true };
+    function channelSettings() { return { ...channelDefaults, ...(readStore(CHANNEL_KEY, {}) || {}) }; }
+    function channelPickKey() { return "spread-channel-pick-" + currentPair(); }
+    function channelsOnChart() {
+      if (!drawings) return [];
+      return drawings.drawings().filter((item) => item.kind === "parallel-channel" && item.points && item.points.length >= 3);
+    }
+    function fillChannelPick() {
+      const select = document.getElementById("ch-pick");
+      const list = channelsOnChart();
+      const saved = readStore(channelPickKey(), "");
+      const day = (time) => new Date(time * 1000).toISOString().slice(5, 10).split("-").reverse().join(".");
+      select.innerHTML = list.length ? "" : "<option value=\"\">нарисуйте канал (6)</option>";
+      list.forEach((item, index) => {
+        const option = document.createElement("option");
+        const [a, b] = item.points;
+        option.value = item.id;
+        option.textContent = `канал ${index + 1}: ${day(Math.min(a.time, b.time))} → ${day(Math.max(a.time, b.time))}`;
+        select.appendChild(option);
+      });
+      if (list.length) select.value = list.some((item) => item.id === saved) ? saved : list[list.length - 1].id;
+    }
+    function pickedChannel() {
+      const id = document.getElementById("ch-pick").value;
+      return channelsOnChart().find((item) => item.id === id) || null;
+    }
+    function logicalOf(time) {
+      try { const index = chart.timeScale().timeToIndex(time, true); return index === null ? null : index; } catch (error) { return null; }
+    }
+    // Нижняя и верхняя граница в логическом номере бара L.
+    function channelBounds(item) {
+      const [p0, p1, p2] = item.points;
+      const i0 = logicalOf(p0.time), i1 = logicalOf(p1.time), i2 = logicalOf(p2.time);
+      if (i0 === null || i1 === null || i2 === null) return null;
+      const slope = i1 === i0 ? 0 : (p1.price - p0.price) / (i1 - i0);
+      const main = (index) => p0.price + slope * (index - i0);
+      const offset = p2.price - main(i2);
+      return {
+        start: Math.min(i0, i1), end: Math.max(i0, i1),
+        at(index) { const a = main(index), b = a + offset; return { lower: Math.min(a, b), upper: Math.max(a, b) }; },
+      };
+    }
+    function fundingAt(rows, stamp) {
+      // rows — [[ISO, значение]] по возрастанию: последнее не позже stamp.
+      let lo = 0, hi = rows.length - 1, found = 0;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (rows[mid][0] <= stamp) { found = rows[mid][1]; lo = mid + 1; } else hi = mid - 1;
+      }
+      return found;
+    }
+    function simulateChannel(item, opts) {
+      const bounds = item && channelBounds(item);
+      const result = { rows: [], trades: [], opened: null };
+      if (!bounds) return result;
+      const unit = window.strategyNotional || 1;
+      const fund = window.strategyFunding || { mode: "daily", rows: [] };
+      const exitShare = opts.exit === "share" ? (Number(opts.share) || 75) / 100 : Number(opts.exit);
+      const stopShare = (Number(opts.stop) || 0) / 100;
+      // Комиссия: % от цены каждой ноги (срочный ≈ спот + спред, вечный ≈ спот) × объём, на входе и на выходе.
+      const feeShare = (Number(opts.fee) || 0) / 100;
+      const sideFee = (point) => feeShare * unit * (Math.abs((point.price || 0) + point.raw) + Math.abs(point.price || 0));
+      const signal = (point) => chartLines() === "raw" ? point.raw : point.rate;
+      result.fundings = 0;
+      const end = opts.extend ? Infinity : bounds.end;
+      const times = timesOf();
+      const indexOf = new Map(times.map((time, index) => [time, pastCount + index]));
+      let pos = 0, entry = 0, entryTs = null, realized = 0, fundTotal = 0, feeTotal = 0;
+      let base = 0, fundBase = 0, feeBase = 0, contract = null, fundedDay = null, fundedStamp = null;
+      let prevGap = null;
+      let entryFee = 0, entryFund = 0;
+      const close = (point, reason) => {
+        const price = pos * (point.raw - entry) * unit;
+        const fee = sideFee(point);
+        realized += price - fee;
+        feeTotal += fee;
+        result.trades.push({ side: pos > 0 ? "LONG" : "SHORT", entry: entryTs, exit: point.t, reason, pnl: price - fee - entryFee + (fundTotal - entryFund) });
+        pos = 0;
+      };
+      const open = (point, side) => {
+        pos = side; entry = point.raw; entryTs = point.t;
+        entryFee = sideFee(point); entryFund = fundTotal;
+        realized -= entryFee; feeTotal += entryFee;
+      };
+      points.forEach((point, k) => {
+        if (point.raw === null || point.rate === null) return;
+        const time = unix(point.t);
+        const L = indexOf.get(time);
+        if (point.contract !== contract) { contract = point.contract; base = realized; fundBase = fundTotal; feeBase = feeTotal; }
+        let event = "";
+        const next = points[k + 1];
+        const inside = L !== undefined && L >= bounds.start && L <= end;
+        if (inside) {
+          const { lower, upper } = bounds.at(L);
+          const width = upper - lower;
+          const s = signal(point);
+          const gap = { low: s - lower, high: s - upper };
+          if (pos) {
+            const target = pos > 0 ? lower + exitShare * width : upper - exitShare * width;
+            const stopped = stopShare > 0 && (pos > 0 ? s <= lower - stopShare * width : s >= upper + stopShare * width);
+            const reached = pos > 0 ? s >= target : s <= target;
+            if (stopped || reached) {
+              const side = pos;
+              close(point, stopped ? "stop" : "target");
+              event = "exit";
+              if (!stopped && opts.flip && exitShare >= 1 && (opts.sides === "both" || opts.sides === (side > 0 ? "short" : "long"))) {
+                open(point, -side);
+                event = "entry";
+              }
+            }
+          } else if (prevGap) {
+            const longOk = opts.sides !== "short", shortOk = opts.sides !== "long";
+            const longIn = opts.entry === "back" ? prevGap.low < 0 && gap.low >= 0 : prevGap.low > 0 && gap.low <= 0;
+            const shortIn = opts.entry === "back" ? prevGap.high > 0 && gap.high <= 0 : prevGap.high < 0 && gap.high >= 0;
+            if (longOk && longIn) { open(point, 1); event = "entry"; }
+            else if (shortOk && shortIn) { open(point, -1); event = "entry"; }
+          }
+          prevGap = gap;
+        } else {
+          prevGap = null;
+          if (pos && L !== undefined && L > end) { close(point, "end"); event = "exit"; }
+        }
+        // Склейка: позиция закрывается на последнем баре контракта, как у стратегии уровней.
+        if (pos && next && next.contract !== point.contract) { close(point, "roll"); event = "exit"; prevGap = null; }
+        if (pos && opts.funding && fund.rows.length) {
+          const stamp = new Date(time * 1000);
+          if (fund.mode === "interval") {
+            if ([0, 8, 16].includes(stamp.getUTCHours()) && fundedStamp !== time) {
+              const cash = pos * unit * (point.price || 0) * fundingAt(fund.rows, stamp.toISOString());
+              realized += cash; fundTotal += cash; fundedStamp = time; result.fundings += 1;
+            }
+          } else {
+            const day = stamp.toISOString().slice(0, 10);
+            if (stamp.getUTCHours() >= 20 && fundedDay !== day) {
+              const cash = pos * fundingAt(fund.rows, day);
+              realized += cash; fundTotal += cash; fundedDay = day; result.fundings += 1;
+            }
+          }
+        }
+        const mark = pos ? pos * (point.raw - entry) * unit : 0;
+        const last = result.trades[result.trades.length - 1];
+        let held = pos > 0 ? "L" : pos < 0 ? "S" : "";
+        if (!held && event === "exit" && last) held = last.side === "LONG" ? "L" : "S";
+        result.rows.push({ t: point.t, contract: point.contract, equity: realized - base + mark, fund: fundTotal - fundBase, fee: feeTotal - feeBase, marker: held + event });
+      });
+      const tail = points[points.length - 1];
+      if (pos && tail) result.opened = { side: pos > 0 ? "LONG" : "SHORT", n: 1, price: pos * (tail.raw - entry) * unit };
+      return result;
+    }
+    function channelNote(result, opts, item) {
+      if (!item) return "Нарисуйте на графике параллельный канал (6).";
+      const trades = result.trades.filter((trade) => trade.reason !== "end");
+      const wins = trades.filter((trade) => trade.pnl > 0).length;
+      const total = trades.reduce((sum, trade) => sum + trade.pnl, 0);
+      const stops = trades.filter((trade) => trade.reason === "stop").length;
+      return `сделок ${trades.length}, в плюс ${trades.length ? Math.round(wins / trades.length * 100) : 0}%, ` +
+        `итог ${Math.round(total).toLocaleString("ru-RU")} ${money()}` + (stops ? `, по стопу ${stops}` : "") +
+        (opts.funding ? `, фандинг начислен ${result.fundings} раз (в вечерний клиринг, 20:00 UTC: позиция внутри дня его не платит)` : ", без фандинга") +
+        (result.opened ? `; открыт ${result.opened.side === "LONG" ? "лонг" : "шорт"}, по рынку ${Math.round(result.opened.price).toLocaleString("ru-RU")}` : "");
+    }
+    function runChannel(repaint) {
+      if (!pnlOn) {
+        pnl = [];
+        document.getElementById("ch-note").textContent = "Стратегия выключена: включите «график стратегии».";
+        if (repaint) paint(false);
+        return;
+      }
+      const opts = channelSettings();
+      const item = pickedChannel();
+      const result = simulateChannel(item, opts);
+      pnl = result.rows;
+      document.getElementById("ch-note").textContent = channelNote(result, opts, item);
+      const open = result.opened;
+      const count = "сделок по каналу " + result.trades.length;
+      document.getElementById("strategy-note").textContent = open
+        ? `${count}, открыт ${open.side === "LONG" ? "лонг" : "шорт"}, по рынку ${Math.round(open.price).toLocaleString("ru-RU")} ${money()}`
+        : `${count}, позиции нет`;
+      if (repaint) paint(false);
+    }
+    function showStrategyKind() {
+      const kind = strategyKind();
+      document.querySelectorAll("#strategy-kind button").forEach((button) => button.classList.toggle("on", button.dataset.value === kind));
+      document.getElementById("channel-box").hidden = kind !== "channel";
+      document.getElementById("levels-box").hidden = kind === "channel";
+      document.getElementById("save-levels").hidden = kind === "channel";
+      document.getElementById("reset-levels").hidden = kind === "channel";
+    }
+    function loadChannelInputs() {
+      const opts = channelSettings();
+      document.getElementById("ch-sides").value = opts.sides;
+      document.getElementById("ch-entry").value = opts.entry;
+      document.getElementById("ch-exit").value = opts.exit;
+      document.getElementById("ch-share").value = opts.share;
+      document.getElementById("ch-stop").value = opts.stop;
+      document.getElementById("ch-fee").value = opts.fee;
+      document.getElementById("ch-flip").checked = !!opts.flip;
+      document.getElementById("ch-extend").checked = !!opts.extend;
+      document.getElementById("ch-funding").checked = !!opts.funding;
+      document.getElementById("ch-share-row").hidden = opts.exit !== "share";
+    }
+    function saveChannelInputs() {
+      const exit = document.getElementById("ch-exit").value;
+      writeStore(CHANNEL_KEY, {
+        sides: document.getElementById("ch-sides").value,
+        entry: document.getElementById("ch-entry").value,
+        exit,
+        share: Number(document.getElementById("ch-share").value) || 75,
+        stop: Number(document.getElementById("ch-stop").value) || 0,
+        fee: Number(document.getElementById("ch-fee").value) || 0,
+        flip: document.getElementById("ch-flip").checked,
+        extend: document.getElementById("ch-extend").checked,
+        funding: document.getElementById("ch-funding").checked,
+      });
+      document.getElementById("ch-share-row").hidden = exit !== "share";
+      runChannel(true);
+    }
+    document.querySelectorAll("#channel-box select:not(#ch-pick), #channel-box input").forEach((input) => input.addEventListener("change", saveChannelInputs));
+    document.getElementById("ch-pick").addEventListener("change", (event) => { writeStore(channelPickKey(), event.target.value); runChannel(true); });
+    document.getElementById("strategy-kind").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      writeStore(STRATEGY_KEY, { ...(readStore(STRATEGY_KEY, {}) || {}), kind: button.dataset.value });
+      showStrategyKind();
+      if (button.dataset.value === "channel") { fillChannelPick(); runChannel(true); }
+      else { pnl = serverPnl; }
+      // Уровни — сервер считает заново; канал — браузер, а сервер перестаёт гонять стратегию.
+      refresh(false);
+    });
+    document.getElementById("tp-all").checked = !!(readStore(STRATEGY_KEY, {}) || {}).tp_all;
+    document.getElementById("tp-all").addEventListener("change", () => { saveStrategy(); refresh(false); });
+    loadChannelInputs();
+    showStrategyKind();
+    if (drawings) ["add", "change"].forEach((name) => drawings.on(name, () => { if (!restoring) fillChannelPick(); }));
 
     // Рисование.
     function drawingKey() { return "drawings:" + (pairSelect ? pairSelect.value : ""); }
@@ -1454,6 +1807,13 @@
       if (!drawings || restoring) return;
       saveDrawingsNow(drawings.exportJSON());
       scheduleCommit();
+      if (strategyKind() === "channel") scheduleChannel();
+    }
+    // Канал тащат мышью — событий десятки в секунду: пересчёт и отрисовка раз в кадр.
+    let channelFrame = 0;
+    function scheduleChannel() {
+      if (channelFrame) return;
+      channelFrame = requestAnimationFrame(() => { channelFrame = 0; runChannel(true); });
     }
     function applyDrawings(json) {
       restoring = true;

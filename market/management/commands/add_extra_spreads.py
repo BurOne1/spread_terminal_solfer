@@ -23,10 +23,10 @@ from market.models import Pair
 
 def levels(pct, tp):
     return {
-        "long_levels": {"signed": True, "values": [-pct, -2 * pct, -3 * pct]},
-        "short_levels": {"signed": True, "values": [pct, 2 * pct, 3 * pct]},
-        "long_tp": {"signed": True, "values": [tp, 0.0]},
-        "short_tp": {"signed": True, "values": [-tp, 0.0]},
+        "long_levels": {"signed": True, "values": [-pct]},
+        "short_levels": {"signed": True, "values": [pct]},
+        "long_tp": {"signed": True, "values": [tp]},
+        "short_tp": {"signed": True, "values": [-tp]},
     }
 
 

@@ -53,6 +53,26 @@ class EngineTests(SimpleTestCase):
         self.assertAlmostEqual(trade["entry_spread"], 1.2)
         self.assertAlmostEqual(trade["exit_spread"], -0.3)
 
+    def test_tp_all_closes_whole_size_and_points_split_pnl(self):
+        # Шорт 2 ед. (1 % и 1.5 %), тейки −0.25 % и −0.6 %: без tp_all второй ждёт −0.6, спред туда не дойдёт.
+        levels = {"long_pcts": (-0.01,), "short_pcts": (0.01, 0.015), "long_tp": (0.0025,), "short_tp": (-0.0025, -0.006)}
+        rates = [0.0, 1.2, 1.6, 0.5, -0.3, -0.2]
+        _points, trades, opened = run(bars(rates), [], **levels)
+        self.assertEqual(([trade["n"] for trade in trades], opened["n"]), ([1], 1))
+        points, trades, opened = run(bars(rates), [], tp_all=True, **levels)
+        self.assertEqual(([trade["n"] for trade in trades], opened), ([2], None))
+        # Части PnL: контанго = equity − fund + fee, комиссии — с начала контракта.
+        last = points[-1]
+        self.assertGreater(last["fee"], 0)
+        self.assertEqual(last["fund"], 0)
+        self.assertAlmostEqual(last["equity"] - last["fund"] + last["fee"], trades[0]["price"], places=6)
+
+    def test_points_carry_funding_share(self):
+        day = BASE.date()
+        rates = [0.0, 1.2] + [1.1] * 20  # шорт держится через 20:00 UTC
+        points, _trades, _opened = run(bars(rates), [(day, 7.0)], **LEVELS)
+        self.assertAlmostEqual(points[-1]["fund"], -7.0)
+
     def test_last_bar_keeps_position_open(self):
         points, trades, opened = run(bars([0.0, 0.5, 1.2, 1.1]), [], **LEVELS)
         self.assertEqual(trades, [])

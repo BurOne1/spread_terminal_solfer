@@ -18,8 +18,9 @@ from strategy.params import (
     TOUCH_ENTRY,
 )
 
-LEVEL_PCTS = (0.01, 0.015, 0.02)
-TP_PCTS = (0.0025, 0.0)
+# По умолчанию один вход и один тейк на сторону; ещё — кнопками «+ уровень» и «+ тейк».
+LEVEL_PCTS = (0.01,)
+TP_PCTS = (0.0025,)
 FUNDING_AT = (20, 0)  # UTC. Часовой бар 20:00, отдельного 20:50 нет.
 BYBIT_HOURS = (0, 8, 16)
 
@@ -109,7 +110,7 @@ def funding_asof_ts(rows, ts):
     return rows[pos][1]
 
 
-def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", average=True, notional=None, funding_mode="daily", long_pcts=None, short_pcts=None, long_tp=None, short_tp=None, long_needs_sign=REQUIRE_LONG_DIFF_SIGN, min_spread=MIN_PRICE_SPREAD):
+def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", average=True, notional=None, funding_mode="daily", long_pcts=None, short_pcts=None, long_tp=None, short_tp=None, long_needs_sign=REQUIRE_LONG_DIFF_SIGN, min_spread=MIN_PRICE_SPREAD, tp_all=False):
     """bars: словари ts, contract, raw, rate, spot, fair, future, perp.
 
     Уровни — доли спота со знаком. Лонг и шорт задаются отдельно,
@@ -118,6 +119,10 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
     Лонг по-прежнему только при разном знаке spread_rate и сырого спреда.
     У пары с fair = 0 знаки всегда равны: там long_needs_sign выключен.
     min_spread — минимальный |raw| для входа, в единицах спреда пары.
+    tp_all — любой тейк закрывает весь объём (иначе тейк закрывает 1 ед.,
+    остаток — последний тейк; у спреда, не доходящего до 0, тейк «0» не наступит).
+    В точках, кроме equity, — fund и fee с начала контракта: фандинг и комиссии,
+    контанго = equity − fund + fee.
     """
     unit = float(NOTIONAL if notional is None else notional)
 
@@ -148,6 +153,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
 
     position = size = 0
     avg = entry_fair = open_fund = realized = contract_base = 0.0
+    fund_total = fee_total = fund_base = fee_base = 0.0
     used, tp_used = set(), set()
     entry_legs = []
     entry_ts = entry_spread = contract = None
@@ -168,7 +174,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
             if force:
                 hit = ["roll"]
             for level in hit:
-                close_n = size if force or level == len(tps) - 1 else min(1, size)
+                close_n = size if force or tp_all or level == len(tps) - 1 else min(1, size)
                 if close_n <= 0:
                     continue
                 price = position * (spread - avg) * close_n * unit
@@ -180,6 +186,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
                 fund_share = open_fund * close_n / size
                 open_fund -= fund_share
                 realized += price - close_fee
+                fee_total += close_fee
                 notional = close_n * bar["perp"] * unit
                 trades.append({
                     "side": "LONG" if position == 1 else "SHORT",
@@ -208,6 +215,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
         if bar["contract"] != contract:
             contract = bar["contract"]
             contract_base = realized
+            fund_base, fee_base = fund_total, fee_total
 
         different = now and spread and (now > 0) != (spread > 0)
         long_ok = (not long_needs_sign) or different
@@ -215,7 +223,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
         blocked = i in quiet
 
         def enter(side, key):
-            nonlocal position, size, avg, entry_fair, entry_ts, entry_spread, realized
+            nonlocal position, size, avg, entry_fair, entry_ts, entry_spread, realized, fee_total
             position = side
             size = 1
             avg = spread
@@ -226,6 +234,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
             third = charge(bar["third"]) if bar.get("third") else 0
             entry_legs.append((charge(bar["future"]) + third, charge(bar["perp"])))
             realized -= charge(bar["future"]) + charge(bar["perp"]) + third
+            fee_total += charge(bar["future"]) + charge(bar["perp"]) + third
 
         if not blocked and wide and now is not None and not position:
             for index, pct in enumerate(long_pcts):
@@ -253,6 +262,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
                     third = charge(bar["third"]) if bar.get("third") else 0
                     entry_legs.append((charge(bar["future"]) + third, charge(bar["perp"])))
                     realized -= charge(bar["future"]) + charge(bar["perp"]) + third
+                    fee_total += charge(bar["future"]) + charge(bar["perp"]) + third
 
         if position and size:
             ts = bar["ts"]
@@ -267,6 +277,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
                     cash = position * size * unit * float(bar["perp"]) * rate
                     open_fund += cash
                     realized += cash
+                    fund_total += cash
                     funded_stamp = ts
             else:
                 due = ts.hour > FUNDING_AT[0] or (
@@ -276,6 +287,7 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
                     cash = position * size * funding_asof(fund_rows, day)
                     open_fund += cash
                     realized += cash
+                    fund_total += cash
                     funded_day = day
 
         mark = 0.0
@@ -291,6 +303,8 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
             "t": bar["ts"].isoformat(),
             "contract": bar["contract"],
             "equity": realized - contract_base + mark,
+            "fund": fund_total - fund_base,
+            "fee": fee_total - fee_base,
             "marker": held + event,
         })
 

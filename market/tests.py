@@ -260,3 +260,23 @@ class GasNymexWindowTests(TestCase):
             after = live.live_symbols()
         self.assertEqual(before, ["NGZ26@XNYM", "NGX6@RTSX"])
         self.assertEqual(after, ["NGF27@XNYM", "NGZ6@RTSX"])
+
+
+class SingleDefaultLevelsTests(TestCase):
+    def test_migration_keeps_first_entry_and_first_take(self):
+        import importlib
+        from django.apps import apps as django_apps
+        from market.models import Pair
+        migration = importlib.import_module("market.migrations.0008_single_default_levels")
+        pair = Pair.objects.create(code="LADDER", title="лесенка", future_root="LL", perp_code="", perp_symbol="",
+                                   spot_code="", spot_symbol="",
+                                   long_levels={"signed": True, "values": [-0.01, -0.02, -0.03]},
+                                   short_levels={"signed": True, "values": [0.01, 0.02]},
+                                   long_tp={"signed": True, "values": [0.0025, 0.0]},
+                                   short_tp={"signed": True, "values": [-0.0025]})
+        migration.forwards(django_apps, None)
+        pair.refresh_from_db()
+        self.assertEqual([pair.long_levels["values"], pair.short_levels["values"], pair.long_tp["values"], pair.short_tp["values"]],
+                         [[-0.01], [0.01], [0.0025], [-0.0025]])
+        from strategy.engine import pair_levels
+        self.assertEqual(pair_levels(None), ([-0.01], [0.01], [0.0025], [-0.0025]))

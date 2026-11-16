@@ -25,10 +25,10 @@ SECONDS = (
     ("TRIGL2", "TRIGL", "GD2 + SI2 − GL2"),
 )
 LEVELS = {
-    "long_levels": {"signed": True, "values": [-0.001, -0.0015, -0.002]},
-    "short_levels": {"signed": True, "values": [0.001, 0.0015, 0.002]},
-    "long_tp": {"signed": True, "values": [0.00025, 0.0]},
-    "short_tp": {"signed": True, "values": [-0.00025, 0.0]},
+    "long_levels": {"signed": True, "values": [-0.001]},
+    "short_levels": {"signed": True, "values": [0.001]},
+    "long_tp": {"signed": True, "values": [0.00025]},
+    "short_tp": {"signed": True, "values": [-0.00025]},
 }
 
 

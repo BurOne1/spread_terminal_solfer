@@ -103,6 +103,18 @@ class SpreadEtagTests(TestCase):
         self.assertEqual(fresh.status_code, 200)
         self.assertNotEqual(fresh["ETag"], tag)
 
+    def test_strategy_off_skips_engine_and_gives_funding_for_browser(self):
+        from unittest import mock
+        with mock.patch("strategy.runner.run", side_effect=AssertionError("движок не нужен")):
+            body = self.client.get("/api/spread/?pair=CNY&strategy=off").json()
+        self.assertEqual((body["pnl"], body["trades"], body["position"]), ([], 0, None))
+        self.assertEqual(body["notional"], 1000)
+        self.assertEqual(body["strategy_funding"]["mode"], "daily")
+        # С уровнями — точки PnL с частями: фандинг и комиссии.
+        row = self.client.get("/api/spread/?pair=CNY").json()["pnl"][-1]
+        self.assertIn("fund", row)
+        self.assertIn("fee", row)
+
     def test_last_pair_from_cookie(self):
         from charts.views import last_pair_code
         from django.test import RequestFactory

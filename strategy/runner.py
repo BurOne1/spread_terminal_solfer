@@ -110,7 +110,7 @@ def notional_of(pair):
     return pair.lot or 1000
 
 
-def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close", rows=None):
+def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close", rows=None, tp_all=False):
     """levels: (лонг, шорт, тейки лонга, тейки шорта) в долях спота со знаком.
 
     Пусто — уровни, сохранённые у пары, они же значения по умолчанию.
@@ -128,6 +128,7 @@ def pass_pair(pair, entry_mode="touch", average=True, levels=None, basis="close"
         short_pcts=short_pcts,
         long_tp=long_tp,
         short_tp=short_tp,
+        tp_all=tp_all,
         **entry_rules(pair),
     )
 

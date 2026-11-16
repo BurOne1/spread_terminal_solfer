@@ -14,10 +14,10 @@ from market.models import Pair
 
 CODE = "BRNYMEX"
 LEVELS = {
-    "long_levels": {"signed": True, "values": [-0.001, -0.002, -0.003]},
-    "short_levels": {"signed": True, "values": [0.001, 0.002, 0.003]},
-    "long_tp": {"signed": True, "values": [0.00025, 0.0]},
-    "short_tp": {"signed": True, "values": [-0.00025, 0.0]},
+    "long_levels": {"signed": True, "values": [-0.001]},
+    "short_levels": {"signed": True, "values": [0.001]},
+    "long_tp": {"signed": True, "values": [0.00025]},
+    "short_tp": {"signed": True, "values": [-0.00025]},
 }
 
 

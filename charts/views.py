@@ -19,7 +19,7 @@ from django.shortcuts import render
 
 from market.models import Candle, Instrument, Pair
 from strategy.models import SpreadBar
-from strategy.runner import BASES, priced, spread_rows
+from strategy.runner import BASES, notional_of, priced, spread_rows
 
 # Ответ /api/spread/ без изменений в барах отдаётся как 304 без пересчёта.
 # Раз в столько секунд он всё равно пересчитывается: ставки, фандинг и
@@ -213,6 +213,7 @@ def _settings(request):
         "entry_mode": "reverse" if request.GET.get("entry") == "reverse" else "touch",
         "average": request.GET.get("average", "1") != "0",
         "basis": basis if basis in BASES else "close",
+        "tp_all": request.GET.get("tp") == "all",
     }
 
 
@@ -549,7 +550,8 @@ def _spread_body(request, pair, version):
     rows = None if pair is None else spread_rows(pair)
     points = _points(pair, start, end, options["basis"], rows)
     pnl, trades, opened = [], 0, None
-    if pair is not None:
+    # strategy=off — стратегию считает браузер (канал): серверу не гонять движок.
+    if pair is not None and request.GET.get("strategy") != "off":
         pnl, trades, opened = _strategy(pair, request, _window(contracts, start, end), rows)
     return {
         "version": version,
@@ -576,4 +578,18 @@ def _spread_body(request, pair, version):
         "position": opened,
         "levels": _levels(pair, None if pair is None else _user_levels(request, pair)),
         "pair_levels": _levels(pair),
+        "notional": None if pair is None else notional_of(pair),
+        "strategy_funding": _strategy_funding(pair),
     }
+
+
+def _strategy_funding(pair):
+    """Фандинг в том виде, в каком его берёт движок: для стратегии канала в браузере.
+
+    daily — [дата, деньги на контракт за день], interval — [время, ставка за 8 ч].
+    """
+    if pair is None:
+        return {"mode": "daily", "rows": []}
+    from strategy.runner import funding_of
+    rows, mode = funding_of(pair)
+    return {"mode": mode, "rows": [[stamp.isoformat(), value] for stamp, value in rows]}
