@@ -387,6 +387,26 @@ class CrossTests(TestCase):
         self.assertEqual(bar.days_left, 4)
         self.assertEqual(entry_rules(pair), {"long_needs_sign": False, "min_spread": 0.0})
 
+    def test_cme_leg_carries_last_close_into_new_moex_hour(self):
+        pair, cnh = make_cross()
+        cr = Instrument.objects.get(code="CRZ2026.T")
+        si = Instrument.objects.get(code="SiZ2026")
+        later, stale = CROSS_TS + timedelta(hours=2), CROSS_TS + timedelta(hours=6)
+        for ts in (later, stale):
+            candle(cr, ts, Decimal("12.50"), Decimal("12.50"))
+            candle(si, ts, Decimal("83000"), Decimal("83000"))
+        self.assertEqual(rebuild.rebuild_spread("CRCNH"), 2)
+        bars = {bar.ts: bar for bar in SpreadBar.objects.filter(pair=pair)}
+        # Через 2 часа CNH ещё без сделки — последнее закрытие 6.71 (час CROSS_TS + 1).
+        self.assertAlmostEqual(float(bars[later].raw_spread), 12.5 * 6.71 * 1000 - 83000, places=3)
+        self.assertAlmostEqual(float(bars[later].foreign_rate), 6.71, places=6)
+        # Через 5 часов после последней сделки CNH — дольше CROSS_FILL, час пропущен.
+        self.assertNotIn(stale, bars)
+        # Пришла свеча CNH — пересчёт хвоста берёт факт.
+        candle(cnh, later, Decimal("6.72"), Decimal("6.72"))
+        rebuild.rebuild_spread("CRCNH", since=later)
+        self.assertAlmostEqual(float(SpreadBar.objects.get(pair=pair, ts=later).raw_spread), 12.5 * 6.72 * 1000 - 83000, places=3)
+
     def test_moex_leg_rebuilds_cross(self):
         make_cross()
         rebuild._dirty.clear()

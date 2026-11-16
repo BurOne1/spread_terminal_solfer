@@ -17,6 +17,7 @@ history_bars считает тот же ряд для аналитики, но �
 пара переходит с SiZ2026/SiH2027 на SiH2027/SiM2027.
 """
 
+import bisect
 import threading
 from datetime import timedelta, timezone
 
@@ -28,6 +29,8 @@ from strategy.build import build_points, money, stepper
 from strategy.models import SpreadBar
 
 LOOKBACK = timedelta(days=7)
+# Кросс-пары: последняя цена ноги CME (CNH, 6E) годится для часа Мосбиржи не дольше этого.
+CROSS_FILL = timedelta(hours=4)
 RATE_LOOKBACK = timedelta(days=30)
 
 # История для аналитики: два месяца у месячных контрактов, два квартала у квартальных.
@@ -496,17 +499,26 @@ def _rebuild_cross(pair, since=None):
         if not a_bars or not c_bars:
             continue
         roll = window["roll_at"]
-        for ts in sorted(window["bars"]):
+        b_bars = window["bars"]
+        b_hours = sorted(b_bars)
+        # Часы задают ноги Мосбиржи: CNH и 6E на CME торгуются тоньше, и в часе
+        # может не быть сделки. Тогда берётся последнее закрытие CME не старше
+        # CROSS_FILL; придёт свеча CME — пересчёт хвоста заменит его фактом.
+        for ts in sorted(set(a_bars) & set(c_bars)):
             if since is not None and ts < since:
                 continue
             if window["listed_at"] is not None and ts < window["listed_at"]:
                 continue
             if ts >= roll or not _common_hour(ts):
                 continue
-            a, c = a_bars.get(ts), c_bars.get(ts)
-            if a is None or c is None:
-                continue
-            b = window["bars"][ts]
+            a, c = a_bars[ts], c_bars[ts]
+            b = b_bars.get(ts)
+            if b is None:
+                index = bisect.bisect_left(b_hours, ts)
+                if index == 0 or ts - b_hours[index - 1] > CROSS_FILL:
+                    continue
+                last = b_bars[b_hours[index - 1]][1]
+                b = (last, last)
             synthetic = [float(a[index]) * float(b[index]) * mult for index in (0, 1)]
             raw_open, raw = synthetic[0] - float(c[0]), synthetic[1] - float(c[1])
             rows.append(SpreadBar(
