@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход · спреды</title>
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("spread-theme") || "dark"; } catch (error) { /* хранилище недоступно */ }</script>
+  <style>
+    :root[data-theme="dark"] { --bg: #2b2b2b; --panel: #313335; --raised: #3c3f41; --line: #4e5254; --ink: #bbbbbb; --muted: #808080; --accent: #4a88c7; --red: #c75450; }
+    :root[data-theme="light"] { --bg: #f0f3fa; --panel: #ffffff; --raised: #f0f3fa; --line: #d1d4dc; --ink: #131722; --muted: #787b86; --accent: #2962ff; --red: #f23645; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif; padding: 16px; }
+    main { width: min(720px, 100%); }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .lead { color: var(--muted); margin: 0 0 20px; }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    form.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 18px; display: flex; flex-direction: column; gap: 10px; margin: 0; }
+    .card h2 { margin: 0; font-size: 16px; }
+    .card p { margin: 0; color: var(--muted); font-size: 13px; flex: 1; }
+    input[type="password"] { width: 100%; padding: 8px 10px; border-radius: 4px; border: 1px solid var(--line); background: var(--raised); color: var(--ink); font: inherit; }
+    button { padding: 9px 12px; border: 0; border-radius: 4px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .error { color: var(--red); font-size: 13px; margin: 0; }
+    @media (max-width: 620px) { .cards { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Спреды</h1>
+    <p class="lead">Выберите группу. Браузер запомнит выбор, выйти можно кнопкой в правом нижнем углу графика.</p>
+    <div class="cards">
+      <form class="card" method="post">
+        {% csrf_token %}
+        <input type="hidden" name="group" value="viewer">
+        <input type="hidden" name="next" value="{{ next }}">
+        <h2>Просмотр</h2>
+        <p>Спреды, открытые для просмотра, и каналы, опубликованные отделом трейдинга. Без стратегий и рисования.</p>
+        <button type="submit">Далее</button>
+      </form>
+      <form class="card" method="post">
+        {% csrf_token %}
+        <input type="hidden" name="group" value="analyst">
+        <input type="hidden" name="next" value="{{ next }}">
+        <h2>Отдел трейдинга</h2>
+        <p>Все пары, стратегии, аналитика, радар и публикация каналов для группы «Просмотр».</p>
+        <input type="password" name="password" placeholder="пароль группы" autocomplete="current-password" {% if analyst_open %}autofocus{% endif %} {% if not analyst_ready %}disabled{% endif %}>
+        {% if error %}<p class="error">{{ error }}</p>{% elif not analyst_ready %}<p class="error">Пароль отдела трейдинга не задан на сервере (ANALYST_PASSWORD в .env).</p>{% endif %}
+        <button type="submit" {% if not analyst_ready %}disabled{% endif %}>Войти</button>
+      </form>
+    </div>
+  </main>
+</body>
+</html>

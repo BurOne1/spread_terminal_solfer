@@ -613,7 +613,18 @@ def _flush_now(log=None):
     close_old_connections()
     from strategy.rebuild import flush_dirty
     flush_book(log)
-    return flush_dirty()
+    done = flush_dirty()
+    if done:
+        # Опубликованные каналы пересчитанных пар: оповещения в Телеграм.
+        from charts.alerts import check_channels
+        try:
+            for code, event in check_channels(done, log):
+                if log:
+                    log(f"оповещение {code}: {event}")
+        except Exception as exc:
+            if log:
+                log(f"оповещения по каналам не прошли: {exc}")
+    return done
 
 
 def _sync_recent():

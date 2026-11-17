@@ -11,3 +11,8 @@ FINAM_API_SECRET = ""
 
 # Кэш /api/spread/ общий на процесс: в тестах ответ переиспользуется только при тех же барах.
 SPREAD_MIN_AGE = 0
+
+# Без страницы входа: тесты страниц и API — от группы «Аналитики». Тесты доступа меняют это сами.
+ACCESS_DEFAULT_GROUP = "analyst"
+ANALYST_PASSWORD = "test-password"
+TELEGRAM_BOT_TOKEN = ""

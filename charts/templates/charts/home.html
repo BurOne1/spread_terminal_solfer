@@ -63,6 +63,16 @@
     /* график */
     .chart-wrap { grid-area: chart; position: relative; min-width: 0; min-height: 0; background: var(--bg); }
     #chart { position: absolute; inset: 0; }
+    /* Зритель: без рисования, стратегий, индикаторов, радара и аналитики. */
+    body.viewer { grid-template-columns: 0 minmax(0, 1fr) 300px 44px; }
+    .side-closed body.viewer { grid-template-columns: 0 minmax(0, 1fr) 0 44px; }
+    .viewer #drawbar, .viewer #indicator, .viewer .analyst-only, .viewer #rail [data-view="strategy"],
+    .viewer .side .view[data-view="strategy"], .viewer #editor, .viewer #strategy-note { display: none !important; }
+    .leave { margin: 0; display: inline-flex; }
+    .leave button { font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; }
+    .leave button:hover { color: var(--ink); }
+    #editor .pub { display: inline-flex; gap: 6px; align-items: center; }
+    #editor .pub[hidden] { display: none; }
     .swatch { padding: 0 4px; }
     #channel-box [hidden], .side [hidden] { display: none !important; }
     #strategy-kind { display: flex; border: 1px solid var(--line-strong); border-radius: 4px; overflow: hidden; margin-bottom: 10px; }
@@ -178,7 +188,8 @@
     }
   </style>
 </head>
-<body>
+<body class="{% if viewer %}viewer{% endif %}">
+  <script>window.VIEWER = {{ viewer|yesno:"true,false" }};</script>
   <header class="topbar" id="topbar">
     <div class="title">
       <b id="title">{{ title|default:"спред" }}</b>
@@ -208,8 +219,9 @@
       <option value="off">Без индикатора</option>
     </select>
     <div class="grow"></div>
-    <a class="tb" href="/radar/" title="Радар: крупные участники, стены, всплески">Радар</a>
-    <a class="tb" href="/analytics/" title="Статистика контрактов по дням до экспирации">Аналитика</a>
+    {% if viewer %}<label class="tb swatch" title="Цвет опубликованных каналов"><input type="color" id="color-channel"></label>{% endif %}
+    <a class="tb analyst-only" href="/radar/" title="Радар: крупные участники, стены, всплески">Радар</a>
+    <a class="tb analyst-only" href="/analytics/" title="Статистика контрактов по дням до экспирации">Аналитика</a>
     <button type="button" class="tb" id="snapshot" title="Скопировать изображение графика (Alt+S)"><svg viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="10" rx="1.5"/><circle cx="9" cy="9.5" r="2.6"/><path d="M6.5 4.5 7.5 3h3l1 1.5"/></svg></button>
     <button type="button" class="tb" id="fit" title="Вписать график (Alt+R)"><svg viewBox="0 0 18 18"><path d="M3 7V3h4M15 7V3h-4M3 11v4h4M15 11v4h-4"/></svg></button>
     <button type="button" class="tb" id="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 18 18"><path d="M15 10.5A6.5 6.5 0 0 1 7.5 3a6.5 6.5 0 1 0 7.5 7.5Z"/></svg></button>
@@ -250,6 +262,11 @@
       <label>прозрачность <input type="range" id="draw-alpha" min="0" max="90" value="80"></label>
       <label><input type="checkbox" id="draw-fill" checked> заливка</label>
       <button type="button" id="draw-delete">удалить</button>
+      <span class="pub" id="draw-pub" hidden>
+        <button type="button" id="draw-publish" title="Отправить точную копию канала в группу «Просмотр»">опубликовать</button>
+        <button type="button" id="draw-unpublish" title="Убрать канал из «Просмотра»; ваш рисунок останется">снять</button>
+        <i id="draw-published"></i>
+      </span>
     </div>
   </main>
 
@@ -337,6 +354,10 @@
     </span>
     <div class="sep hide-narrow"></div>
     <span class="tb" id="clock" title="Время UTC"></span>
+    <div class="sep"></div>
+    <form class="leave" method="post" action="/leave/" id="leave-form">{% csrf_token %}
+      <button type="submit" class="tb" title="Выйти из группы: при следующем входе снова выбор группы">{{ group_title|default:"Группа" }} · выйти</button>
+    </form>
   </footer>
 
   {{ points|json_script:"points-data" }}
@@ -414,12 +435,15 @@
     // Панель PnL можно выключить в «Стратегии»; выбор хранится в браузере.
     const PNL_KEY = "spread-pnl-chart";
     // Выключен — стратегия не считается вовсе: ни уровни на сервере, ни канал в браузере.
-    let pnlOn = readStore(PNL_KEY, false) === true;
+    const VIEWER = window.VIEWER === true;
+    let pnlOn = !VIEWER && readStore(PNL_KEY, false) === true;
     let pnlShown = null;
     const pnlPieces = [];
     let drawings = null;
     try {
       drawings = new LightweightChartsDrawing.DrawingManager(chart, rateSeries, { magnet: "off", stayInDrawingMode: false });
+      // Зритель видит опубликованные каналы, но не может выделить, двигать или удалить их.
+      if (VIEWER) ["onPointerDown", "onDoubleClick", "onKey", "onHover"].forEach((name) => { drawings[name] = () => {}; });
     } catch (error) {
       console.error("инструменты не поднялись", error);
     }
@@ -708,7 +732,8 @@
         }
         clearLines();
         priceLines.push(rateSeries.createPriceLine({ price: 0, color: colors.zero, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: false }));
-        drawLevelSeries(strategyKind() === "levels");
+        // Уровни стратегии — только аналитику: у зрителя стратегий нет.
+        drawLevelSeries(strategyKind() === "levels" && !VIEWER);
         const events = pnl.filter((point) => eventOf(point.marker));
         const marker = (point) => ({
           time: unix(point.t), position: eventOf(point.marker) === "entry" ? "belowBar" : "aboveBar",
@@ -953,7 +978,7 @@
       params.set("average", strategy.average === false ? "0" : "1");
       if (strategy.tp_all) params.set("tp", "all");
       // Канал считает браузер, а выключенная стратегия не считается вовсе: серверу не гонять движок.
-      if (strategy.kind === "channel" || !pnlOn) params.set("strategy", "off");
+      if (strategy.kind === "channel" || !pnlOn || VIEWER) params.set("strategy", "off");
       params.set("basis", basisSelect.value);
       return params.toString();
     }
@@ -965,7 +990,8 @@
       const side = open.side === "LONG" ? "лонг" : "шорт";
       return trades + ", открыт " + side + " " + open.n + " ед., по рынку " + Math.round(open.price).toLocaleString("ru-RU") + " " + money();
     }
-    function windowKey(code) { return "spread-window-" + code; }
+    // v2: по умолчанию окно — текущий контракт; старые сохранённые «вся история» не подхватываются.
+    function windowKey(code) { return "spread-window-v2-" + code; }
     function loadWindow(code) { return readStore(windowKey(code), {}) || {}; }
     function saveWindow() { if (pairSelect) writeStore(windowKey(pairSelect.value), { from: fromSelect ? fromSelect.value : "", to: toSelect ? toSelect.value : "" }); }
     // Последняя пара — в cookie: сервер откроет её же на «Спредах» и в «Аналитике».
@@ -1055,6 +1081,7 @@
         statusWrap.className = "tb live";
         statusWrap.title = "данные обновляются раз в 15 с";
         paint(fitPrice);
+        if (body.published !== undefined && (body.published !== publishedVersion || body.pair !== publishedPair)) refreshPublished(body.pair);
         // Канал — по номерам баров шкалы: считается после отрисовки новых данных.
         if (strategyKind() === "channel" && pnlOn) { fillChannelPick(); runChannel(true); }
         if (sideOpen() && sideView === "watchlist") refreshWatchlist();
@@ -1155,6 +1182,9 @@
       paint(false);
     }
     document.getElementById("theme").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"));
+    document.getElementById("leave-form").addEventListener("submit", (event) => {
+      if (!confirm("Выйти из группы? При следующем входе нужно будет снова выбрать группу.")) event.preventDefault();
+    });
     // Боковая панель: узкая панель справа переключает вид, повторный клик закрывает.
     const SIDE_VIEWS = { strategy: "Стратегия", watchlist: "Список спредов" };
     let sideView = "strategy";
@@ -1656,6 +1686,88 @@
     showStrategyKind();
     if (drawings) ["add", "change"].forEach((name) => drawings.on(name, () => { if (!restoring) fillChannelPick(); }));
 
+
+    // Опубликованные каналы: аналитик публикует точную копию рисунка, зритель видит её закреплённой.
+    let published = [], publishedVersion = null, publishedPair = "";
+    function csrfToken() {
+      const found = document.cookie.split("; ").find((row) => row.startsWith("csrftoken="));
+      return found ? decodeURIComponent(found.split("=")[1]) : "";
+    }
+    async function refreshPublished(code) {
+      try {
+        const response = await fetch("/api/published/?pair=" + encodeURIComponent(code || currentPair()), { cache: "no-store" });
+        if (!response.ok) return;
+        const body = await response.json();
+        published = body.channels || [];
+        publishedVersion = body.version;
+        publishedPair = body.pair;
+        if (VIEWER) loadPublishedDrawings(); else showEditor();
+      } catch (error) { /* нет связи — попробуем со следующим ответом */ }
+    }
+    const CHANNEL_COLOR_KEY = "spread-channel-color";
+    function loadPublishedDrawings() {
+      if (!drawings) return;
+      const color = readStore(CHANNEL_COLOR_KEY, "") || "";
+      const items = published.map((row) => {
+        const item = JSON.parse(JSON.stringify(row.data));
+        item.id = row.id;
+        item.locked = true;
+        if (color && item.style) {
+          item.style = { ...item.style, color, backgroundColor: color, textColor: color,
+            levels: (item.style.levels || []).map((level) => ({ ...level, color })) };
+        }
+        return item;
+      });
+      restoring = true;
+      try { drawings.importJSON(JSON.stringify(items)); } catch (error) { drawings.clear(); } finally { restoring = false; }
+    }
+    async function sendPublished(method, payload) {
+      const response = await fetch("/api/published/", {
+        method, headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken() }, body: JSON.stringify(payload),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || response.status);
+      return body;
+    }
+    // Удалили у себя опубликованный канал — спросить, убрать ли его и у зрителей.
+    function askUnpublish(ids) {
+      if (VIEWER) return;
+      const shared = published.filter((row) => ids.includes(row.id));
+      if (!shared.length) return;
+      const text = shared.length === 1 ? "Этот канал опубликован в «Просмотр». Снять его и там?"
+        : `Каналов, опубликованных в «Просмотр»: ${shared.length}. Снять их и там?`;
+      if (!confirm(text + "\nОтмена — в «Просмотре» канал останется.")) return;
+      Promise.all(shared.map((row) => sendPublished("DELETE", { pair: currentPair(), id: row.id })))
+        .then(() => refreshPublished()).catch((error) => alert("Снять не удалось: " + error.message));
+    }
+    function removeDrawings(ids) {
+      askUnpublish(ids);
+      ids.forEach((id) => drawings.remove(id));
+    }
+    document.getElementById("draw-publish").addEventListener("click", async () => {
+      const id = drawings.selection()[0];
+      const item = id && drawings.get(id);
+      if (!item || item.kind !== "parallel-channel") return;
+      const again = published.some((row) => row.id === id);
+      const where = chartLines() === "raw" ? "сыром" : "очищенном";
+      if (!confirm(`${again ? "Обновить" : "Опубликовать"} этот канал в «Просмотр» на паре ${currentPair()}?\n` +
+        `В «Просмотре» его увидят точно таким, как сейчас (на ${where} спреде), по нему пойдут оповещения в Телеграм.`)) return;
+      try {
+        await sendPublished("POST", { pair: currentPair(), drawing: JSON.parse(JSON.stringify(item)), lines: chartLines() === "raw" ? "raw" : "rate" });
+        await refreshPublished();
+      } catch (error) { alert("Опубликовать не удалось: " + error.message); }
+    });
+    document.getElementById("draw-unpublish").addEventListener("click", async () => {
+      const id = drawings.selection()[0];
+      if (!id || !confirm("Снять этот канал из «Просмотра»? Ваш рисунок останется.")) return;
+      try { await sendPublished("DELETE", { pair: currentPair(), id }); await refreshPublished(); }
+      catch (error) { alert("Снять не удалось: " + error.message); }
+    });
+    if (VIEWER) {
+      const input = document.getElementById("color-channel");
+      input.value = readStore(CHANNEL_COLOR_KEY, "") || "#2962ff";
+      input.addEventListener("input", () => { writeStore(CHANNEL_COLOR_KEY, input.value); loadPublishedDrawings(); });
+    }
     // Рисование.
     function drawingKey() { return "drawings:" + (pairSelect ? pairSelect.value : ""); }
     function markTool(kind) {
@@ -1663,6 +1775,8 @@
     }
     function loadDrawings() {
       if (!drawings) return;
+      // Зритель: каналы этой пары придут с сервера; чужие от прошлой пары — сразу убрать.
+      if (VIEWER) { if (publishedPair === currentPair()) loadPublishedDrawings(); else drawings.clear(); return; }
       restoring = true;
       try { drawings.importJSON(localStorage.getItem(drawingKey()) || "[]"); } catch (error) { drawings.clear(); }
       drawings.drawings().forEach((item) => {
@@ -1729,6 +1843,12 @@
       document.getElementById("draw-style").value = style.lineStyle || "solid";
       document.getElementById("draw-alpha").value = style.transparency ?? 80;
       document.getElementById("draw-fill").checked = style.fillBackground !== false;
+      const one = !VIEWER && rows.length === 1 && rows[0].kind === "parallel-channel";
+      const shared = one ? published.find((item) => item.id === rows[0].id) : null;
+      document.getElementById("draw-pub").hidden = !one;
+      document.getElementById("draw-unpublish").hidden = !shared;
+      document.getElementById("draw-publish").textContent = shared ? "обновить в «Просмотре»" : "опубликовать";
+      document.getElementById("draw-published").textContent = shared ? "в «Просмотре» с " + new Date(shared.published_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
     }
     function restyle(patch) {
       selectedDrawings().forEach((item) => {
@@ -1751,9 +1871,7 @@
     document.getElementById("draw-style").addEventListener("change", (event) => restyle({ lineStyle: event.target.value }));
     document.getElementById("draw-alpha").addEventListener("input", (event) => restyle({ transparency: Number(event.target.value) }));
     document.getElementById("draw-fill").addEventListener("change", (event) => restyle({ fillBackground: event.target.checked }));
-    document.getElementById("draw-delete").addEventListener("click", () => {
-      drawings.selection().forEach((id) => drawings.remove(id));
-    });
+    document.getElementById("draw-delete").addEventListener("click", () => removeDrawings(drawings.selection()));
     if (drawings) drawings.on("selection", showEditor);
     if (drawings) drawings.on("tool", () => markTool(drawings.tool() || ""));
     if (drawings) drawings.on("add", (item) => {
@@ -1804,7 +1922,7 @@
       drawTimer = setTimeout(() => { if (pointerDown) scheduleCommit(); else commitDrawings(); }, DRAW_SETTLE);
     }
     function rememberDrawings() {
-      if (!drawings || restoring) return;
+      if (!drawings || restoring || VIEWER) return;
       saveDrawingsNow(drawings.exportJSON());
       scheduleCommit();
       if (strategyKind() === "channel") scheduleChannel();
@@ -1845,12 +1963,12 @@
     document.addEventListener("keydown", (event) => {
       if (event.target.closest("input, select, textarea")) return;
       if (event.altKey && event.key.toLowerCase() === "r") { event.preventDefault(); fitAll(); return; }
-      if (!drawings) return;
+      if (!drawings || VIEWER) return;
       // По коду клавиши, а не по букве: в русской раскладке Ctrl+Z приходит как «я».
       if ((event.ctrlKey || event.metaKey) && (event.code === "KeyY" || (event.code === "KeyZ" && event.shiftKey))) { event.preventDefault(); redoDrawing(); return; }
       if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ") { event.preventDefault(); undoDrawing(); return; }
       if (event.key === "Escape") { drawings.setTool(null); drawings.select([]); markTool(""); showEditor(); return; }
-      if (event.key === "Delete" || event.key === "Backspace") { drawings.selection().forEach((id) => drawings.remove(id)); return; }
+      if (event.key === "Delete" || event.key === "Backspace") { removeDrawings(drawings.selection()); return; }
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const index = "123456789".indexOf(event.key);
       if (index >= 0) { drawings.setTool(hotTools[index] || null); markTool(hotTools[index]); }
@@ -1860,7 +1978,10 @@
       if (!button || !drawings) return;
       if (button.id === "draw-undo") { undoDrawing(); return; }
       if (button.id === "draw-redo") { redoDrawing(); return; }
-      if (button.dataset.clear) { if (confirm("Удалить все рисунки этой пары? Вернуть — Ctrl+Z.")) drawings.clear(); return; }
+      if (button.dataset.clear) {
+        if (confirm("Удалить все рисунки этой пары? Вернуть — Ctrl+Z.")) { askUnpublish(drawings.drawings().map((item) => item.id)); drawings.clear(); }
+        return;
+      }
       if (!("tool" in button.dataset)) return;
       drawings.setTool(button.dataset.tool || null);
       markTool(button.dataset.tool || "");
@@ -1878,7 +1999,8 @@
     if (savedStyle) styleSelect.value = savedStyle;
     const savedIndicator = readStore("spread-indicator", null);
     if (savedIndicator) indicatorSelect.value = savedIndicator;
-    setView(readStore("spread-side-view", "strategy"));
+    if (VIEWER) indicatorSelect.value = "off";
+    setView(VIEWER ? "watchlist" : readStore("spread-side-view", "strategy"));
     markRail();
     showUnit();
     renderLevels(readStore(levelKey(), null) || levels);

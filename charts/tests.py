@@ -115,6 +115,24 @@ class SpreadEtagTests(TestCase):
         self.assertIn("fund", row)
         self.assertIn("fee", row)
 
+    def test_default_window_is_current_contract(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from market.models import Instrument, Pair
+        pair = Pair.objects.get(code="CNY")
+        now = timezone.now()
+        Instrument.objects.create(pair=pair, code="CRPAST", kind="future", roll_at=now - timedelta(days=90))
+        Instrument.objects.create(pair=pair, code="CRNEXT", kind="future", roll_at=now + timedelta(days=5))
+        Instrument.objects.create(pair=pair, code="CRFAR", kind="future", roll_at=now + timedelta(days=95))
+        body = self.client.get("/api/spread/?pair=CNY").json()
+        self.assertEqual((body["from"], body["to"]), ("CRNEXT", "CRNEXT"))
+        # Свой выбор из адреса — как раньше.
+        body = self.client.get("/api/spread/?pair=CNY&from=CRPAST&to=CRFAR").json()
+        self.assertEqual((body["from"], body["to"]), ("CRPAST", "CRFAR"))
+        # Задан только начальный — до текущего.
+        body = self.client.get("/api/spread/?pair=CNY&from=CRPAST").json()
+        self.assertEqual((body["from"], body["to"]), ("CRPAST", "CRNEXT"))
+
     def test_last_pair_from_cookie(self):
         from charts.views import last_pair_code
         from django.test import RequestFactory

@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "charts",
     "radar",
     "analytics",
+    "access",
 ]
 
 MIDDLEWARE = [
@@ -58,6 +59,8 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Группа «Аналитики» или «Зрители» на каждый запрос, см. access/middleware.py.
+    "access.middleware.GroupMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -113,6 +116,17 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Секрет Finam Trade API. В коде и в git его нет.
 FINAM_API_SECRET = os.environ.get("FINAM_API_SECRET", "")
+
+# Вход по группам (access/): пароль группы «Аналитики», у «Зрителей» пароля нет.
+# Сессия живёт год: при повторном входе сразу график. Сменили пароль — аналитики входят заново.
+ANALYST_PASSWORD = os.environ.get("ANALYST_PASSWORD", "")
+SESSION_COOKIE_AGE = 365 * 24 * 3600
+# Группа без входа: "" — показывать страницу входа. В тестах — analyst.
+ACCESS_DEFAULT_GROUP = os.environ.get("ACCESS_DEFAULT_GROUP", "")
+
+# Оповещения о каналах в Телеграм (charts/alerts.py). Пусто — не отправлять.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 FINAM_BASE_URL = os.environ.get("FINAM_BASE_URL", "https://api.finam.ru")
 # MOEX AlgoPack (data.moex.com). Пусто — радар работает без него и пишет, что AlgoPack не подключён.
 ALGOPACK_TOKEN = os.environ.get("ALGOPACK_TOKEN", "")

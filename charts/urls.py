@@ -7,4 +7,5 @@ urlpatterns = [
     path("", views.home, name="home"),
     path("api/spread/", views.spread_json, name="spread-json"),
     path("api/watchlist/", views.watchlist_json, name="watchlist-json"),
+    path("api/published/", views.published_json, name="published-json"),
 ]

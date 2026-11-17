@@ -32,6 +32,8 @@ class Pair(models.Model):
     long_tp = models.JSONField(default=list)
     short_tp = models.JSONField(default=list)
     active = models.BooleanField(default=True)
+    # Видна группе «Просмотр» (access/): её график и список пар только из таких.
+    viewer = models.BooleanField("для просмотра", default=False)
 
     class Meta:
         verbose_name = "пара"

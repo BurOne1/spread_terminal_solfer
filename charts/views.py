@@ -15,8 +15,13 @@ from django.db.models import Count, Max
 from django.conf import settings
 from django.core.serializers.json import DjangoJSONEncoder
 from django.http import HttpResponse, HttpResponseNotModified, JsonResponse
+from django.utils import timezone
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.http import require_http_methods
 from django.shortcuts import render
 
+from access.groups import ANALYST, TITLES, group_of, is_viewer
+from charts.models import PublishedChannel
 from market.models import Candle, Instrument, Pair
 from strategy.models import SpreadBar
 from strategy.runner import BASES, notional_of, priced, spread_rows
@@ -27,11 +32,17 @@ from strategy.runner import BASES, notional_of, priced, spread_rows
 ETAG_TTL = 600
 
 
-def _pair(code):
+def viewer_pairs(request):
+    """Активные пары группы: «Просмотру» — только отмеченные «для просмотра» в админке."""
     pairs = Pair.objects.filter(active=True)
+    return pairs.filter(viewer=True) if is_viewer(request) else pairs
+
+
+def _pair(code, request=None):
+    pairs = Pair.objects.filter(active=True) if request is None else viewer_pairs(request)
     if code:
-        return pairs.filter(code=code).first() or pairs.first()
-    return pairs.first()
+        return pairs.filter(code=code).first() or pairs.order_by("code").first()
+    return pairs.order_by("code").first()
 
 
 def _contracts(pair):
@@ -350,13 +361,40 @@ def _funding_scale(pair):
     return pair.lot or 1000
 
 
-def _range(request, contracts):
+def _current(pair, contracts):
+    """Текущий контракт: первый, чья склейка ещё впереди; все склеились — последний."""
+    if not contracts:
+        return ""
+    owner = pair
+    if pair.quarters_code != pair.code:
+        owner = Pair.objects.filter(code=pair.quarters_code).first() or pair
+    ahead = (
+        Instrument.objects.filter(pair=owner, kind=Instrument.Kind.FUTURE, code__in=contracts, roll_at__gt=timezone.now())
+        .order_by("roll_at").values_list("code", flat=True).first()
+    )
+    return ahead or contracts[-1]
+
+
+def _range(request, contracts, pair=None):
+    """Окно контрактов из адреса. Не задано — только текущий контракт, а не вся история.
+
+    Задан один край — второй тоже текущий, но окно не переворачивается.
+    """
+    if not contracts:
+        return "", ""
     start = request.GET.get("from", "")
     end = request.GET.get("to", "")
+    current = _current(pair, contracts) if pair is not None else contracts[-1]
     if start not in contracts:
-        start = contracts[0] if contracts else ""
+        start = current if end not in contracts else min(current, end, key=contracts.index)
     if end not in contracts:
-        end = contracts[-1] if contracts else ""
+        end = max(current, start, key=contracts.index)
+    return start, end
+    current = _current(pair, contracts) if pair is not None else (contracts[-1] if contracts else "")
+    if start not in contracts:
+        start = current if end not in contracts or contracts.index(end) >= contracts.index(current) else end
+    if end not in contracts:
+        end = current if contracts.index(start) <= contracts.index(current) else start
     return start, end
 
 
@@ -366,15 +404,19 @@ LAST_PAIR_COOKIE = "spread_pair"
 def last_pair_code(request):
     """Пара из адреса, иначе последняя выбранная (cookie ставят страницы спредов и аналитики)."""
     code = request.GET.get("pair", "") or request.COOKIES.get(LAST_PAIR_COOKIE, "")
-    return code if Pair.objects.filter(active=True, code=code).exists() else ""
+    return code if viewer_pairs(request).filter(code=code).exists() else ""
 
 
+@ensure_csrf_cookie
 def home(request):
-    """Каркас страницы. Данные с настройками браузера приходят первым же /api/spread/."""
-    pairs = list(Pair.objects.filter(active=True).order_by("code"))
-    pair = _pair(last_pair_code(request))
+    """Каркас страницы. Данные с настройками браузера приходят первым же /api/spread/.
+
+    Зрителю — только его пары, без рисования, стратегий и индикаторов (viewer в шаблоне).
+    """
+    pairs = list(viewer_pairs(request).order_by("code"))
+    pair = _pair(last_pair_code(request), request)
     contracts = _contracts(pair)
-    start, end = _range(request, contracts)
+    start, end = _range(request, contracts, pair)
     return render(request, "charts/home.html", {
         "pairs": pairs,
         "pair": pair,
@@ -390,6 +432,8 @@ def home(request):
         "count": 0,
         "title": _title(pair),
         "subtitle": _subtitle(pair),
+        "viewer": is_viewer(request),
+        "group_title": TITLES.get(group_of(request), ""),
     })
 
 
@@ -428,7 +472,7 @@ def watchlist_json(request):
     from datetime import timedelta
     basis = _settings(request)["basis"]
     rows = []
-    for pair in Pair.objects.filter(active=True).order_by("code"):
+    for pair in viewer_pairs(request).order_by("code"):
         bars = SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("-ts")
         last = bars.first()
         labels = _labels(pair, _contracts(pair)) if last is not None and (pair.base or pair.nymex) else {}
@@ -487,14 +531,14 @@ def _spread_etag(request):
     изменение ряда двигает число или последний id.
     """
     from rates.models import FundingDay
-    pair = _pair(request.GET.get("pair", ""))
+    pair = _pair(request.GET.get("pair", ""), request)
     if pair is None:
         return None
     bars = SpreadBar.objects.filter(pair=pair).aggregate(n=Count("id"), last=Max("id"))
     funding = FundingDay.objects.aggregate(n=Count("id"), last=Max("date"))
     key = "|".join(str(item) for item in (
         pair.code, request.GET.urlencode(), bars["n"], bars["last"], funding["n"], funding["last"],
-        int(time.time() // ETAG_TTL),
+        int(time.time() // ETAG_TTL), is_viewer(request), published_version(pair),
     ))
     request.spread_version = hashlib.md5(key.encode()).hexdigest()
     return request.spread_version
@@ -512,12 +556,12 @@ _spread_lock = threading.Lock()
 
 def spread_json(request):
     code = request.GET.get("pair", "")
-    pair = _pair(code)
+    pair = _pair(code, request)
     if code and (pair is None or pair.code != code):
         # Не подменять молча первой парой: пользователь увидел бы чужой спред.
-        return JsonResponse({"error": f"пары {code} нет среди активных"}, status=404)
+        return JsonResponse({"error": f"пары {code} нет среди доступных"}, status=404)
     version = _spread_etag(request) or ""
-    key = ("" if pair is None else pair.code, request.GET.urlencode())
+    key = ("" if pair is None else pair.code, request.GET.urlencode(), is_viewer(request))
     now = time.monotonic()
     with _spread_lock:
         entry = _spread_cache.get(key)
@@ -545,13 +589,13 @@ def spread_json(request):
 
 def _spread_body(request, pair, version):
     contracts = _contracts(pair)
-    start, end = _range(request, contracts)
+    start, end = _range(request, contracts, pair)
     options = _settings(request)
     rows = None if pair is None else spread_rows(pair)
     points = _points(pair, start, end, options["basis"], rows)
     pnl, trades, opened = [], 0, None
-    # strategy=off — стратегию считает браузер (канал): серверу не гонять движок.
-    if pair is not None and request.GET.get("strategy") != "off":
+    # strategy=off — стратегию считает браузер (канал) или она выключена. У зрителя её нет вовсе.
+    if pair is not None and request.GET.get("strategy") != "off" and not is_viewer(request):
         pnl, trades, opened = _strategy(pair, request, _window(contracts, start, end), rows)
     return {
         "version": version,
@@ -579,6 +623,7 @@ def _spread_body(request, pair, version):
         "levels": _levels(pair, None if pair is None else _user_levels(request, pair)),
         "pair_levels": _levels(pair),
         "notional": None if pair is None else notional_of(pair),
+        "published": None if pair is None else published_version(pair),
         "strategy_funding": _strategy_funding(pair),
     }
 
@@ -593,3 +638,57 @@ def _strategy_funding(pair):
     from strategy.runner import funding_of
     rows, mode = funding_of(pair)
     return {"mode": mode, "rows": [[stamp.isoformat(), value] for stamp, value in rows]}
+
+
+def published_version(pair):
+    """Версия опубликованных каналов пары: меняется при публикации и снятии."""
+    rows = PublishedChannel.objects.filter(pair=pair).aggregate(n=Count("id"), last=Max("published_at"))
+    return f"{rows['n']}-{rows['last'].timestamp() if rows['last'] else 0}"
+
+
+def _channel_json(item):
+    return {
+        "id": item.drawing_id, "data": item.data, "lines": item.lines,
+        "published_at": item.published_at.isoformat(),
+    }
+
+
+@require_http_methods(["GET", "POST", "DELETE"])
+def published_json(request):
+    """Каналы для зрителей.
+
+    GET ?pair= — опубликованные каналы пары (обеим группам).
+    POST {pair, drawing, lines} — опубликовать или обновить рисунок (аналитики).
+    DELETE {pair, id} — снять с публикации (аналитики).
+    """
+    if request.method == "GET":
+        pair = _pair(request.GET.get("pair", ""), request)
+        if pair is None or pair.code != request.GET.get("pair", ""):
+            return JsonResponse({"error": "нет такой пары"}, status=404)
+        items = PublishedChannel.objects.filter(pair=pair).order_by("published_at")
+        return JsonResponse({"pair": pair.code, "version": published_version(pair), "channels": [_channel_json(item) for item in items]})
+    if group_of(request) != ANALYST:
+        return JsonResponse({"error": "публикует только отдел трейдинга"}, status=403)
+    try:
+        body = json.loads(request.body or b"{}")
+    except ValueError:
+        return JsonResponse({"error": "нужен JSON"}, status=400)
+    pair = Pair.objects.filter(active=True, code=body.get("pair", "")).first()
+    if pair is None:
+        return JsonResponse({"error": "нет такой пары"}, status=404)
+    if request.method == "DELETE":
+        removed, _ = PublishedChannel.objects.filter(pair=pair, drawing_id=str(body.get("id", ""))).delete()
+        return JsonResponse({"removed": removed, "version": published_version(pair)})
+    drawing = body.get("drawing") or {}
+    points = drawing.get("points") or []
+    if drawing.get("kind") != "parallel-channel" or len(points) < 3 or not drawing.get("id"):
+        return JsonResponse({"error": "публикуются только параллельные каналы"}, status=400)
+    if not all(isinstance(point, dict) and isinstance(point.get("time"), (int, float)) and isinstance(point.get("price"), (int, float)) for point in points[:3]):
+        return JsonResponse({"error": "у канала нет точек время/цена"}, status=400)
+    lines = "raw" if body.get("lines") == "raw" else "rate"
+    item, _created = PublishedChannel.objects.update_or_create(
+        pair=pair, drawing_id=str(drawing["id"])[:64],
+        # Переопубликовали — оповещения начинают с чистого листа.
+        defaults={"data": drawing, "lines": lines, "zone": "", "event": "", "event_at": None},
+    )
+    return JsonResponse({"channel": _channel_json(item), "version": published_version(pair)})

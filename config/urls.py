@@ -5,5 +5,6 @@ urlpatterns = [
     path("", include("charts.urls")),
     path("", include("radar.urls")),
     path("", include("analytics.urls")),
+    path("", include("access.urls")),
     path("admin/", admin.site.urls),
 ]
