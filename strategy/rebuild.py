@@ -99,7 +99,7 @@ TRI_DEPS = {
     "TRIGL": ("TRIGD", "GOLD", "USD"),
 }
 # Треугольник на споте золота — только если такая пара заведена (add_extra_spreads).
-TRI_SPOT_DEPS = {"TRIGDS": ("TRIGD", "GOLD", "USD")}
+TRI_SPOT_DEPS = {"TRIGDS": ("TRIGD", "GOLD", "USD"), "TRISVS": ("TRISV", "SILVER", "USD")}
 
 
 def mark_dirty(pair_code, since):
@@ -610,11 +610,11 @@ def _rebuild_listed(pair, since=None):
 
 OZ_GRAMS = 31.1034768
 # Чей вечный в треугольнике. Ключ — pair.tri_code: у секондов это база.
-TRI_PERP = {"TRIGD": "GOLD", "TRISV": "SILVER", "TRIGL": "GOLD", "TRIGDS": "GOLD"}
-# Треугольники со спотом металла вместо вечного: фандинга нет.
-TRI_SPOT = {"TRIGDS"}
+TRI_PERP = {"TRIGD": "GOLD", "TRISV": "SILVER", "TRIGL": "GOLD", "TRIGDS": "GOLD", "TRISVS": "SILVER"}
+# Треугольники со спотом металла вместо вечного (GLDRUB_TOM, SLVRUB_TOM): фандинга нет.
+TRI_SPOT = {"TRIGDS", "TRISVS"}
 # Чьи кварталы металла берёт треугольник, если не свои.
-TRI_OWNER = {"TRIGDS": "TRIGD"}
+TRI_OWNER = {"TRIGDS": "TRIGD", "TRISVS": "TRISV"}
 
 
 def _common_hour(ts):

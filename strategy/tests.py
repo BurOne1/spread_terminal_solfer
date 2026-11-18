@@ -497,6 +497,43 @@ class TriangleSpotTests(TestCase):
         rebuild.mark_dirty("GOLD", BEFORE_ROLL)
         self.assertIn("TRIGDS", rebuild.flush_dirty())
 
+    def test_spot_silver_pair_from_command(self):
+        from io import StringIO
+        from django.core.management import call_command
+        make_usd()
+        # Серебро заведено со спотом = вечный: команда переводит его на SLVRUB_TOM@MISX.
+        silver = Pair.objects.create(
+            code="SILVER", title="серебро", future_root="S2", perp_code="SLVRUBF", perp_symbol="SLVRUBF@RTSX",
+            spot_code="SLVRUBF", spot_symbol="SLVRUBF@RTSX", foreign_source="NONE", lot=100,
+        )
+        perp = Instrument.objects.create(pair=silver, code="SLVRUBF", finam_symbol="SLVRUBF@RTSX", kind="perp")
+        trisv = Pair.objects.create(
+            code="TRISV", title="SV + SI − SLVRUBF", future_root="SV", perp_code="SLVRUBF", perp_symbol="",
+            spot_code="SI", spot_symbol="", foreign_source="TRI", lot=10,
+            long_levels={"signed": True, "values": [-0.004]},
+        )
+        make_quarters(trisv, "SV", {"Z2026": [(BEFORE_ROLL, "38", "38.5")]})
+        call_command("add_trisvs", stdout=StringIO())
+        silver.refresh_from_db()
+        self.assertEqual((silver.spot_code, silver.spot_symbol), ("SLVRUB_TOM", "SLVRUB_TOM@MISX"))
+        spot = Instrument.objects.get(code="SLVRUB_TOM")
+        self.assertEqual((spot.kind, spot.pair.code), ("spot", "SILVER"))
+        pair = Pair.objects.get(code="TRISVS")
+        self.assertEqual((pair.perp_code, pair.lot, pair.quarters_code, pair.long_levels["values"], pair.viewer),
+                         ("SLVRUB_TOM", 10, "TRISV", [-0.004], True))
+        candle(perp, BEFORE_ROLL, Decimal("118"), Decimal("119"))
+        candle(spot, BEFORE_ROLL, Decimal("118.5"), Decimal("118.8"))
+        self.assertEqual(rebuild.rebuild_spread("TRISVS"), 1)
+        bar = SpreadBar.objects.get(pair=pair)
+        # Третья нога — спот 118.8, а не вечный 119.
+        self.assertAlmostEqual(float(bar.raw_spread), rebuild._tri_values(38.5, 95.5, 118.8, 16.0, 4.0, 1)[0], places=5)
+        self.assertEqual(bar.contract.code, "SVZ2026")
+        from strategy.runner import funding_of
+        self.assertEqual(funding_of(pair), ([], "daily"))
+        rebuild._dirty.clear()
+        rebuild.mark_dirty("SILVER", BEFORE_ROLL)
+        self.assertIn("TRISVS", rebuild.flush_dirty())
+
 
 class GasNymexTests(TestCase):
     def test_moex_minus_nymex_next_month_with_own_moex_leg(self):

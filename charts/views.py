@@ -504,8 +504,9 @@ def _rate_label(pair):
         seconds = " на секондах" if pair.base else ""
         if pair.tri_code == "TRIGL":
             return f"треугольник{seconds}, ноги чистятся отдельно"
-        if pair.code == "TRIGDS":
-            return "треугольник на споте GLDRUB_TOM, RUONIA + ставка ФРС, без фандинга"
+        if pair.code in ("TRIGDS", "TRISVS"):
+            spot = "GLDRUB_TOM" if pair.code == "TRIGDS" else "SLVRUB_TOM"
+            return f"треугольник на споте {spot}, RUONIA + ставка ФРС, без фандинга"
         return f"треугольник{seconds}, RUONIA и фандинг вечного"
     if pair.calendar:
         base = Pair.objects.filter(code=pair.base).first()

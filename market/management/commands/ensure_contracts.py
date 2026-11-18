@@ -68,8 +68,9 @@ class Command(BaseCommand):
                     self.stdout.write(f"  {row['code']} {row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}")
                 continue
             if pair.foreign_source == "TRI":
-                if pair.code == "TRIGDS":
-                    self.stdout.write("TRIGDS: контракты чужие, GD из TRIGD, SI из USD, спот из GOLD")
+                if pair.code in ("TRIGDS", "TRISVS"):
+                    metal = "GD из TRIGD, спот из GOLD" if pair.code == "TRIGDS" else "SV из TRISV, спот из SILVER"
+                    self.stdout.write(f"{pair.code}: контракты чужие, {metal}, SI из USD")
                     continue
                 if pair.base:
                     self.stdout.write(f"{pair.code}: вторые кварталы ног {pair.base}")

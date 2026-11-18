@@ -100,7 +100,7 @@ class Pair(models.Model):
         """Пара, чьи кварталы задают окна. У TRIGL свои ноги чужие, окна — GL из GOLD.
         У TRIGDS — GD из TRIGD: тот же треугольник, только третья нога спот."""
         code = self.base or self.code
-        return {"TRIGL": "GOLD", "TRIGDS": "TRIGD"}.get(code, code)
+        return {"TRIGL": "GOLD", "TRIGDS": "TRIGD", "TRISVS": "TRISV"}.get(code, code)
 
 
 class Instrument(models.Model):

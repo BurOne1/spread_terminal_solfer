@@ -176,9 +176,10 @@ def _targets(pair, start, end):
     if pair.ngnymex:
         return _ngnymex(pair, start, end)
     if pair.foreign_source == "TRI":
-        if pair.code == "TRIGDS":
-            # Кварталы GD — у TRIGD, SI — у USD, спот золота — у GOLD.
-            return [target for code in ("TRIGD", "USD") for target in _quarters(_owner(code), start, end)]
+        if pair.code in ("TRIGDS", "TRISVS"):
+            # Кварталы GD/SV — у TRIGD/TRISV, SI — у USD, спот металла — у GOLD/SILVER.
+            metal = "TRIGD" if pair.code == "TRIGDS" else "TRISV"
+            return [target for code in (metal, "USD") for target in _quarters(_owner(code), start, end)]
         if pair.base:
             legs = ["TRIGD", "USD", "GOLD"] if pair.tri_code == "TRIGL" else [pair.tri_code, "USD"]
             return [target for code in legs for target in _quarters(_owner(code), start, end, early=True)]

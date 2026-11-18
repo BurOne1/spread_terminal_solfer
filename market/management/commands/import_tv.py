@@ -107,7 +107,7 @@ def quarter_owner(root):
     # GD и SV — свои кварталы только у треугольников TRIGD и TRISV.
     # TRIGL и TRIGDS кварталы берут чужие, вторые кварталы (base) — тоже.
     return Pair.objects.filter(future_root__iexact=root, base="", foreign_source="TRI").exclude(
-        code__in=("TRIGL", "TRIGDS")).order_by("id").first()
+        code__in=("TRIGL", "TRIGDS", "TRISVS")).order_by("id").first()
 
 
 def _quarter_maker(root, letter, year):

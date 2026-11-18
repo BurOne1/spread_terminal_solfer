@@ -699,6 +699,12 @@
       const hideRaw = !sameRate && shown === "rate";
       painting = true;
       try {
+        // Сначала линия очищенного: к ней привязаны рисунки, уровни и сделки. Иначе сырой спред
+        // с новой, более длинной историей сдвигает шкалу, пока у этой линии ещё старые бары,
+        // и библиотека рисования падает с «Value is null» (спред пропадал до перерисовки).
+        const slots = emptySlots(times);
+        rateSeries.setData([...slots.before, ...rate, ...slots.after]);
+        pastCount = slots.before.length;
         if (style === "candle") {
           rawSeries.setData([]);
           if (!candleSeries && !hideRaw) {
@@ -710,9 +716,6 @@
           if (candleSeries) candleSeries.setData([]);
           rawSeries.setData(sameRate || hideRaw ? [] : raw);
         }
-        const slots = emptySlots(times);
-        rateSeries.setData([...slots.before, ...rate, ...slots.after]);
-        pastCount = slots.before.length;
         const mode = indicatorSelect.value;
         ensureLowerPanes(mode !== "off");
         clearZ();
@@ -1037,10 +1040,19 @@
     }
     function fitAll() { showReal(lastCount); fitPrices(); }
     let lastVersion = "";
+    // Опрос раз в 5 с и смена пары/окна идут параллельно: ответ на старый запрос может прийти
+    // позже нового. Его отбрасываем, иначе на графике старые бары при виде от новых — пусто.
+    // Обычный опрос не отменяет другой опрос: на долгом ответе график иначе не обновлялся бы.
+    let refreshTicket = 0, switchTicket = 0;
+    let shownWindow = "";
     async function refresh(fitPrice = false) {
+      const ticket = ++refreshTicket;
+      if (fitPrice) switchTicket = ticket;
+      const asked = query();
       try {
         // no-cache: браузер переспрашивает с ETag, без изменений сервер отвечает 304.
-        const response = await fetch("/api/spread/?" + query(), { cache: "no-cache" });
+        const response = await fetch("/api/spread/?" + asked, { cache: "no-cache" });
+        if (ticket < switchTicket || asked !== query()) return;
         if (response.status === 404) {
           status.textContent = (await response.json()).error || "пары нет";
           statusWrap.className = "tb lost";
@@ -1048,6 +1060,10 @@
         }
         if (!response.ok) throw new Error(response.status);
         const body = await response.json();
+        if (ticket < switchTicket || asked !== query()) return;
+        // Другая пара или другое окно контрактов — вписать заново, а не держать прежний вид.
+        const window_ = `${body.pair}|${body.from}|${body.to}`;
+        if (window_ !== shownWindow) fitPrice = true;
         const stamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
         if (!fitPrice && body.version && body.version === lastVersion) {
           status.textContent = body.count + " баров · " + stamp;
@@ -1055,7 +1071,10 @@
           if (sideOpen() && sideView === "watchlist") refreshWatchlist();
           return;
         }
-        lastVersion = body.version || "";
+        // Версию и окно запоминаем только после отрисовки: если она упадёт, следующий
+        // опрос нарисует заново, а не решит «без изменений» (график оставался пустым).
+        lastVersion = "";
+        shownWindow = "";
         points = body.points; pnl = body.pnl || []; funding = body.funding || [];
         serverPnl = pnl;
         window.strategyNotional = body.notional || 1;
@@ -1080,13 +1099,24 @@
         status.textContent = body.count + " баров · " + stamp;
         statusWrap.className = "tb live";
         statusWrap.title = "данные обновляются раз в 15 с";
-        paint(fitPrice);
+        try {
+          paint(fitPrice);
+        } catch (error) {
+          // Повтор на уже согласованных линиях проходит, как и перерисовка по клику.
+          console.warn("отрисовка спреда, повтор:", error);
+          paint(true);
+        }
+        lastVersion = body.version || "";
+        shownWindow = window_;
         if (body.published !== undefined && (body.published !== publishedVersion || body.pair !== publishedPair)) refreshPublished(body.pair);
         // Канал — по номерам баров шкалы: считается после отрисовки новых данных.
         if (strategyKind() === "channel" && pnlOn) { fillChannelPick(); runChannel(true); }
         if (sideOpen() && sideView === "watchlist") refreshWatchlist();
       } catch (error) {
-        status.textContent = "нет связи с сервером";
+        // Сеть — «нет связи»; ошибка на странице — её текст, чтобы было что прислать.
+        const network = error instanceof TypeError && /fetch|network/i.test(error.message);
+        if (!network) console.error("отрисовка спреда:", error);
+        status.textContent = network ? "нет связи с сервером" : "ошибка отрисовки: " + (error && error.message || error);
         statusWrap.className = "tb lost";
       }
     }

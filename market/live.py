@@ -127,8 +127,8 @@ def live_symbols():
                 legs = ["TRIGD", "USD", "GOLD"] if pair.tri_code == "TRIGL" else [pair.tri_code, "USD"]
                 for code in legs:
                     symbols.extend(quarter_symbols(owner(code), now, 2)[1:])
-            elif pair.code not in ("TRIGL", "TRIGDS"):
-                # TRIGL и TRIGDS берут кварталы у TRIGD, GOLD и USD: те подписаны своими парами.
+            elif pair.code not in ("TRIGL", "TRIGDS", "TRISVS"):
+                # TRIGL, TRIGDS и TRISVS берут кварталы у TRIGD/TRISV, GOLD/SILVER и USD: те подписаны своими парами.
                 symbols.extend(quarter_symbols(pair, now, 1))
             continue
         symbols.extend([pair.perp_symbol, pair.spot_symbol])
