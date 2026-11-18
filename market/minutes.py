@@ -101,7 +101,7 @@ def load_history(client, instrument, start, end, log=None, sleep=time.sleep):
     return total
 
 
-def hours_from_minutes(instrument, start, keep=None, fetched_from=None):
+def hours_from_minutes(instrument, start, keep=None, fetched_from=None, only_missing=False):
     """Часовые свечи из 5-минуток с часа start: open первой, крайние high/low, close последней, объём суммой.
 
     keep(час) — какие часы писать (онлайн — только сессия ФОРТС, как часовой поток).
@@ -125,6 +125,10 @@ def hours_from_minutes(instrument, start, keep=None, fetched_from=None):
         if bar is not None:
             bar[1], bar[2], bar[3], bar[4] = max(bar[1], high), min(bar[2], low), close, bar[4] + (volume or 0)
     hours = {hour: bar for hour, bar in hours.items() if bar is not None and (keep is None or keep(hour))}
+    if only_missing and hours:
+        # Дозаполнить пропуски, уже лежащие часы (Finam, TradingView) не трогать.
+        have = set(Candle.objects.filter(instrument=instrument, ts__in=list(hours)).values_list("ts", flat=True))
+        hours = {hour: bar for hour, bar in hours.items() if hour not in have}
     if not hours:
         return None
     Candle.objects.bulk_create(

@@ -194,3 +194,24 @@ class HoursFromMinutesTests(TestCase):
         written = hours_from_minutes(self.perp, self.hour + timedelta(minutes=30), fetched_from=self.hour + timedelta(minutes=30))
         self.assertEqual(Candle.objects.get(ts=self.hour).open, Decimal("1"))
         self.assertEqual(written, self.hour + timedelta(hours=1))
+
+
+class HoursFromM5CommandTests(TestCase):
+    def test_fills_only_missing_hours(self):
+        perp = Instrument.objects.create(pair=Pair.objects.get(code="CNY"), code="CNYRUBF", finam_symbol="CNYRUBF@RTSX", kind="perp")
+        now = datetime.now(UTC)
+        # Будний день недельной давности, 10:00–11:55: две полные часовые свечи в 5-минутках.
+        day = (now - timedelta(days=7)).replace(hour=10, minute=0, second=0, microsecond=0)
+        while day.weekday() >= 5:
+            day -= timedelta(days=1)
+        MinuteCandle.objects.bulk_create([
+            MinuteCandle(instrument=perp, ts=day + timedelta(minutes=5 * k), open=12, high=13, low=11, close=12)
+            for k in range(24)
+        ])
+        Candle.objects.create(instrument=perp, ts=day, open=1, high=1, low=1, close=1)  # час 10:00 уже есть
+        out = StringIO()
+        call_command("hours_from_m5", "--days", "30", stdout=out)
+        self.assertEqual(Candle.objects.get(ts=day).open, Decimal("1"))  # не тронут
+        added = Candle.objects.get(ts=day + timedelta(hours=1))
+        self.assertEqual((added.open, added.high, added.low, added.close), (Decimal("12"), Decimal("13"), Decimal("11"), Decimal("12")))
+        self.assertIn("итого дописано 1 часов", out.getvalue())

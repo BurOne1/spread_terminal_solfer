@@ -171,3 +171,30 @@ class AlertTests(TestCase):
         monday = int(datetime(2026, 11, 23, 4, 0, tzinfo=UTC).timestamp())
         self.assertEqual(alerts.index_of([friday], monday, "finam"), 19)
         self.assertEqual(alerts.index_of([friday], monday, "bybit"), 56)
+
+
+class ChannelSlotsTests(TestCase):
+    def test_gaps_inside_session_take_their_slots(self):
+        monday = datetime(2026, 11, 16, 10, 0, tzinfo=UTC)
+        stamps = [int((monday + timedelta(minutes=m)).timestamp()) for m in (0, 5, 30)]
+        # 10:10 … 10:25 без сделок — свои места; ночь (20:45 → 04:00) — нет.
+        filled = alerts.fill_times(stamps, "finam", 5)
+        self.assertEqual(len(filled), 7)
+        evening, morning = datetime(2026, 11, 16, 20, 45, tzinfo=UTC), datetime(2026, 11, 17, 4, 0, tzinfo=UTC)
+        self.assertEqual(len(alerts.fill_times([int(evening.timestamp()), int(morning.timestamp())], "finam", 5)), 2)
+
+    def test_same_channel_on_five_minutes_and_hours(self):
+        # Канал от 10:00 до 14:00 понедельника: в его середине (12:00) граница одна и та же
+        # и на часах, и на 5 минутах с пропусками сделок.
+        monday = datetime(2026, 11, 16, 10, 0, tzinfo=UTC)
+        t0, t1 = int(monday.timestamp()), int((monday + timedelta(hours=4)).timestamp())
+        points = [{"time": t0, "price": 0.0}, {"time": t1, "price": 4.0}, {"time": t0, "price": -1.0}]
+        hours = [t0 + 3600 * k for k in range(5)]
+        sparse = [t0 + 300 * k for k in range(0, 49, 7)] + [t1]  # 5-минутки через раз и реже
+        noon = int((monday + timedelta(hours=2)).timestamp())
+        h_times = alerts.fill_times(hours, "finam", 60)
+        m_times = alerts.fill_times(sorted(set(sparse)), "finam", 5)
+        on_hours = alerts.bounds(points, h_times, "finam", h_times.index(noon), 60)
+        on_minutes = alerts.bounds(points, m_times, "finam", m_times.index(noon), 5)
+        self.assertAlmostEqual(on_hours[2], 2.0, places=6)
+        self.assertAlmostEqual(on_minutes[2], on_hours[2], places=6)

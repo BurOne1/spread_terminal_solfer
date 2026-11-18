@@ -717,7 +717,8 @@ def published_json(request):
         pair = _pair(request.GET.get("pair", ""), request)
         if pair is None or pair.code != request.GET.get("pair", ""):
             return JsonResponse({"error": "нет такой пары"}, status=404)
-        items = PublishedChannel.objects.filter(pair=pair, frame=frames.frame_of(request)).order_by("published_at")
+        # Каналы видны на всех таймфреймах; frame — где нарисован (по нему оповещения).
+        items = PublishedChannel.objects.filter(pair=pair).order_by("published_at")
         return JsonResponse({"pair": pair.code, "version": published_version(pair), "channels": [_channel_json(item) for item in items]})
     if group_of(request) != ANALYST:
         return JsonResponse({"error": "публикует только отдел трейдинга"}, status=403)

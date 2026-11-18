@@ -633,11 +633,26 @@
     let carryByTime = new Map();
     let carryParts = new Map();
     let pnlByTime = new Map();
+    // Пропуск внутри сессии не длиннее этого — пустые места на шкале; длиннее (ночь,
+    // праздник, выходные без торгов) — не занимает места, как раньше.
+    const GAP_FILL = 6 * 3600;
     function timesOf() {
-      const times = new Set();
-      points.forEach((point) => times.add(unix(point.t)));
-      pnl.forEach((point) => times.add(unix(point.t)));
-      return [...times].sort((a, b) => a - b);
+      const found = new Set();
+      points.forEach((point) => found.add(unix(point.t)));
+      pnl.forEach((point) => found.add(unix(point.t)));
+      const times = [...found].sort((a, b) => a - b);
+      // Каждый торговый слот внутри сессии — своё место на шкале, даже без сделок: номер бара
+      // пропорционален торговому времени на любом таймфрейме, и канал с 5 минут совпадает с часовым.
+      const step = (TF_MINUTES[currentTf()] || 60) * 60;
+      const out = [];
+      for (let index = 0; index < times.length; index += 1) {
+        const time = times[index];
+        const next = times[index + 1];
+        out.push(time);
+        if (next === undefined || next - time > GAP_FILL) continue;
+        for (let slot = time + step; slot < next; slot += step) if (tradingHour(slot)) out.push(slot);
+      }
+      return out;
     }
     // Пустые часы по расписанию впереди и позади данных. Без них за краем баров
     // библиотека рисования достраивает время шагом в час, не зная про ночи и
@@ -722,6 +737,7 @@
         // с новой, более длинной историей сдвигает шкалу, пока у этой линии ещё старые бары,
         // и библиотека рисования падает с «Value is null» (спред пропадал до перерисовки).
         const slots = emptySlots(times);
+        slotTimes = [...slots.before.map((slot) => slot.time), ...times, ...slots.after.map((slot) => slot.time)];
         rateSeries.setData([...slots.before, ...rate, ...slots.after]);
         pastCount = slots.before.length;
         if (style === "candle") {
@@ -1082,7 +1098,7 @@
         const body = await response.json();
         if (ticket < switchTicket || asked !== query()) return;
         // Другая пара или другое окно контрактов — вписать заново, а не держать прежний вид.
-        const window_ = `${body.pair}|${body.from}|${body.to}`;
+        const window_ = `${body.pair}|${body.from}|${body.to}|${body.tf}`;
         if (window_ !== shownWindow) fitPrice = true;
         const stamp = new Date().toLocaleTimeString("ru-RU", { hour12: false });
         if (!fitPrice && body.version && body.version === lastVersion) {
@@ -1094,6 +1110,7 @@
         // Версию и окно запоминаем только после отрисовки: если она упадёт, следующий
         // опрос нарисует заново, а не решит «без изменений» (график оставался пустым).
         lastVersion = "";
+        const windowChanged = shownWindow !== window_;
         shownWindow = "";
         points = body.points; pnl = body.pnl || []; funding = body.funding || [];
         serverPnl = pnl;
@@ -1127,8 +1144,10 @@
           paint(true);
         }
         lastVersion = body.version || "";
+        // Новая пара, окно или таймфрейм — заново поставить рисунки на бары (не на каждом опросе).
+        if (windowChanged) loadDrawings();
         shownWindow = window_;
-        if (body.published !== undefined && (body.published !== publishedVersion || body.pair !== publishedPair || body.tf !== publishedTf)) refreshPublished(body.pair);
+        if (body.published !== undefined && (body.published !== publishedVersion || body.pair !== publishedPair)) refreshPublished(body.pair);
         // Канал — по номерам баров шкалы: считается после отрисовки новых данных.
         if (strategyKind() === "channel" && pnlOn) { fillChannelPick(); runChannel(true); }
         if (sideOpen() && sideView === "watchlist") refreshWatchlist();
@@ -1169,7 +1188,6 @@
       // Окно 5м/15м хранится отдельно от 1ч/4ч: сервер возьмёт сохранённое или текущий контракт.
       if (fromSelect) fromSelect.value = "";
       if (toSelect) toSelect.value = "";
-      loadDrawings();
       refresh(true);
     });
     function applyLevels() {
@@ -1778,7 +1796,7 @@
         return item;
       });
       restoring = true;
-      try { drawings.importJSON(JSON.stringify(items)); } catch (error) { drawings.clear(); } finally { restoring = false; }
+      try { drawings.importJSON(JSON.stringify(items.map(snapItem))); } catch (error) { drawings.clear(); } finally { restoring = false; }
     }
     async function sendPublished(method, payload) {
       const response = await fetch("/api/published/", {
@@ -1828,9 +1846,64 @@
       input.addEventListener("input", () => { writeStore(CHANNEL_COLOR_KEY, input.value); loadPublishedDrawings(); });
     }
     // Рисование.
-    function drawingKey() {
-      const tf = currentTf();
-      return "drawings:" + (pairSelect ? pairSelect.value : "") + (tf === "H1" ? "" : ":" + tf);
+    // Рисунки — одни на все таймфреймы: точки хранятся во времени и цене, на любом
+    // таймфрейме библиотека ставит их на свои бары.
+    function drawingKey() { return "drawings:" + (pairSelect ? pairSelect.value : ""); }
+    // Точки рисунка — во времени. На таймфрейме, где такого бара нет (12:35 на часе), библиотека
+    // ставила точку мимо, и канал с 5 минут на часе уезжал. Поэтому при показе точка встаёт на
+    // бар этого таймфрейма (12:35 → 12:00 на часе), а в хранилище остаётся исходная.
+    let slotTimes = [];
+    const drawingOriginals = new Map();
+    function snapTime(time) {
+      if (!slotTimes.length) return time;
+      const step = (TF_MINUTES[currentTf()] || 60) * 60;
+      const floored = time - (time % step);
+      if (floored <= slotTimes[0]) return slotTimes[0];
+      let lo = 0, hi = slotTimes.length - 1, found = 0;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (slotTimes[mid] <= floored) { found = mid; lo = mid + 1; } else hi = mid - 1;
+      }
+      return slotTimes[found];
+    }
+    function snapItem(item) { return { ...item, points: (item.points || []).map((point) => ({ ...point, time: snapTime(point.time) })) }; }
+    function pointsKey(item) { return JSON.stringify((item.points || []).map((point) => [point.time, point.price])); }
+    // Из хранилища на график: запомнить исходные точки и поставить их на бары таймфрейма.
+    function snapJSON(json) {
+      let items;
+      try { items = JSON.parse(json || "[]"); } catch (error) { items = []; }
+      items.forEach((item) => drawingOriginals.set(item.id, item));
+      return JSON.stringify(items.map(snapItem));
+    }
+    // С графика в хранилище: рисунок, который не двигали, сохраняется с исходными точками.
+    function keepOriginals(json) {
+      let items;
+      try { items = JSON.parse(json || "[]"); } catch (error) { return json; }
+      const out = items.map((item) => {
+        const original = drawingOriginals.get(item.id);
+        if (original && pointsKey(snapItem(original)) === pointsKey(item)) return { ...item, points: original.points };
+        drawingOriginals.set(item.id, item);
+        return item;
+      });
+      return JSON.stringify(out);
+    }
+    // Раньше у 5м, 15м и 4ч были свои наборы: один раз сливаем их в общий и удаляем.
+    function mergeFrameDrawings() {
+      const main = drawingKey();
+      let merged;
+      try { merged = JSON.parse(localStorage.getItem(main) || "[]"); } catch (error) { merged = []; }
+      const ids = new Set(merged.map((item) => item.id));
+      let changed = false;
+      for (const tf of ["M5", "M15", "H4"]) {
+        const key = main + ":" + tf;
+        let items;
+        try { items = JSON.parse(localStorage.getItem(key) || "null"); } catch (error) { items = null; }
+        if (!items) continue;
+        items.forEach((item) => { if (!ids.has(item.id)) { merged.push(item); ids.add(item.id); } });
+        try { localStorage.removeItem(key); } catch (error) { /* хранилище недоступно */ }
+        changed = true;
+      }
+      if (changed) writeStore(main, merged);
     }
     function markTool(kind) {
       document.querySelectorAll("#drawbar [data-tool]").forEach((button) => button.classList.toggle("on", button.dataset.tool === (kind || "")));
@@ -1838,9 +1911,11 @@
     function loadDrawings() {
       if (!drawings) return;
       // Зритель: каналы этой пары придут с сервера; чужие от прошлой пары — сразу убрать.
-      if (VIEWER) { if (publishedPair === currentPair() && publishedTf === currentTf()) loadPublishedDrawings(); else drawings.clear(); return; }
+      if (VIEWER) { if (publishedPair === currentPair()) loadPublishedDrawings(); else drawings.clear(); return; }
+      mergeFrameDrawings();
       restoring = true;
-      try { drawings.importJSON(localStorage.getItem(drawingKey()) || "[]"); } catch (error) { drawings.clear(); }
+      drawingOriginals.clear();
+      try { drawings.importJSON(snapJSON(localStorage.getItem(drawingKey()))); } catch (error) { drawings.clear(); }
       drawings.drawings().forEach((item) => {
         if (item.kind === "parallel-channel" && item.style && item.style.levels) drawings.update({ ...item, style: dashMiddle({ ...item.style }) });
       });
@@ -1985,7 +2060,7 @@
     }
     function rememberDrawings() {
       if (!drawings || restoring || VIEWER) return;
-      saveDrawingsNow(drawings.exportJSON());
+      saveDrawingsNow(keepOriginals(drawings.exportJSON()));
       scheduleCommit();
       if (strategyKind() === "channel") scheduleChannel();
     }
@@ -1999,7 +2074,7 @@
       restoring = true;
       try { drawings.importJSON(json); } finally { restoring = false; }
       drawings.select([]);
-      saveDrawingsNow(json);
+      saveDrawingsNow(keepOriginals(json));
       showEditor();
       markHistory();
     }

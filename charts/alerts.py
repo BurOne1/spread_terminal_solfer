@@ -63,6 +63,28 @@ def index_of(times, stamp, venue, minutes=60):
     return len(times) - 1 + slots
 
 
+# Как на странице (timesOf в home.html): пропуск внутри сессии не длиннее GAP_FILL
+# занимает свои слоты — номер бара пропорционален торговому времени на любом таймфрейме.
+GAP_FILL = 6 * HOUR
+
+
+def fill_times(times, venue, minutes=60):
+    """Время баров плюс пустые торговые слоты внутри сессий (пропуски короче GAP_FILL)."""
+    step = minutes * 60
+    out = []
+    for index, stamp in enumerate(times):
+        out.append(stamp)
+        following = times[index + 1] if index + 1 < len(times) else None
+        if following is None or following - stamp > GAP_FILL:
+            continue
+        slot = stamp + step
+        while slot < following:
+            if trading_hour(slot, venue, minutes):
+                out.append(slot)
+            slot += step
+    return out
+
+
 def bounds(points, times, venue, index, minutes=60):
     """(низ, середина, верх) канала в номере бара index (бары таймфрейма minutes)."""
     (p0, p1, p2) = points[:3]
@@ -174,7 +196,7 @@ def check_channels(codes=None, log=None, now=None, base="H1"):
         rows = tf.rows(channel.pair, frame, since=since)
         if not rows:
             continue
-        times = [int(row.ts.timestamp()) for row in rows]
+        times = fill_times([int(row.ts.timestamp()) for row in rows], channel.pair.venue, tf.MINUTES[frame])
         found = bounds(points, times, channel.pair.venue, len(times) - 1, tf.MINUTES[frame])
         if found is None:
             continue
