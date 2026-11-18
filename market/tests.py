@@ -35,6 +35,8 @@ class SaveQuoteTests(TestCase):
         live._book.clear()
         live._book_dirty.clear()
         live._socket_bars.clear()
+        live._book5.clear()
+        live._book5_dirty.clear()
 
     def test_tick_from_previous_hour_opens_new_hour(self):
         now = datetime(2026, 10, 5, 11, 0, 5, tzinfo=UTC)
@@ -74,13 +76,20 @@ class SaveQuoteTests(TestCase):
         self.assertFalse(Candle.objects.exists())
         self.assertEqual(rebuild._dirty, {})
 
-    def test_weekend_is_skipped(self):
-        now = datetime(2026, 10, 10, 11, 0, 5, tzinfo=UTC)  # суббота
+    def test_weekend_outside_session_is_skipped(self):
+        now = datetime(2026, 10, 10, 18, 0, 5, tzinfo=UTC)  # суббота после сессии выходного дня
         with frozen(now):
             text = live.save_quote("CNYRUBF@RTSX", now, Decimal("12.10"))
             live.flush_book()
         self.assertIn("биржа закрыта", text)
         self.assertFalse(Candle.objects.exists())
+
+    def test_weekend_session_is_written(self):
+        now = datetime(2026, 10, 10, 11, 0, 5, tzinfo=UTC)  # суббота, сессия выходного дня 07–16 UTC
+        with frozen(now):
+            live.save_quote("CNYRUBF@RTSX", now, Decimal("12.10"))
+            live.flush_book()
+        self.assertEqual(Candle.objects.get().ts, datetime(2026, 10, 10, 11, 0, tzinfo=UTC))
 
 
 class LiveSymbolsTests(TestCase):

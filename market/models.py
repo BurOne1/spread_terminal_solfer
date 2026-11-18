@@ -148,3 +148,33 @@ class Candle(models.Model):
 
     def __str__(self):
         return f"{self.instrument.code} {self.ts:%Y-%m-%d %H:%M}"
+
+class MinuteCandle(models.Model):
+    """Свеча ноги на 5 минут, ts — начало интервала (UTC).
+
+    Отдельная таблица от часовых Candle: часовая цепочка (графики 1ч/4ч,
+    стратегия, аналитика) её не видит и работает как раньше. Отсюда строятся
+    спред 5м и 15м. Источники: Finam (sync_m5), TradingView (import_tv),
+    онлайн-поток run_live.
+    """
+
+    STEP_MINUTES = 5
+
+    instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="minute_candles")
+    ts = models.DateTimeField()
+    open = models.DecimalField(max_digits=18, decimal_places=6)
+    high = models.DecimalField(max_digits=18, decimal_places=6)
+    low = models.DecimalField(max_digits=18, decimal_places=6)
+    close = models.DecimalField(max_digits=18, decimal_places=6)
+    volume = models.DecimalField(max_digits=20, decimal_places=2, default=0)
+
+    class Meta:
+        verbose_name = "свеча 5 мин"
+        verbose_name_plural = "свечи 5 мин"
+        ordering = ["ts"]
+        constraints = [
+            models.UniqueConstraint(fields=["instrument", "ts"], name="uniq_minutecandle_instrument_ts"),
+        ]
+
+    def __str__(self):
+        return f"{self.instrument.code} {self.ts:%Y-%m-%d %H:%M} M5"

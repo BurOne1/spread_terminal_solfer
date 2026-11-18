@@ -14,6 +14,8 @@ class PublishedChannel(models.Model):
     drawing_id = models.CharField(max_length=64)
     data = models.JSONField()
     lines = models.CharField(max_length=8, default="rate")
+    # Таймфрейм, на котором нарисован канал: прямой он по номерам баров именно этого таймфрейма.
+    frame = models.CharField(max_length=4, default="H1")
     published_at = models.DateTimeField(auto_now=True)
     zone = models.CharField(max_length=8, blank=True)
     event = models.CharField(max_length=8, blank=True)

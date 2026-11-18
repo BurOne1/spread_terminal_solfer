@@ -136,6 +136,22 @@ class AlertTests(TestCase):
         self.assertIn("CNY", texts[0])
         self.assertIn("верхней границы", texts[0])
 
+    def test_five_minute_channel_checked_on_five_minute_bars(self):
+        from strategy.models import SpreadBarM5
+        t0 = int(self.base.timestamp())
+        PublishedChannel.objects.all().delete()
+        channel = PublishedChannel.objects.create(pair=self.pair, drawing_id="m5", lines="rate", frame="M5",
+                                                  data=channel_drawing(t0, t0 + 3 * 300, 1.0, 1.0, 0.0))
+        for minutes, rate in ((0, 0.3), (5, 1.1)):
+            SpreadBarM5.objects.create(pair=self.pair, ts=self.base + timedelta(minutes=minutes), contract=self.future,
+                                       future_close=1, perp_close=1, spot=1, raw_spread=rate, spread_rate=rate, days_left=30)
+        with mock.patch.object(alerts, "send", return_value=True) as sent:
+            self.assertEqual(alerts.check_channels(base="H1"), [])  # часовой пересчёт 5-минутный канал не трогает
+            channel.zone = "lower"
+            channel.save()
+            self.assertEqual(alerts.check_channels(base="M5"), [("CNY", "above")])
+        self.assertIn("5м", sent.call_args[0][0])
+
     @override_settings(TELEGRAM_BOT_TOKEN="123:SECRET", TELEGRAM_CHAT_ID="-100500")
     def test_refusal_logs_reason_without_token(self):
         import httpx
@@ -149,8 +165,9 @@ class AlertTests(TestCase):
         self.assertNotIn("SECRET", lines[0])
 
     def test_channel_after_last_bar_counts_trading_hours(self):
-        # Пятница 20:00 UTC → следующий торговый час понедельник 04:00: одна позиция, не 56.
+        # Пятница 20:00 UTC → понедельник 04:00: между ними только сессии выходного дня
+        # (сб и вс 07–15 UTC, по 9 часов), а не 56 календарных часов.
         friday = int(datetime(2026, 11, 20, 20, 0, tzinfo=UTC).timestamp())
         monday = int(datetime(2026, 11, 23, 4, 0, tzinfo=UTC).timestamp())
-        self.assertEqual(alerts.index_of([friday], monday, "finam"), 1)
+        self.assertEqual(alerts.index_of([friday], monday, "finam"), 19)
         self.assertEqual(alerts.index_of([friday], monday, "bybit"), 56)

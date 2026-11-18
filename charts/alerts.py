@@ -34,15 +34,16 @@ EVENTS = {
 }
 
 
-def trading_hour(stamp, venue):
-    """Как tradingHour на странице: Bybit — круглосуточно, Мосбиржа — будни 04–20 UTC."""
+def trading_hour(stamp, venue, minutes=60):
+    """Как tradingHour на странице: слот торговый, если сессия ФОРТС (с выходными) задевает
+    хоть одну его 5-минутку. Bybit — круглосуточно."""
     if venue == "bybit":
         return True
-    moment = datetime.fromtimestamp(stamp, timezone.utc)
-    return moment.weekday() < 5 and 4 <= moment.hour <= 20
+    from market.sessions import FORTS, bar_in_session
+    return bar_in_session(FORTS, datetime.fromtimestamp(stamp, timezone.utc), minutes)
 
 
-def index_of(times, stamp, venue):
+def index_of(times, stamp, venue, minutes=60):
     """Номер бара для времени точки канала: ближайший бар или пустой слот после последнего."""
     if not times:
         return None
@@ -53,18 +54,19 @@ def index_of(times, stamp, venue):
         if position >= len(times):
             return len(times) - 1
         return position if times[position] - stamp < stamp - times[position - 1] else position - 1
-    slots, moment = 0, times[-1] + HOUR
+    step = minutes * 60
+    slots, moment = 0, times[-1] + step
     while moment <= stamp:
-        if trading_hour(moment, venue):
+        if trading_hour(moment, venue, minutes):
             slots += 1
-        moment += HOUR
+        moment += step
     return len(times) - 1 + slots
 
 
-def bounds(points, times, venue, index):
-    """(низ, середина, верх) канала в номере бара index."""
+def bounds(points, times, venue, index, minutes=60):
+    """(низ, середина, верх) канала в номере бара index (бары таймфрейма minutes)."""
     (p0, p1, p2) = points[:3]
-    i0, i1, i2 = (index_of(times, point["time"], venue) for point in (p0, p1, p2))
+    i0, i1, i2 = (index_of(times, point["time"], venue, minutes) for point in (p0, p1, p2))
     if None in (i0, i1, i2):
         return None
     slope = 0.0 if i1 == i0 else (p1["price"] - p0["price"]) / (i1 - i0)
@@ -141,18 +143,25 @@ def message(channel, event, value, lower, middle, upper, stamp):
     pair = channel.pair
     line = "сырой спред" if channel.lines == "raw" else "очищенный спред"
     border = {"above": upper, "below": lower}.get(event, middle)
+    frame = {"M5": "5м", "M15": "15м", "H1": "1ч", "H4": "4ч"}.get(channel.frame, "1ч")
     return (
-        f"{pair.code} · {pair.title}\n"
+        f"{pair.code} · {pair.title} · {frame}\n"
         f"{line[0].upper() + line[1:]} {_number(value)} {EVENTS[event]} канала ({_number(border)}).\n"
         f"Канал: низ {_number(lower)} · середина {_number(middle)} · верх {_number(upper)} {pair.quote}\n"
         f"{stamp:%d.%m %H:%M} UTC"
     )
 
 
-def check_channels(codes=None, log=None, now=None):
-    """Проверить опубликованные каналы пар codes (None — все). Вернуть отправленные события."""
+def check_channels(codes=None, log=None, now=None, base="H1"):
+    """Проверить опубликованные каналы пар codes (None — все). Вернуть отправленные события.
+
+    base — какие каналы: H1 (часовые и 4-часовые, после часового пересчёта) или
+    M5 (5- и 15-минутные, после пересчёта 5 мин). Границы — по барам таймфрейма канала.
+    """
+    from charts import frames as tf
     now = now or dj_timezone.now()
-    channels = PublishedChannel.objects.select_related("pair").filter(pair__active=True)
+    kinds = [frame for frame in tf.MINUTES if tf.base(frame) == base]
+    channels = PublishedChannel.objects.select_related("pair").filter(pair__active=True, frame__in=kinds)
     if codes is not None:
         channels = channels.filter(pair__code__in=list(codes))
     sent = []
@@ -161,18 +170,17 @@ def check_channels(codes=None, log=None, now=None):
         if len(points) < 3:
             continue
         since = datetime.fromtimestamp(min(point["time"] for point in points[:3]), timezone.utc) - timedelta(days=3)
-        rows = list(
-            SpreadBar.objects.filter(pair=channel.pair, ts__gte=since).order_by("ts")
-            .values_list("ts", "raw_spread", "spread_rate")
-        )
+        frame = channel.frame if channel.frame in tf.MINUTES else "H1"
+        rows = tf.rows(channel.pair, frame, since=since)
         if not rows:
             continue
-        times = [int(ts.timestamp()) for ts, _raw, _rate in rows]
-        found = bounds(points, times, channel.pair.venue, len(times) - 1)
+        times = [int(row.ts.timestamp()) for row in rows]
+        found = bounds(points, times, channel.pair.venue, len(times) - 1, tf.MINUTES[frame])
         if found is None:
             continue
         lower, middle, upper = found
-        ts, raw, rate = rows[-1]
+        last = rows[-1]
+        ts, raw, rate = last.ts, last.raw_spread, last.spread_rate
         value = float(raw if channel.lines == "raw" else rate)
         zone = zone_of(value, lower, middle, upper)
         event = event_of(channel.zone, zone)

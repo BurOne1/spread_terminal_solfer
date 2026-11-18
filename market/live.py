@@ -27,12 +27,18 @@ from django.db import close_old_connections
 from market import cross, ngcal, ngnymex
 from market.brent import front_symbols
 from market.finam import PERP_SYMBOL, SPOT_SYMBOL, FinamClient, FinamError, future_symbol, parse_decimal
-from market.models import Candle, Instrument, Pair
+from market.minutes import bucket, hours_from_minutes, save_minutes
+from market.models import Candle, Instrument, MinuteCandle, Pair
 from market.roll import contract_points
 
 WS_URL = "wss://api.finam.ru/ws"
 JWT_REFRESH = 11 * 60
 FLUSH_SECONDS = 5
+# 5-минутки бирж по REST: раз в столько секунд. Пропуск после простоя — не глубже MINUTES_GAP.
+MINUTES_EVERY = 300
+# Хвост спреда 5 мин пересчитывается не чаще этого (часовой — каждые FLUSH_SECONDS).
+M5_REBUILD_EVERY = 30
+MINUTES_GAP = timedelta(days=3)
 # Сводку пересчёта печатать не чаще, чем раз в столько секунд.
 LOG_EVERY = 60
 # Котировка старше этого — снимок при подписке (после ночи, выходных, праздника).
@@ -262,10 +268,9 @@ MOEX_LAST_HOUR = 20
 
 
 def moex_trades(ts):
-    ts = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-    if ts.weekday() >= 5:
-        return False
-    return MOEX_FIRST_HOUR <= ts.hour <= MOEX_LAST_HOUR
+    """Час внутри сессии ФОРТС: будни 04–20 UTC и сессии выходного дня 07–15 UTC (market/sessions.py)."""
+    from market.sessions import forts_hour
+    return forts_hour(ts)
 
 
 def market_open(now=None):
@@ -301,6 +306,10 @@ _book_pairs = {}
 _book_dirty = set()
 # Бары сокета: символ → {час: бар}, последний снимок до записи.
 _socket_bars = {}
+# 5-минутки из котировок: (id инструмента, начало 5 мин) → [open, high, low, close].
+# Раз в MINUTES_EVERY их заменяют 5-минутки бирж (refresh_minutes).
+_book5 = {}
+_book5_dirty = set()
 _book_lock = threading.Lock()
 
 
@@ -329,6 +338,13 @@ def book_quote(instrument, ts, price):
             row[2] = min(row[2], price)
             row[3] = price
         _book_dirty.add(key)
+        five = (instrument.id, bucket(now))
+        cell = _book5.get(five)
+        if cell is None:
+            _book5[five] = [price, price, price, price]
+        else:
+            cell[1], cell[2], cell[3] = max(cell[1], price), min(cell[2], price), price
+        _book5_dirty.add(five)
     if row is None:
         return f"новый час {hour:%Y-%m-%d %H:%M} close={price}"
     return None
@@ -365,9 +381,16 @@ def flush_book(log=None):
         current = hour_floor(datetime.now(timezone.utc))
         for key in [key for key in _book if key[1] < current]:
             del _book[key]
-    if not socket_bars and not quotes:
+        fives = {key: tuple(_book5[key]) for key in _book5_dirty}
+        _book5_dirty.clear()
+        current5 = bucket(datetime.now(timezone.utc))
+        for key in [key for key in _book5 if key[1] < current5]:
+            del _book5[key]
+    if not socket_bars and not quotes and not fives:
         return 0
     close_old_connections()
+    if fives:
+        _flush_fives(fives)
     written = 0
     for symbol, rows in socket_bars.items():
         count, detail = save_bars(symbol, [rows[ts] for ts in sorted(rows)])
@@ -401,6 +424,66 @@ def flush_book(log=None):
     for instrument_id, hour in quotes:
         mark_dirty(pair_of.get(instrument_id, ""), hour)
     return written + len(candles)
+
+
+def _flush_fives(fives):
+    """5-минутки из котировок в базу: open и объём — как в базе (их ставит бар биржи), high/low крайние."""
+    ids = {instrument_id for instrument_id, _ts in fives}
+    stamps = {ts for _instrument_id, ts in fives}
+    existing = {
+        (row.instrument_id, row.ts): row
+        for row in MinuteCandle.objects.filter(instrument_id__in=ids, ts__in=stamps)
+    }
+    rows = []
+    for (instrument_id, ts), (open_, high, low, close) in fives.items():
+        old = existing.get((instrument_id, ts))
+        if old is not None:
+            open_, high, low = old.open, max(high, old.high), min(low, old.low)
+        rows.append(MinuteCandle(instrument_id=instrument_id, ts=ts, open=open_, high=high, low=low, close=close,
+                                 volume=old.volume if old is not None else 0))
+    MinuteCandle.objects.bulk_create(rows, update_conflicts=True, unique_fields=["instrument", "ts"],
+                                     update_fields=["open", "high", "low", "close", "volume"])
+    _mark_minutes({instrument_id: min(ts for key, ts in fives if key == instrument_id) for instrument_id in ids})
+
+
+def _mark_minutes(first_by_instrument):
+    """Пары, чьи 5-минутки поменялись, — к пересчёту спреда 5 мин."""
+    from strategy.rebuild import mark_dirty
+    codes = dict(Instrument.objects.filter(id__in=list(first_by_instrument)).values_list("id", "pair__code"))
+    for instrument_id, since in first_by_instrument.items():
+        mark_dirty(codes.get(instrument_id) or "", since, "M5")
+
+
+def refresh_minutes(symbols, log=None, now=None):
+    """5-минутки бирж по REST: с последней сохранённой (минус 10 мин) до сейчас, после простоя — не глубже
+    MINUTES_GAP (глубже — sync_m5). Бар биржи заменяет 5-минутку, собранную из котировок."""
+    now = now or datetime.now(timezone.utc)
+    close_old_connections()
+    written = 0
+    with FinamClient(settings.FINAM_API_SECRET, settings.FINAM_BASE_URL) as client:
+        for symbol in symbols:
+            instrument = find_instrument(symbol)
+            if instrument is None or not instrument.finam_symbol:
+                continue
+            last = MinuteCandle.objects.filter(instrument=instrument).order_by("-ts").values_list("ts", flat=True).first()
+            start = max(now - MINUTES_GAP, (last or now - MINUTES_GAP) - timedelta(minutes=10))
+            try:
+                bars = client.bars(instrument.finam_symbol, start, now, "TIME_FRAME_M5")
+            except FinamError as exc:
+                if log:
+                    log(f"{symbol}: 5 мин REST {str(exc)[:100]}")
+                continue
+            count = save_minutes(instrument, bars)
+            if count:
+                first = bucket(min(bar["ts"] for bar in bars))
+                _mark_minutes({instrument.id: first})
+                # Часы — из тех же 5-минуток бирж: 1ч и 5м всегда согласованы.
+                hour = hours_from_minutes(instrument, first, keep=moex_trades, fetched_from=start)
+                if hour is not None and instrument.pair is not None:
+                    from strategy.rebuild import mark_dirty
+                    mark_dirty(instrument.pair.code, hour)
+            written += count
+    return written
 
 
 def save_bars(symbol, bars):
@@ -590,6 +673,21 @@ async def _funding(log):
         await asyncio.sleep((target - now).total_seconds())
 
 
+async def _minutes(log):
+    """Раз в MINUTES_EVERY: 5-минутки бирж по REST для символов сокета."""
+    logged = 0.0
+    while True:
+        try:
+            symbols = await asyncio.to_thread(live_symbols)
+            count = await asyncio.to_thread(refresh_minutes, symbols, log)
+            if time.monotonic() - logged >= LOG_EVERY * 10:
+                log(f"5 мин: записано {count} свечей бирж")
+                logged = time.monotonic()
+        except Exception as exc:
+            log(f"5 мин по REST не удалось: {exc}")
+        await asyncio.sleep(MINUTES_EVERY)
+
+
 async def _flush(log):
     """Раз в FLUSH_SECONDS: свечи из памяти в базу, потом хвосты задетых пар."""
     pending = {}
@@ -609,11 +707,27 @@ async def _flush(log):
             logged = time.monotonic()
 
 
+_m5_at = 0.0
+
+
 def _flush_now(log=None):
     close_old_connections()
     from strategy.rebuild import flush_dirty
     flush_book(log)
     done = flush_dirty()
+    global _m5_at
+    if time.monotonic() - _m5_at >= M5_REBUILD_EVERY:
+        _m5_at = time.monotonic()
+        try:
+            done5 = flush_dirty("M5")
+            if done5:
+                from charts.alerts import check_channels
+                for code, event in check_channels(done5, log, base="M5"):
+                    if log:
+                        log(f"оповещение {code} (5 мин): {event}")
+        except Exception as exc:
+            if log:
+                log(f"пересчёт спреда 5 мин или его оповещения не удались: {exc}")
     if done:
         # Опубликованные каналы пересчитанных пар: оповещения в Телеграм.
         from charts.alerts import check_channels
@@ -643,6 +757,7 @@ async def run_forever(log):
     rates = asyncio.create_task(_rates(log))
     funding = asyncio.create_task(_funding(log))
     flush = asyncio.create_task(_flush(log))
+    minutes = asyncio.create_task(_minutes(log))
     try:
         while True:
             symbols = await asyncio.to_thread(live_symbols)
@@ -674,6 +789,7 @@ async def run_forever(log):
         rates.cancel()
         funding.cancel()
         flush.cancel()
+        minutes.cancel()
         # Последние секунды котировок не теряются при остановке.
         try:
             await asyncio.to_thread(_flush_now, log)

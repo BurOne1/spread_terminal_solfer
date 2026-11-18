@@ -23,10 +23,11 @@ from datetime import timedelta, timezone
 
 from django.db import transaction
 
-from market.models import Candle, Instrument, Pair
+from market.models import Candle, Instrument, MinuteCandle, Pair
+from market.sessions import CME, FORTS, METAL_SPOT, forts_hour, in_session
 from rates.models import RateDay
 from strategy.build import build_points, money, stepper
-from strategy.models import SpreadBar
+from strategy.models import BAR_FIELDS, SpreadBar, SpreadBarM5
 
 LOOKBACK = timedelta(days=7)
 # Кросс-пары: последняя цена ноги CME (CNH, 6E) годится для часа Мосбиржи не дольше этого.
@@ -39,6 +40,7 @@ HISTORY_QUARTERLY = timedelta(days=183)
 
 _lock = threading.Lock()
 _dirty = {}
+_dirty5 = {}
 _dirty_lock = threading.Lock()
 # Режим истории: span — насколько раньше склейки открыть окно, rows — куда собрать бары.
 _history = threading.local()
@@ -69,11 +71,31 @@ def _span():
     return getattr(_history, "span", None)
 
 
-def rebuild_spread(pair_code="", since=None):
+# Таймфрейм пересчёта: H1 — Candle → SpreadBar, M5 — MinuteCandle → SpreadBarM5.
+# Расчёт пар один и тот же, отличаются источник свечей, таблица баров и проверки сессий.
+_frame = threading.local()
+FRAMES = ("H1", "M5")
+# M5: последняя цена спота или CNH/6E годится не дольше этого (на H1 — CROSS_FILL).
+FILL_M5 = timedelta(minutes=60)
+
+
+def _m5():
+    return getattr(_frame, "value", "H1") == "M5"
+
+
+def rebuild_spread(pair_code="", since=None, frame="H1"):
     pairs = Pair.objects.filter(active=True)
     if pair_code:
         pairs = pairs.filter(code=pair_code)
-    return sum(_rebuild_one(pair, since) for pair in pairs)
+    if frame == "M5":
+        # Bybit (BTC) — свои ряды, 5-минуток Finam у него нет.
+        pairs = pairs.exclude(venue="bybit")
+    previous = getattr(_frame, "value", "H1")
+    _frame.value = frame
+    try:
+        return sum(_rebuild_one(pair, since) for pair in pairs)
+    finally:
+        _frame.value = previous
 
 
 def _rebuild_one(pair, since):
@@ -102,13 +124,14 @@ TRI_DEPS = {
 TRI_SPOT_DEPS = {"TRIGDS": ("TRIGD", "GOLD", "USD"), "TRISVS": ("TRISV", "SILVER", "USD")}
 
 
-def mark_dirty(pair_code, since):
-    """Запомнить, что у пары поменялись свечи начиная с since."""
+def mark_dirty(pair_code, since, frame="H1"):
+    """Запомнить, что у пары поменялись свечи (часовые или 5-минутные) начиная с since."""
     if not pair_code:
         return
+    target = _dirty5 if frame == "M5" else _dirty
     with _dirty_lock:
-        old = _dirty.get(pair_code)
-        _dirty[pair_code] = since if old is None or since < old else old
+        old = target.get(pair_code)
+        target[pair_code] = since if old is None or since < old else old
 
 
 def _dependencies():
@@ -126,11 +149,12 @@ def _dependencies():
     return deps
 
 
-def flush_dirty():
+def flush_dirty(frame="H1"):
     """Пересчитать хвосты отмеченных пар и всех, кто из них собран. Вернуть {код: баров}."""
+    source = _dirty5 if frame == "M5" else _dirty
     with _dirty_lock:
-        batch = dict(_dirty)
-        _dirty.clear()
+        batch = dict(source)
+        source.clear()
     if not batch:
         return {}
     deps = _dependencies()
@@ -141,25 +165,29 @@ def flush_dirty():
     done = {}
     for code, since in sorted(batch.items()):
         try:
-            done[code] = rebuild_spread(code, since=since)
+            done[code] = rebuild_spread(code, since=since, frame=frame)
         except Exception:
             # Непересчитанные пары остаются отмеченными до следующего раза.
             for left, left_since in batch.items():
                 if left not in done:
-                    mark_dirty(left, left_since)
+                    mark_dirty(left, left_since, frame)
             raise
     return done
 
 
+# Хвост 5-минуток: два дня назад хватает для окна и спота, неделя — лишние десятки тысяч свечей.
+LOOKBACK_M5 = timedelta(days=2)
+
+
 def _load_from(since):
-    return None if since is None else since - LOOKBACK
+    return None if since is None else since - (LOOKBACK_M5 if _m5() else LOOKBACK)
 
 
 def _ohlc(instrument, load_from):
     """Час → (open, close). Наличие бара — час этой ноги."""
     if instrument is None:
         return {}
-    rows = Candle.objects.filter(instrument=instrument)
+    rows = (MinuteCandle if _m5() else Candle).objects.filter(instrument=instrument)
     if load_from is not None:
         rows = rows.filter(ts__gte=load_from)
     return {ts: (open_, close) for ts, open_, close in rows.values_list("ts", "open", "close")}
@@ -170,7 +198,7 @@ def _ohlc_many(instruments, load_from):
     found = {instrument.id: {} for instrument in instruments}
     if not found:
         return found
-    rows = Candle.objects.filter(instrument_id__in=list(found))
+    rows = (MinuteCandle if _m5() else Candle).objects.filter(instrument_id__in=list(found))
     if load_from is not None:
         rows = rows.filter(ts__gte=load_from)
     for instrument_id, ts, open_, close in rows.values_list("instrument_id", "ts", "open", "close"):
@@ -517,11 +545,16 @@ def _rebuild_cross(pair, since=None):
             a, c = a_bars[ts], c_bars[ts]
             b = b_bars.get(ts)
             if b is None:
-                index = bisect.bisect_left(b_hours, ts)
-                if index == 0 or ts - b_hours[index - 1] > CROSS_FILL:
-                    continue
-                last = b_bars[b_hours[index - 1]][1]
-                b = (last, last)
+                if _m5():
+                    b = _filled(b_bars, b_hours, ts, FILL_M5, CME)
+                    if b is None:
+                        continue
+                else:
+                    index = bisect.bisect_left(b_hours, ts)
+                    if index == 0 or ts - b_hours[index - 1] > CROSS_FILL:
+                        continue
+                    last = b_bars[b_hours[index - 1]][1]
+                    b = (last, last)
             synthetic = [float(a[index]) * float(b[index]) * mult for index in (0, 1)]
             raw_open, raw = synthetic[0] - float(c[0]), synthetic[1] - float(c[1])
             rows.append(SpreadBar(
@@ -618,11 +651,33 @@ TRI_OWNER = {"TRIGDS": "TRIGD", "TRISVS": "TRISV"}
 
 
 def _common_hour(ts):
-    """Пересечение сессий FORTS: будни, 07:00–23:50 МСК = 04:00–20:00 UTC."""
+    """Будний час ФОРТС 04:00–20:00 UTC: у ног на CME и NYMEX сессий выходного дня нет.
+
+    Пары только из ног ФОРТС (треугольники) берут forts_hour — с выходными.
+    На 5 минутах — внутри сессии: 04:00–20:50, бары 20:50+ уже не торговые.
+    """
     ts = ts.astimezone(timezone.utc) if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
     if ts.weekday() >= 5:
         return False
+    if _m5():
+        return in_session(FORTS, ts)
     return 4 <= ts.hour <= 20
+
+
+def _forts_ok(ts):
+    """Бар внутри сессии ФОРТС с выходными: час на H1, 5-минутка на M5."""
+    return in_session(FORTS, ts) if _m5() else forts_hour(ts)
+
+
+def _filled(bars, times, ts, limit, kind):
+    """Последнее закрытие редкой ноги (спот, CNH, 6E): только в её сессию и не старше limit."""
+    if not in_session(kind, ts):
+        return None
+    index = bisect.bisect_left(times, ts)
+    if index == 0 or ts - times[index - 1] > limit:
+        return None
+    last = bars[times[index - 1]][1]
+    return (last, last)
 
 
 def _window_price(contracts, ts, roll=None):
@@ -731,6 +786,9 @@ def _rebuild_tri(pair, since=None):
     third = metal.spot_code if pair.tri_code in TRI_SPOT else metal.perp_code
     perp = Instrument.objects.filter(pair=metal, code=third).first()
     perp_bars = _ohlc(perp, load_from)
+    perp_times = sorted(perp_bars)
+    # На 5 минутах спот металла торгуется реже ног ФОРТС: последняя его цена — в его сессию и не старше FILL_M5.
+    fill_spot = _m5() and pair.tri_code in TRI_SPOT
     si_contracts, metal_contracts = _legs(pair, _si_contracts(usd, load_from), _quarters(owner, load_from))
     if not perp_bars or not si_contracts or not metal_contracts:
         return 0
@@ -740,7 +798,7 @@ def _rebuild_tri(pair, since=None):
         for ts in sorted(contract["bars"]):
             if since is not None and ts < since:
                 continue
-            if not _common_hour(ts):
+            if not _forts_ok(ts):
                 continue
             left = contract["listed_at"]
             if left is not None and ts < left:
@@ -749,6 +807,8 @@ def _rebuild_tri(pair, since=None):
                 continue
             metal_usd = contract["bars"].get(ts)
             perp_rub = perp_bars.get(ts)
+            if perp_rub is None and fill_spot:
+                perp_rub = _filled(perp_bars, perp_times, ts, FILL_M5, METAL_SPOT)
             dollar, si = _window_price(si_contracts, ts, contract["roll_at"])
             if metal_usd is None or perp_rub is None or dollar is None:
                 continue
@@ -780,7 +840,7 @@ def _rebuild_trigl(pair, since=None):
         for ts in sorted(gl["bars"]):
             if since is not None and ts < since:
                 continue
-            if not _common_hour(ts):
+            if not _forts_ok(ts):
                 continue
             left = gl["listed_at"]
             if left is not None and ts < left:
@@ -813,9 +873,13 @@ def _store(pair, rows, since=None):
         by_ts[row.ts] = row
     rows = [by_ts[ts] for ts in sorted(by_ts)]
     with _lock, transaction.atomic():
-        stale = SpreadBar.objects.filter(pair=pair)
+        model = SpreadBarM5 if _m5() else SpreadBar
+        if model is SpreadBarM5:
+            # Ряды пересчёта одинаковые: на M5 те же поля переносятся в свою таблицу.
+            rows = [SpreadBarM5(**{field: getattr(row, field) for field in BAR_FIELDS}) for row in rows]
+        stale = model.objects.filter(pair=pair)
         if since is not None:
             stale = stale.filter(ts__gte=since)
         stale.delete()
-        SpreadBar.objects.bulk_create(rows, batch_size=500)
+        model.objects.bulk_create(rows, batch_size=500)
     return len(rows)

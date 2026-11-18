@@ -691,3 +691,204 @@ class CryptoFundingTests(TestCase):
         self.assertEqual((rows, mode), ([(datetime(2026, 11, 13).date(), 12.5)], "daily"))
         # fair = 0: правило знака выключено, но фандинг выше — учитывается.
         self.assertEqual(entry_rules(Pair.objects.get(code="BTCMOEX")), {"long_needs_sign": False, "min_spread": 0.0})
+
+
+def to_minutes(shift_minutes=(0,)):
+    """Часовые свечи тестов → 5-минутки: каждая свеча в ts + сдвиги (минуты)."""
+    from market.models import MinuteCandle
+    rows = []
+    for candle_row in Candle.objects.all():
+        for shift in shift_minutes:
+            rows.append(MinuteCandle(instrument_id=candle_row.instrument_id, ts=candle_row.ts + timedelta(minutes=shift),
+                                     open=candle_row.open, high=candle_row.high, low=candle_row.low, close=candle_row.close))
+    MinuteCandle.objects.bulk_create(rows)
+
+
+class FiveMinuteRebuildTests(TestCase):
+    """Тот же пересчёт на MinuteCandle → SpreadBarM5; часовые бары не трогаются."""
+
+    def test_regular_pair_on_five_minutes(self):
+        from strategy.models import SpreadBarM5
+        make_cny()
+        to_minutes((0, 5, 10))
+        hourly = rebuild.rebuild_spread("CNY")
+        count = rebuild.rebuild_spread("CNY", frame="M5")
+        self.assertEqual(count, 3 * hourly)
+        self.assertEqual(SpreadBar.objects.count(), hourly)
+        first = SpreadBarM5.objects.order_by("ts").first()
+        same_hour = SpreadBar.objects.order_by("ts").first()
+        self.assertEqual((first.ts, first.raw_spread), (same_hour.ts, same_hour.raw_spread))
+        # Хвост: с since переписываются только поздние 5-минутки.
+        since = SpreadBarM5.objects.order_by("-ts").first().ts
+        self.assertEqual(rebuild.rebuild_spread("CNY", since=since, frame="M5"), 1)
+        self.assertEqual(SpreadBarM5.objects.count(), count)
+
+    def test_spot_triangle_fills_spot_only_in_its_session(self):
+        from market.models import MinuteCandle
+        from strategy.models import SpreadBarM5
+        make_usd()
+        gold = Pair.objects.create(
+            code="GOLD", title="золото", future_root="GL", perp_code="GLDRUBF", perp_symbol="GLDRUBF@RTSX",
+            spot_code="GLDRUB_TOM", spot_symbol="GLDRUB_TOM@MISX", foreign_source="NONE", lot=1,
+        )
+        spot = Instrument.objects.create(pair=gold, code="GLDRUB_TOM", finam_symbol="GLDRUB_TOM@MISX", kind="spot")
+        tri = Pair.objects.create(code="TRIGD", title="GD", future_root="GD", perp_code="GLDRUBF", perp_symbol="",
+                                  spot_code="SI", spot_symbol="", foreign_source="TRI", lot=1)
+        quarters = make_quarters(tri, "GD", {})
+        Pair.objects.create(code="TRIGDS", title="GD + SI − GLDRUB_TOM", future_root="GD", perp_code="GLDRUB_TOM",
+                            perp_symbol="", spot_code="SI", spot_symbol="", foreign_source="TRI", lot=1)
+        si = Instrument.objects.get(code="SiZ2026")
+        day = BEFORE_ROLL.replace(hour=0)
+        rows = [MinuteCandle(instrument=spot, ts=day.replace(hour=10), open=9050, high=9050, low=9050, close=9080)]
+        # GD и Si торгуются в 10:00, 10:05 (спот был в 10:00), 11:30 (спот старше часа), 17:00 (спот закрыт).
+        for hour, minute in ((10, 0), (10, 5), (11, 30), (17, 0)):
+            ts = day.replace(hour=hour, minute=minute)
+            rows.append(MinuteCandle(instrument=quarters["GDZ2026"], ts=ts, open=2950, high=2950, low=2950, close=2950))
+            rows.append(MinuteCandle(instrument=si, ts=ts, open=95500, high=95500, low=95500, close=95500))
+        MinuteCandle.objects.bulk_create(rows)
+        self.assertEqual(rebuild.rebuild_spread("TRIGDS", frame="M5"), 2)
+        stamps = list(SpreadBarM5.objects.filter(pair__code="TRIGDS").order_by("ts").values_list("ts", flat=True))
+        self.assertEqual(stamps, [day.replace(hour=10), day.replace(hour=10, minute=5)])
+
+    def test_cross_pair_fills_cme_leg_for_an_hour(self):
+        from market.models import MinuteCandle
+        from strategy.models import SpreadBarM5
+        pair, cnh = make_cross()
+        cr, si = Instrument.objects.get(code="CRZ2026.T"), Instrument.objects.get(code="SiZ2026")
+        rows = [MinuteCandle(instrument=cnh, ts=CROSS_TS, open=6.7, high=6.7, low=6.7, close=6.7)]
+        for minutes in (0, 5, 90):
+            ts = CROSS_TS + timedelta(minutes=minutes)
+            rows += [MinuteCandle(instrument=cr, ts=ts, open=12.4, high=12.4, low=12.4, close=12.4),
+                     MinuteCandle(instrument=si, ts=ts, open=82900, high=82900, low=82900, close=82900)]
+        MinuteCandle.objects.bulk_create(rows)
+        self.assertEqual(rebuild.rebuild_spread("CRCNH", frame="M5"), 2)
+        bar = SpreadBarM5.objects.get(pair=pair, ts=CROSS_TS + timedelta(minutes=5))
+        self.assertAlmostEqual(float(bar.foreign_rate), 6.7, places=6)
+
+    def test_dirty_five_minutes_separate_from_hours(self):
+        rebuild._dirty.clear()
+        rebuild._dirty5.clear()
+        rebuild.mark_dirty("CNY", BASE, "M5")
+        self.assertEqual((rebuild._dirty, list(rebuild._dirty5)), ({}, ["CNY"]))
+        rebuild._dirty5.clear()
+
+
+class TimeframeApiTests(TestCase):
+    """/api/spread/?tf=: 5м и 15м из SpreadBarM5, 1ч и 4ч из SpreadBar; на 5м/15м не больше 3 контрактов."""
+
+    def setUp(self):
+        from charts import views
+        views._spread_cache.clear()
+        make_cny(hours=8)
+        to_minutes((0, 5, 10))
+        rebuild.rebuild_spread("CNY")
+        rebuild.rebuild_spread("CNY", frame="M5")
+
+    def body(self, tf, extra=""):
+        return self.client.get(f"/api/spread/?pair=CNY&tf={tf}&from=CRZ2026&to=CRZ2026{extra}").json()
+
+    def test_fifteen_minutes_built_from_five(self):
+        from strategy.models import SpreadBarM5
+        five, fifteen = self.body("M5"), self.body("M15")
+        self.assertEqual((five["tf"], len(five["points"])), ("M5", 24))
+        self.assertEqual(len(fifteen["points"]), 8)  # 3 пятиминутки → одна 15-минутка
+        first = fifteen["points"][0]
+        bars = list(SpreadBarM5.objects.filter(pair__code="CNY").order_by("ts")[:3])
+        self.assertEqual(first["t"], bars[0].ts.isoformat())
+        self.assertAlmostEqual(first["raw"], float(bars[-1].raw_spread), places=6)
+        parts = [point["candle"] for point in five["points"][:3]]
+        self.assertEqual(first["candle"]["o"], parts[0]["o"])
+        self.assertEqual(first["candle"]["c"], parts[-1]["c"])
+        self.assertEqual(first["candle"]["h"], max(part["h"] for part in parts))
+
+    def test_four_hours_from_hours(self):
+        hours, four = self.body("H1"), self.body("H4")
+        self.assertEqual(len(hours["points"]), 8)
+        # BASE 05:00 → интервалы 04:00 (05–07), 08:00 (08–11), 12:00 (12).
+        self.assertEqual([point["t"][11:16] for point in four["points"]], ["04:00", "08:00", "12:00"])
+        self.assertAlmostEqual(four["points"][0]["raw"], hours["points"][2]["raw"], places=6)
+
+    def test_short_frames_keep_three_contracts(self):
+        pair = Pair.objects.get(code="CNY")
+        base_roll = datetime(2026, 12, 17, 20, 50, tzinfo=UTC)
+        codes = []
+        for index, code in enumerate(("CRU2025", "CRZ2025", "CRH2026", "CRM2026", "CRU2026")):
+            roll = base_roll - timedelta(days=91 * (5 - index))
+            Instrument.objects.create(pair=pair, code=code, finam_symbol=f"X{index}@RTSX", kind="future",
+                                      roll_at=roll, listed_at=roll - timedelta(days=91))
+            codes.append(code)
+        body = self.client.get("/api/spread/?pair=CNY&tf=M5&from=CRU2025&to=CRZ2026").json()
+        self.assertEqual((body["from"], body["to"]), ("CRM2026", "CRZ2026"))
+        hourly = self.client.get("/api/spread/?pair=CNY&tf=H1&from=CRU2025&to=CRZ2026").json()
+        self.assertEqual(hourly["from"], "CRU2025")
+
+    def test_strategy_runs_on_frame_with_quiet_zone_in_its_bars(self):
+        from unittest import mock
+        from charts import frames
+        self.assertEqual((frames.quiet_bars("H1"), frames.quiet_bars("M5"), frames.quiet_bars("H4")), (26, 312, 6))
+        with mock.patch("strategy.runner.run", wraps=rebuild_run_spy()) as spy:
+            self.client.get("/api/spread/?pair=CNY&tf=M15&from=CRZ2026&to=CRZ2026")
+        bars, kwargs = spy.call_args[0][0], spy.call_args[1]
+        self.assertEqual((len(bars), kwargs["no_trade_bars"]), (8, 104))
+
+
+def rebuild_run_spy():
+    from strategy.engine import run as real
+    return real
+
+
+class CandleTests(TestCase):
+    """Свечи графика из свечей ног."""
+
+    def test_currency_bar_uses_its_own_quarter(self):
+        from charts.views import _points
+        pair, future = make_cny(hours=1)
+        rebuild.rebuild_spread("CNY")
+        # Секонд торгуется в тот же час по совсем другой цене — свеча бара Z2026 его не видит.
+        second = Instrument.objects.create(pair=pair, code="CRH2027", finam_symbol="CRH7@RTSX", kind="future",
+                                           listed_at=future.roll_at, roll_at=datetime(2027, 3, 18, 20, 50, tzinfo=UTC))
+        candle(second, BASE, Decimal("20"), Decimal("21"))
+        point = _points(pair, "CRZ2026", "CRH2027")[0]
+        bar = SpreadBar.objects.get(pair=pair, ts=BASE)
+        self.assertAlmostEqual(point["candle"]["c"], float(bar.raw_spread), places=6)
+        self.assertLess(abs(point["candle"]["h"]), 1)
+
+    def test_triangle_candle_wicks_only_from_five_minute_spread(self):
+        from charts.views import _points
+        from strategy.models import SpreadBarM5
+        make_usd()
+        gold = Pair.objects.create(code="GOLD", title="золото", future_root="GL", perp_code="GLDRUBF", perp_symbol="GLDRUBF@RTSX",
+                                   spot_code="GLDRUB_TOM", spot_symbol="GLDRUB_TOM@MISX", foreign_source="NONE", lot=1)
+        perp = Instrument.objects.create(pair=gold, code="GLDRUBF", finam_symbol="GLDRUBF@RTSX", kind="perp")
+        Candle.objects.create(instrument=perp, ts=BEFORE_ROLL, open=9000, high=9150, low=8950, close=9100)
+        tri = Pair.objects.create(code="TRIGD", title="GD + SI − GLDRUBF", future_root="GD", perp_code="GLDRUBF",
+                                  perp_symbol="", spot_code="SI", spot_symbol="", foreign_source="TRI", lot=1)
+        quarters = make_quarters(tri, "GD", {})
+        Candle.objects.create(instrument=quarters["GDZ2026"], ts=BEFORE_ROLL, open=2900, high=2990, low=2880, close=2950)
+        self.assertEqual(rebuild.rebuild_spread("TRIGD"), 1)
+        bar = SpreadBar.objects.get(pair=tri)
+        opened, closed = float(bar.raw_open), float(bar.raw_spread)
+        # Без 5-минуток спреда — только тело: широкие диапазоны ног тень не оценивают.
+        body = _points(tri, "GDZ2026", "GDZ2026")[0]["candle"]
+        self.assertEqual((body["o"], body["h"], body["l"], body["c"]), (opened, max(opened, closed), min(opened, closed), closed))
+        # С 5-минутками — настоящий ход спреда внутри часа.
+        SpreadBarM5.objects.create(pair=tri, ts=BEFORE_ROLL + timedelta(minutes=10), contract=quarters["GDZ2026"], future_close=1,
+                                   perp_close=1, spot=1, raw_spread=closed + 3, raw_open=closed - 4, days_left=1)
+        candle_ = _points(tri, "GDZ2026", "GDZ2026")[0]["candle"]
+        self.assertAlmostEqual(candle_["h"], max(closed + 3, opened, closed), places=4)
+        self.assertAlmostEqual(candle_["l"], min(closed - 4, opened, closed), places=4)
+
+    def test_hour_wicks_from_five_minute_spread(self):
+        from charts.views import _points
+        from strategy.models import SpreadBarM5
+        pair, future = make_cny(hours=1)
+        rebuild.rebuild_spread("CNY")
+        bar = SpreadBar.objects.get(pair=pair)
+        for minutes, (opened, closed) in enumerate([(0.25, 0.31), (0.31, 0.45), (0.45, 0.20), (0.20, 0.30)]):
+            SpreadBarM5.objects.create(pair=pair, ts=BASE + timedelta(minutes=5 * minutes), contract=future, future_close=1,
+                                       perp_close=1, spot=1, raw_spread=closed, raw_open=opened, days_left=1)
+        candle_ = _points(pair, "CRZ2026", "CRZ2026")[0]["candle"]
+        # Тени — настоящий ход спреда внутри часа: 0.45 вверху, 0.20 внизу; тело — бара часа.
+        self.assertAlmostEqual(candle_["h"], max(0.45, float(bar.raw_open), float(bar.raw_spread)), places=6)
+        self.assertAlmostEqual(candle_["l"], min(0.20, float(bar.raw_open), float(bar.raw_spread)), places=6)
+        self.assertAlmostEqual(candle_["c"], float(bar.raw_spread), places=6)

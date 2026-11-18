@@ -21,6 +21,7 @@ from django.views.decorators.http import require_http_methods
 from django.shortcuts import render
 
 from access.groups import ANALYST, TITLES, group_of, is_viewer
+from charts import frames
 from charts.models import PublishedChannel
 from market.models import Candle, Instrument, Pair
 from strategy.models import SpreadBar
@@ -102,8 +103,8 @@ def _window(codes, start, end):
     return codes
 
 
-def _ohlc(instrument, since, scale=1):
-    rows = Candle.objects.filter(instrument=instrument)
+def _ohlc(instrument, since, scale=1, model=Candle):
+    rows = model.objects.filter(instrument=instrument)
     if since is not None:
         rows = rows.filter(ts__gte=since)
     return {
@@ -112,8 +113,8 @@ def _ohlc(instrument, since, scale=1):
     }
 
 
-def _points(pair, start="", end="", basis="close", rows=None):
-    """rows — spread_rows пары, если уже прочитаны."""
+def _points(pair, start="", end="", basis="close", rows=None, model=Candle):
+    """rows — бары пары, если уже прочитаны; model — свечи ног (Candle или MinuteCandle на 5м/15м)."""
     if pair is None:
         return []
     codes = _window(_contracts(pair), start, end)
@@ -123,36 +124,49 @@ def _points(pair, start="", end="", basis="close", rows=None):
         return []
     since = bars[0].ts
     perp_ohlc = {}
+    # Свечи кварталов — по контрактам: у фронта и секонда бывают свечи в одни и те же часы,
+    # и слитые в один словарь они давали свечу бара по чужому кварталу.
     future_ohlc = {}
     legs = {}
+    inner = _inner_range(pair, codes, since) if model is Candle else {}
     if pair.calendar:
-        legs = _calendar_legs(pair, codes, since)
+        legs = _calendar_legs(pair, codes, since, model)
     elif pair.nymex:
-        legs = _nymex_legs(pair, codes, since)
+        legs = _nymex_legs(pair, codes, since, model)
     elif pair.foreign_source != "TRI" and not pair.cross and not pair.listed and not pair.ngnymex:
         scale = pair.future_scale or 1
         perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
         if perp is not None:
-            perp_ohlc = _ohlc(perp, since)
+            perp_ohlc = _ohlc(perp, since, model=model)
         for instrument in Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE, code__in=codes):
-            future_ohlc.update(_ohlc(instrument, since, scale))
+            future_ohlc[instrument.code] = _ohlc(instrument, since, scale, model)
     points = []
     for bar in bars:
         raw, rate = priced(bar, basis)
-        future = future_ohlc.get(bar.ts)
+        future = future_ohlc.get(bar.contract__code, {}).get(bar.ts)
         perp_bar = perp_ohlc.get(bar.ts)
         if legs:
             near, far = legs.get(bar.contract__code, ({}, {}))
             perp_bar, future = near.get(bar.ts), far.get(bar.ts)
+        # Треугольники сюда не входят: их синтетическая нога — произведение независимых
+        # цен (золото в $ × курс), «максимум × максимум» тени не оценивает. Их тени — только
+        # из настоящего хода спреда по 5-минуткам (inner ниже), иначе свеча — одно тело.
         if future and perp_bar:
+            # Ноги — один актив и двигаются вместе: максимум спреда ≈ максимум − максимум,
+            # минимум ≈ минимум − минимум. «Максимум − минимум» складывал диапазоны ног
+            # и давал тени шире любого реального хода спреда.
             opened = future[0] - perp_bar[0]
             closed = future[3] - perp_bar[3]
-            high = max(future[1] - perp_bar[2], future[2] - perp_bar[1], opened, closed)
-            low = min(future[1] - perp_bar[2], future[2] - perp_bar[1], opened, closed)
+            high = max(future[1] - perp_bar[1], future[2] - perp_bar[2], opened, closed)
+            low = min(future[1] - perp_bar[1], future[2] - perp_bar[2], opened, closed)
         else:
             closed = float(bar.raw_spread)
             opened = closed if bar.raw_open is None else float(bar.raw_open)
             high, low = max(opened, closed), min(opened, closed)
+        inside = inner.get((bar.contract__code, bar.ts))
+        if inside is not None:
+            # Настоящий ход спреда внутри часа — по его 5-минутным барам.
+            high, low = max(inside[0], opened, closed), min(inside[1], opened, closed)
         points.append({
             "t": bar.ts.isoformat(),
             "contract": bar.contract__code,
@@ -165,7 +179,25 @@ def _points(pair, start="", end="", basis="close", rows=None):
     return points
 
 
-def _calendar_legs(pair, codes, since):
+def _inner_range(pair, codes, since):
+    """(контракт, час) → (максимум, минимум) сырого спреда по его 5-минутным барам внутри часа.
+
+    Тени часовой свечи из настоящего хода спреда; где 5-минуток спреда нет — пусто,
+    и тени оцениваются по свечам ног.
+    """
+    from strategy.models import SpreadBarM5
+    found = {}
+    rows = (SpreadBarM5.objects.filter(pair=pair, ts__gte=since, contract__code__in=list(codes))
+            .values_list("contract__code", "ts", "raw_open", "raw_spread"))
+    for code, ts, opened, closed in rows:
+        key = (code, ts.replace(minute=0, second=0, microsecond=0))
+        values = [float(closed)] + ([] if opened is None else [float(opened)])
+        old = found.get(key)
+        found[key] = (max(values), min(values)) if old is None else (max(old[0], *values), min(old[1], *values))
+    return found
+
+
+def _calendar_legs(pair, codes, since, model=Candle):
     """Фронт → (свечи фронта, свечи второго квартала) в единицах базы."""
     base = Pair.objects.filter(code=pair.base).first()
     if base is None:
@@ -176,18 +208,18 @@ def _calendar_legs(pair, codes, since):
     )
     wanted = set(codes)
     return {
-        front.code: (_ohlc(front, since, scale), _ohlc(second, since, scale))
+        front.code: (_ohlc(front, since, scale, model), _ohlc(second, since, scale, model))
         for front, second in zip(quarters, quarters[1:])
         if front.code in wanted
     }
 
 
-def _nymex_legs(pair, codes, since):
+def _nymex_legs(pair, codes, since, model=Candle):
     """BR → (свечи BZ, свечи BR): свеча спреда BR − BZ, как у календаря."""
     legs = Instrument.objects.filter(pair=pair, roll_at__isnull=False)
     foreign = {leg.roll_at: leg for leg in legs.filter(kind=Instrument.Kind.FOREIGN)}
     return {
-        moex.code: (_ohlc(foreign[moex.roll_at], since), _ohlc(moex, since))
+        moex.code: (_ohlc(foreign[moex.roll_at], since, model=model), _ohlc(moex, since, model=model))
         for moex in legs.filter(kind=Instrument.Kind.FUTURE, code__in=codes)
         if moex.roll_at in foreign
     }
@@ -228,11 +260,12 @@ def _settings(request):
     }
 
 
-def _strategy(pair, request, codes, rows=None):
-    """PNL, число сделок и открытая позиция для выбранного окна контрактов."""
+def _strategy(pair, request, codes, rows=None, frame="H1"):
+    """PNL, число сделок и открытая позиция для выбранного окна контрактов на таймфрейме frame."""
     from strategy.runner import pass_pair
     options = _settings(request)
-    points, trades, opened = pass_pair(pair, levels=_user_levels(request, pair), rows=rows, **options)
+    points, trades, opened = pass_pair(pair, levels=_user_levels(request, pair), rows=rows,
+                                       no_trade_bars=frames.quiet_bars(frame), **options)
     allowed = set(codes)
     pnl = [point for point in points if point["contract"] in allowed]
     stamps = {point["t"] for point in pnl}
@@ -535,7 +568,7 @@ def _spread_etag(request):
     pair = _pair(request.GET.get("pair", ""), request)
     if pair is None:
         return None
-    bars = SpreadBar.objects.filter(pair=pair).aggregate(n=Count("id"), last=Max("id"))
+    bars = frames.bar_model(frames.frame_of(request)).objects.filter(pair=pair).aggregate(n=Count("id"), last=Max("id"))
     funding = FundingDay.objects.aggregate(n=Count("id"), last=Max("date"))
     key = "|".join(str(item) for item in (
         pair.code, request.GET.urlencode(), bars["n"], bars["last"], funding["n"], funding["last"],
@@ -592,12 +625,29 @@ def _spread_body(request, pair, version):
     contracts = _contracts(pair)
     start, end = _range(request, contracts, pair)
     options = _settings(request)
-    rows = None if pair is None else spread_rows(pair)
-    points = _points(pair, start, end, options["basis"], rows)
+    frame = frames.frame_of(request)
+    window = _window(contracts, start, end)
+    if frame in frames.SHORT and len(window) > frames.MAX_SHORT:
+        # 5м и 15м — не больше трёх контрактов: и на графике, и в стратегии.
+        window = frames.short_window(window)
+        start = window[0]
+    rows = points = None
+    if pair is not None:
+        base = frames.base(frame)
+        # 5м/15м — только бары окна; 1ч/4ч — вся история (стратегия идёт по ней, как раньше).
+        base_rows = frames.rows(pair, base, window if frame in frames.SHORT else None)
+        points = _points(pair, start, end, options["basis"], base_rows, frames.candle_model(frame))
+        rows = base_rows
+        if frame != base:
+            rows = frames.aggregate_rows(base_rows, frames.MINUTES[frame])
+            allowed = set(window)
+            points = frames.aggregate_points(points, [row for row in rows if row.contract__code in allowed],
+                                             frames.MINUTES[frame], options["basis"])
+    points = points or []
     pnl, trades, opened = [], 0, None
     # strategy=off — стратегию считает браузер (канал) или она выключена. У зрителя её нет вовсе.
     if pair is not None and request.GET.get("strategy") != "off" and not is_viewer(request):
-        pnl, trades, opened = _strategy(pair, request, _window(contracts, start, end), rows)
+        pnl, trades, opened = _strategy(pair, request, window, rows, frame)
     return {
         "version": version,
         "pair": "" if pair is None else pair.code,
@@ -612,6 +662,7 @@ def _spread_body(request, pair, version):
         "labels": _labels(pair, contracts),
         "from": start,
         "to": end,
+        "tf": frames.frame_of(request),
         "basis": options["basis"],
         "count": len(points),
         "points": points,
@@ -649,7 +700,7 @@ def published_version(pair):
 
 def _channel_json(item):
     return {
-        "id": item.drawing_id, "data": item.data, "lines": item.lines,
+        "id": item.drawing_id, "data": item.data, "lines": item.lines, "frame": item.frame,
         "published_at": item.published_at.isoformat(),
     }
 
@@ -666,7 +717,7 @@ def published_json(request):
         pair = _pair(request.GET.get("pair", ""), request)
         if pair is None or pair.code != request.GET.get("pair", ""):
             return JsonResponse({"error": "нет такой пары"}, status=404)
-        items = PublishedChannel.objects.filter(pair=pair).order_by("published_at")
+        items = PublishedChannel.objects.filter(pair=pair, frame=frames.frame_of(request)).order_by("published_at")
         return JsonResponse({"pair": pair.code, "version": published_version(pair), "channels": [_channel_json(item) for item in items]})
     if group_of(request) != ANALYST:
         return JsonResponse({"error": "публикует только отдел трейдинга"}, status=403)
@@ -687,9 +738,10 @@ def published_json(request):
     if not all(isinstance(point, dict) and isinstance(point.get("time"), (int, float)) and isinstance(point.get("price"), (int, float)) for point in points[:3]):
         return JsonResponse({"error": "у канала нет точек время/цена"}, status=400)
     lines = "raw" if body.get("lines") == "raw" else "rate"
+    frame = body.get("tf") if body.get("tf") in frames.MINUTES else "H1"
     item, _created = PublishedChannel.objects.update_or_create(
         pair=pair, drawing_id=str(drawing["id"])[:64],
         # Переопубликовали — оповещения начинают с чистого листа.
-        defaults={"data": drawing, "lines": lines, "zone": "", "event": "", "event_at": None},
+        defaults={"data": drawing, "lines": lines, "frame": frame, "zone": "", "event": "", "event_at": None},
     )
     return JsonResponse({"channel": _channel_json(item), "version": published_version(pair)})

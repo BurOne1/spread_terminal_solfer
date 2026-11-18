@@ -10,12 +10,18 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--pair", default="", help="код пары, пусто — все активные")
+        parser.add_argument("--frame", default="H1", choices=["H1", "M5"],
+                            help="H1 — часы (по умолчанию), M5 — 5 минут из MinuteCandle")
 
     def handle(self, *args, **options):
-        count = rebuild_spread(options["pair"])
+        frame = options["frame"]
+        count = rebuild_spread(options["pair"], frame=frame)
         if not count:
             raise CommandError("нечего считать: нет вечного, квартала или общих часов")
-        self.stdout.write(f"баров {count}")
+        self.stdout.write(f"баров {count}" + (" (5 мин)" if frame == "M5" else ""))
+        if frame == "M5":
+            # Аналитика строится по часам: 5-минутки её не меняют.
+            return
         from analytics.history import refresh
         from market.models import Pair
         pairs = Pair.objects.filter(active=True)

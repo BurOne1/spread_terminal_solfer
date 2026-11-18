@@ -211,6 +211,9 @@
     <label class="tb swatch" title="Цвет сырого спреда (и единственной линии, когда очищенный равен сырому)"><input type="color" id="color-raw"></label>
     <label class="tb swatch" id="swatch-rate" title="Цвет очищенного спреда"><input type="color" id="color-rate"></label>
     <button type="button" class="tb" id="color-reset" title="Цвета линий по умолчанию">↺</button>
+    <select id="tf" class="tb" title="Таймфрейм. 5 и 15 минут — не больше трёх контрактов">
+      <option value="M5">5м</option><option value="M15">15м</option><option value="H1" selected>1ч</option><option value="H4">4ч</option>
+    </select>
     <select id="basis" class="tb" title="Цена часа для спреда и стратегии"><option value="close">Закрытие</option><option value="open">Открытие</option><option value="mid">(O+C)/2</option></select>
     <select id="indicator" class="tb" title="Индикатор">
       <option value="carry">Фандинг − контанго, % год.</option>
@@ -645,19 +648,35 @@
     const PAST_SLOTS = 300;
     let pastCount = 0;
     window.pairVenue = "{{ pair.venue|default:'finam' }}";
-    function tradingHour(time) {
-      if (window.pairVenue === "bybit") return true;
+    // Таймфреймы: минут в баре. Окно 5м/15м — не больше трёх контрактов (сервер обрезает сам).
+    const TF_MINUTES = { M5: 5, M15: 15, H1: 60, H4: 240 };
+    const TF_KEY = "spread-tf";
+    const tfSelect = document.getElementById("tf");
+    tfSelect.value = TF_MINUTES[readStore(TF_KEY, "H1")] ? readStore(TF_KEY, "H1") : "H1";
+    function currentTf() { return tfSelect.value; }
+    function shortTf() { return currentTf() === "M5" || currentTf() === "M15"; }
+    // ФОРТС: будни 04:00–20:50 UTC, сессии выходного дня 07:00–16:00 (market/sessions.py).
+    function fortsMinute(time) {
       const date = new Date(time * 1000);
       const day = date.getUTCDay();
-      const hour = date.getUTCHours();
-      return day !== 0 && day !== 6 && hour >= 4 && hour <= 20;
+      const minute = date.getUTCHours() * 60 + date.getUTCMinutes();
+      if (day === 0 || day === 6) return minute >= 420 && minute < 960;
+      return minute >= 240 && minute < 1250;
+    }
+    // Слот шкалы торговый, если сессия задевает хоть одну его 5-минутку.
+    function tradingHour(time) {
+      if (window.pairVenue === "bybit") return true;
+      const minutes = TF_MINUTES[currentTf()] || 60;
+      for (let shift = 0; shift < minutes; shift += 5) if (fortsMinute(time + shift * 60)) return true;
+      return false;
     }
     function emptySlots(times) {
       const before = [];
       const after = [];
       if (!times.length) return { before, after };
-      for (let time = times[0] - 3600; before.length < PAST_SLOTS; time -= 3600) if (tradingHour(time)) before.push({ time });
-      for (let time = times.at(-1) + 3600; after.length < FUTURE_SLOTS; time += 3600) if (tradingHour(time)) after.push({ time });
+      const step = (TF_MINUTES[currentTf()] || 60) * 60;
+      for (let time = times[0] - step; before.length < PAST_SLOTS; time -= step) if (tradingHour(time)) before.push({ time });
+      for (let time = times.at(-1) + step; after.length < FUTURE_SLOTS; time += step) if (tradingHour(time)) after.push({ time });
       return { before: before.reverse(), after };
     }
     let pendingFit = null;
@@ -983,6 +1002,7 @@
       // Канал считает браузер, а выключенная стратегия не считается вовсе: серверу не гонять движок.
       if (strategy.kind === "channel" || !pnlOn || VIEWER) params.set("strategy", "off");
       params.set("basis", basisSelect.value);
+      params.set("tf", currentTf());
       return params.toString();
     }
     function strategyNote(body) {
@@ -994,7 +1014,7 @@
       return trades + ", открыт " + side + " " + open.n + " ед., по рынку " + Math.round(open.price).toLocaleString("ru-RU") + " " + money();
     }
     // v2: по умолчанию окно — текущий контракт; старые сохранённые «вся история» не подхватываются.
-    function windowKey(code) { return "spread-window-v2-" + code; }
+    function windowKey(code) { return "spread-window-v2-" + code + (shortTf() ? "-short" : ""); }
     function loadWindow(code) { return readStore(windowKey(code), {}) || {}; }
     function saveWindow() { if (pairSelect) writeStore(windowKey(pairSelect.value), { from: fromSelect ? fromSelect.value : "", to: toSelect ? toSelect.value : "" }); }
     // Последняя пара — в cookie: сервер откроет её же на «Спредах» и в «Аналитике».
@@ -1108,7 +1128,7 @@
         }
         lastVersion = body.version || "";
         shownWindow = window_;
-        if (body.published !== undefined && (body.published !== publishedVersion || body.pair !== publishedPair)) refreshPublished(body.pair);
+        if (body.published !== undefined && (body.published !== publishedVersion || body.pair !== publishedPair || body.tf !== publishedTf)) refreshPublished(body.pair);
         // Канал — по номерам баров шкалы: считается после отрисовки новых данных.
         if (strategyKind() === "channel" && pnlOn) { fillChannelPick(); runChannel(true); }
         if (sideOpen() && sideView === "watchlist") refreshWatchlist();
@@ -1144,6 +1164,14 @@
     styleSelect.addEventListener("change", () => { writeStore("spread-style", styleSelect.value); paint(false); });
     indicatorSelect.addEventListener("change", () => { writeStore("spread-indicator", indicatorSelect.value); paint(false); });
     basisSelect.addEventListener("change", () => { saveStrategy(); refresh(false); });
+    tfSelect.addEventListener("change", () => {
+      writeStore(TF_KEY, currentTf());
+      // Окно 5м/15м хранится отдельно от 1ч/4ч: сервер возьмёт сохранённое или текущий контракт.
+      if (fromSelect) fromSelect.value = "";
+      if (toSelect) toSelect.value = "";
+      loadDrawings();
+      refresh(true);
+    });
     function applyLevels() {
       const fractions = (kind) => collect(kind).map(Number).filter(Number.isFinite).map((value) => value / levelUnit());
       writeStore(levelKey(), {
@@ -1718,19 +1746,20 @@
 
 
     // Опубликованные каналы: аналитик публикует точную копию рисунка, зритель видит её закреплённой.
-    let published = [], publishedVersion = null, publishedPair = "";
+    let published = [], publishedVersion = null, publishedPair = "", publishedTf = "";
     function csrfToken() {
       const found = document.cookie.split("; ").find((row) => row.startsWith("csrftoken="));
       return found ? decodeURIComponent(found.split("=")[1]) : "";
     }
     async function refreshPublished(code) {
       try {
-        const response = await fetch("/api/published/?pair=" + encodeURIComponent(code || currentPair()), { cache: "no-store" });
+        const response = await fetch("/api/published/?pair=" + encodeURIComponent(code || currentPair()) + "&tf=" + currentTf(), { cache: "no-store" });
         if (!response.ok) return;
         const body = await response.json();
         published = body.channels || [];
         publishedVersion = body.version;
         publishedPair = body.pair;
+        publishedTf = currentTf();
         if (VIEWER) loadPublishedDrawings(); else showEditor();
       } catch (error) { /* нет связи — попробуем со следующим ответом */ }
     }
@@ -1783,7 +1812,7 @@
       if (!confirm(`${again ? "Обновить" : "Опубликовать"} этот канал в «Просмотр» на паре ${currentPair()}?\n` +
         `В «Просмотре» его увидят точно таким, как сейчас (на ${where} спреде), по нему пойдут оповещения в Телеграм.`)) return;
       try {
-        await sendPublished("POST", { pair: currentPair(), drawing: JSON.parse(JSON.stringify(item)), lines: chartLines() === "raw" ? "raw" : "rate" });
+        await sendPublished("POST", { pair: currentPair(), drawing: JSON.parse(JSON.stringify(item)), lines: chartLines() === "raw" ? "raw" : "rate", tf: currentTf() });
         await refreshPublished();
       } catch (error) { alert("Опубликовать не удалось: " + error.message); }
     });
@@ -1799,14 +1828,17 @@
       input.addEventListener("input", () => { writeStore(CHANNEL_COLOR_KEY, input.value); loadPublishedDrawings(); });
     }
     // Рисование.
-    function drawingKey() { return "drawings:" + (pairSelect ? pairSelect.value : ""); }
+    function drawingKey() {
+      const tf = currentTf();
+      return "drawings:" + (pairSelect ? pairSelect.value : "") + (tf === "H1" ? "" : ":" + tf);
+    }
     function markTool(kind) {
       document.querySelectorAll("#drawbar [data-tool]").forEach((button) => button.classList.toggle("on", button.dataset.tool === (kind || "")));
     }
     function loadDrawings() {
       if (!drawings) return;
       // Зритель: каналы этой пары придут с сервера; чужие от прошлой пары — сразу убрать.
-      if (VIEWER) { if (publishedPair === currentPair()) loadPublishedDrawings(); else drawings.clear(); return; }
+      if (VIEWER) { if (publishedPair === currentPair() && publishedTf === currentTf()) loadPublishedDrawings(); else drawings.clear(); return; }
       restoring = true;
       try { drawings.importJSON(localStorage.getItem(drawingKey()) || "[]"); } catch (error) { drawings.clear(); }
       drawings.drawings().forEach((item) => {

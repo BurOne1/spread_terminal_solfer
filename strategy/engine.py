@@ -110,7 +110,7 @@ def funding_asof_ts(rows, ts):
     return rows[pos][1]
 
 
-def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", average=True, notional=None, funding_mode="daily", long_pcts=None, short_pcts=None, long_tp=None, short_tp=None, long_needs_sign=REQUIRE_LONG_DIFF_SIGN, min_spread=MIN_PRICE_SPREAD, tp_all=False):
+def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", average=True, notional=None, funding_mode="daily", long_pcts=None, short_pcts=None, long_tp=None, short_tp=None, long_needs_sign=REQUIRE_LONG_DIFF_SIGN, min_spread=MIN_PRICE_SPREAD, tp_all=False, no_trade_bars=NO_TRADE_BARS):
     """bars: словари ts, contract, raw, rate, spot, fair, future, perp.
 
     Уровни — доли спота со знаком. Лонг и шорт задаются отдельно,
@@ -146,10 +146,11 @@ def run(bars, funding, level_pcts=None, tp_pcts=None, entry_mode="touch", averag
         short_tp = tuple(float(item) for item in (short_tp or []))
     rolls = [i for i in range(1, len(bars)) if bars[i]["contract"] != bars[i - 1]["contract"]]
     # Последний бар позицию не закрывает: она остаётся открытой и считается по рынку.
-    close_at = {i - NO_TRADE_BARS for i in rolls if i - NO_TRADE_BARS > 0}
+    # «Тихая зона» у склейки в барах: 26 часовых, на 5 минутах — те же 26 часов (frames.quiet_bars).
+    close_at = {i - no_trade_bars for i in rolls if i - no_trade_bars > 0}
     quiet = set()
     for i in rolls:
-        quiet.update(range(max(0, i - NO_TRADE_BARS), min(len(bars), i + NO_TRADE_BARS + 1)))
+        quiet.update(range(max(0, i - no_trade_bars), min(len(bars), i + no_trade_bars + 1)))
 
     position = size = 0
     avg = entry_fair = open_fund = realized = contract_base = 0.0

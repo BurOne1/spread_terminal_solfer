@@ -34,6 +34,7 @@ from django.db.models import Count, Q
 
 from market.finam import future_symbol
 from market.models import Candle, Instrument, Pair
+from market.minutes import save_minutes
 from market.roll import contract_points
 from market.units import factor, instrument_scale, reference
 
@@ -59,6 +60,13 @@ def parse_time(text):
 
 def read_bars(path):
     """Свечи файла, свёрнутые в часы: {час: [open, high, low, close, volume]}, и шаг исходных баров."""
+    hours, step, _minutes = read_frames(path)
+    return hours, step
+
+
+def read_frames(path):
+    """Часы, шаг и 5-минутки файла. 5-минутки — только если шаг файла 5 минут или меньше
+    (выгрузка TradingView «, 5_…»): {начало 5 мин: [open, high, low, close, volume]}."""
     with open(path, encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         columns = {name.lower().strip(): name for name in reader.fieldnames or []}
@@ -80,15 +88,23 @@ def read_bars(path):
     rows.sort(key=lambda item: item[0])
     steps = [b[0] - a[0] for a, b in zip(rows, rows[1:]) if b[0] > a[0]]
     step = min(steps) if steps else timedelta(hours=1)
-    hours = {}
+    hours = _fold(rows, lambda ts: ts.replace(minute=0, second=0, microsecond=0))
+    minutes = _fold(rows, lambda ts: ts.replace(minute=ts.minute - ts.minute % 5, second=0, microsecond=0)) \
+        if step <= timedelta(minutes=5) else {}
+    return hours, step, minutes
+
+
+def _fold(rows, floor):
+    """Свернуть бары в интервалы floor(ts): open первого, high/low крайние, close последнего, объём суммой."""
+    out = {}
     for ts, (opened, high, low, closed), size in rows:
-        hour = ts.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        bar = hours.get(hour)
+        key = floor(ts.astimezone(timezone.utc))
+        bar = out.get(key)
         if bar is None:
-            hours[hour] = [opened, high, low, closed, size]
+            out[key] = [opened, high, low, closed, size]
         else:
             bar[1], bar[2], bar[3], bar[4] = max(bar[1], high), min(bar[2], low), closed, bar[4] + size
-    return hours, step
+    return out
 
 
 def _owner(**filters):
@@ -185,10 +201,10 @@ def find_instrument(name):
     return instrument, code, (None if instrument else make), owner
 
 
-def rescale(instrument, hours):
+def rescale(instrument, hours, *more):
     """Файл в другом масштабе (RUS_USDRUBF_1000 — вечный ×1000): привести к эталону пары.
 
-    Вернуть пометку для вывода или пустую строку. hours правится на месте.
+    Вернуть пометку для вывода или пустую строку. hours (и 5-минутки в more) правятся на месте.
     """
     if instrument is None:
         return ""
@@ -196,9 +212,10 @@ def rescale(instrument, hours):
     mult = factor(closes[len(closes) // 2], reference(instrument.pair), instrument_scale(instrument))
     if mult == 1:
         return ""
-    for bar in hours.values():
-        for index in range(4):
-            bar[index] = bar[index] * mult
+    for frame in (hours, *more):
+        for bar in frame.values():
+            for index in range(4):
+                bar[index] = bar[index] * mult
     return ", цены ÷1000 (в файле ×1000)" if mult < 1 else ", цены ×1000 (в файле ÷1000)"
 
 
@@ -223,14 +240,14 @@ class Command(BaseCommand):
         if not files or not files[0].exists():
             raise CommandError(f"нет CSV: {path}")
         dry = options["dry_run"]
-        total = 0
+        total = total_minutes = 0
         for file in files:
             instrument, code, make, owner = find_instrument(file.stem)
             if instrument is None and make is None:
                 hint = f" (код {code}: нет такого инструмента и пары, у которой его завести)" if code else ""
                 self.stdout.write(f"{file.name}: инструмент не найден{hint}, пропуск")
                 continue
-            hours, step = read_bars(file)
+            hours, step, minutes = read_frames(file)
             if step > timedelta(hours=1):
                 self.stdout.write(f"{file.name}: шаг свечей {step}, нужен час или меньше — пропуск")
                 continue
@@ -245,7 +262,7 @@ class Command(BaseCommand):
                         make()
                         planned = Instrument.objects.filter(code__iexact=code).first()
                         window = _window(planned)
-                        note = rescale(planned, hours)
+                        note = rescale(planned, hours, minutes)
                         transaction.set_rollback(True)
                     self.stdout.write(
                         f"{file.name} → {code} (будет заведён у {owner}): {len(hours)} ч, "
@@ -257,10 +274,11 @@ class Command(BaseCommand):
                 if instrument is None:
                     self.stdout.write(f"{file.name}: не удалось завести {code}, пропуск")
                     continue
-            note = rescale(instrument, hours)
+            note = rescale(instrument, hours, minutes)
+            extra = f", 5 мин: {len(minutes)}" if minutes else ""
             self.stdout.write(
                 f"{file.name} → {instrument.code} ({instrument.pair.code if instrument.pair else '—'}): "
-                f"{len(hours)} ч, данные {first:%Y-%m-%d} → {last:%Y-%m-%d}, {_window(instrument)}{note}"
+                f"{len(hours)} ч{extra}, данные {first:%Y-%m-%d} → {last:%Y-%m-%d}, {_window(instrument)}{note}"
             )
             if dry:
                 continue
@@ -271,4 +289,12 @@ class Command(BaseCommand):
                 update_fields=["open", "high", "low", "close", "volume"], batch_size=1000,
             )
             total += len(hours)
-        self.stdout.write(f"итого {total} часов. Дальше: python manage.py build_spread" if not dry else "проверка без записи")
+            if minutes:
+                # 5-минутки — в свою таблицу; часы из того же файла уже записаны выше и с ними совпадают.
+                save_minutes(instrument, [
+                    {"ts": ts, "open": bar[0], "high": bar[1], "low": bar[2], "close": bar[3], "volume": bar[4]}
+                    for ts, bar in minutes.items()
+                ])
+                total_minutes += len(minutes)
+        self.stdout.write(f"итого {total} часов, 5 мин: {total_minutes}. Дальше: python manage.py build_spread"
+                          if not dry else "проверка без записи")
