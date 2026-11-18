@@ -660,6 +660,18 @@
     // точка рисунка привязана к настоящему торговому часу, а новый бар встаёт
     // на уже существующее место шкалы.
     const FUTURE_SLOTS = 1200;
+    // Потолок шкалы впереди: на 5 минутах ~1 год.
+    const MAX_FUTURE_SLOTS = 60000;
+    // Самая дальняя точка рисунков пары: свои из браузера и опубликованные каналы.
+    function drawingsHorizon() {
+      let latest = 0;
+      const scan = (items) => (items || []).forEach((item) => (item.points || []).forEach((point) => {
+        if (typeof point.time === "number" && point.time > latest) latest = point.time;
+      }));
+      try { scan(JSON.parse(localStorage.getItem("drawings:" + (pairSelect ? pairSelect.value : "")) || "[]")); } catch (error) { /* нет рисунков */ }
+      try { scan((published || []).map((row) => row.data)); } catch (error) { /* ещё не загружены */ }
+      return latest;
+    }
     const PAST_SLOTS = 300;
     let pastCount = 0;
     window.pairVenue = "{{ pair.venue|default:'finam' }}";
@@ -691,7 +703,12 @@
       if (!times.length) return { before, after };
       const step = (TF_MINUTES[currentTf()] || 60) * 60;
       for (let time = times[0] - step; before.length < PAST_SLOTS; time -= step) if (tradingHour(time)) before.push({ time });
-      for (let time = times.at(-1) + step; after.length < FUTURE_SLOTS; time += step) if (tradingHour(time)) after.push({ time });
+      // Впереди — не меньше FUTURE_SLOTS и до самого дальнего рисунка: иначе на 5 минутах
+      // (1200 слотов ≈ 6 дней) линия на 17 декабря прилипала к краю шкалы.
+      const horizon = drawingsHorizon();
+      for (let time = times.at(-1) + step; (after.length < FUTURE_SLOTS || time <= horizon) && after.length < MAX_FUTURE_SLOTS; time += step) {
+        if (tradingHour(time)) after.push({ time });
+      }
       return { before: before.reverse(), after };
     }
     let pendingFit = null;
