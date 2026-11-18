@@ -120,21 +120,28 @@ class AlertTests(TestCase):
 
     def test_touches_and_middle_with_repeat_pause(self):
         texts = []
+        clock = self.base + timedelta(days=1)
+
+        def check(minutes):
+            return alerts.check_channels(now=clock + timedelta(minutes=minutes))
         with mock.patch.object(alerts, "send", side_effect=lambda text, log=None: texts.append(text) or True):
             self.bar(0, 0.3)
-            self.assertEqual(alerts.check_channels(), [])  # первая проверка — только зона
+            self.assertEqual(check(0), [])  # первая проверка — только зона
             self.bar(1, 1.05)
-            self.assertEqual(alerts.check_channels(), [("CNY", "above")])
+            self.assertEqual(check(0), [("CNY", "above")])
             self.bar(2, 0.4)
-            self.assertEqual(alerts.check_channels(), [("CNY", "mid_down")])
+            # Середина через 30 минут после касания — пауза, сообщения нет.
+            self.assertEqual(check(30), [])
             self.bar(3, -0.1)
-            self.assertEqual(alerts.check_channels(), [("CNY", "below")])
+            self.assertEqual(check(70), [("CNY", "below")])
             self.bar(4, 0.2)
-            self.bar(5, -0.2)
-            # Снова ниже границы меньше чем через час — без повтора.
-            self.assertEqual(alerts.check_channels(), [])
+            self.assertEqual(check(100), [])
+            self.bar(5, 0.7)
+            self.assertEqual(check(140), [("CNY", "mid_up")])
+        self.assertEqual(len(texts), 3)
         self.assertIn("CNY", texts[0])
         self.assertIn("верхней границы", texts[0])
+        self.assertIn("сигнал 1ч", texts[0])  # у пары нет 5-минуток — по часам
 
     def test_five_minute_channel_checked_on_five_minute_bars(self):
         from strategy.models import SpreadBarM5
@@ -146,11 +153,25 @@ class AlertTests(TestCase):
             SpreadBarM5.objects.create(pair=self.pair, ts=self.base + timedelta(minutes=minutes), contract=self.future,
                                        future_close=1, perp_close=1, spot=1, raw_spread=rate, spread_rate=rate, days_left=30)
         with mock.patch.object(alerts, "send", return_value=True) as sent:
-            self.assertEqual(alerts.check_channels(base="H1"), [])  # часовой пересчёт 5-минутный канал не трогает
+            self.assertEqual(alerts.check_channels(base="H1"), [])  # есть 5-минутки — часовой пересчёт не трогает
             channel.zone = "lower"
             channel.save()
             self.assertEqual(alerts.check_channels(base="M5"), [("CNY", "above")])
-        self.assertIn("5м", sent.call_args[0][0])
+        self.assertIn("сигнал 5м", sent.call_args[0][0])
+
+    def test_hour_channel_signals_on_five_minute_bars(self):
+        from strategy.models import SpreadBarM5
+        # Канал нарисован на часе (setUp): верх 1. Часовой бар ещё внутри, а 5-минутка уже выше.
+        self.bar(0, 0.3)
+        for minutes, rate in ((0, 0.3), (5, 0.5), (10, 1.2)):
+            SpreadBarM5.objects.create(pair=self.pair, ts=self.base + timedelta(minutes=minutes), contract=self.future,
+                                       future_close=1, perp_close=1, spot=1, raw_spread=rate, spread_rate=rate, days_left=30)
+        self.channel.zone = "lower"
+        self.channel.save()
+        with mock.patch.object(alerts, "send", return_value=True) as sent:
+            self.assertEqual(alerts.check_channels(base="H1"), [])
+            self.assertEqual(alerts.check_channels(base="M5"), [("CNY", "above")])
+        self.assertIn("канал 1ч, сигнал 5м", sent.call_args[0][0])
 
     @override_settings(TELEGRAM_BOT_TOKEN="123:SECRET", TELEGRAM_CHAT_ID="-100500")
     def test_refusal_logs_reason_without_token(self):

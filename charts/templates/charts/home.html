@@ -1838,16 +1838,39 @@
       askUnpublish(ids);
       ids.forEach((id) => drawings.remove(id));
     }
+    // На какой линии нарисован канал. Показана одна — она. Показаны обе — та, что ближе
+    // к середине канала на его отрезке: рисунки живут на шкале очищенного, но цены у линий общие,
+    // и канал, нарисованный по сырому, — канал сырого спреда.
+    function channelLine(item) {
+      const shown = chartLines();
+      if (shown !== "both") return shown === "raw" ? "raw" : "rate";
+      const [p0, p1, p2] = item.points || [];
+      if (!p0 || !p1 || !p2) return "rate";
+      const start = Math.min(p0.time, p1.time), end = Math.max(p0.time, p1.time);
+      const priceAt = (time) => p0.time === p1.time ? p0.price : p0.price + (p1.price - p0.price) * (time - p0.time) / (p1.time - p0.time);
+      const shift = p2.price - priceAt(p2.time);
+      let raw = 0, rate = 0, count = 0;
+      points.forEach((point) => {
+        const time = unix(point.t);
+        if (time < start || time > end || point.raw === null || point.rate === null) return;
+        const middle = priceAt(time) + shift / 2;
+        raw += Math.abs(point.raw - middle);
+        rate += Math.abs(point.rate - middle);
+        count += 1;
+      });
+      return count && raw < rate ? "raw" : "rate";
+    }
     document.getElementById("draw-publish").addEventListener("click", async () => {
       const id = drawings.selection()[0];
       const item = id && drawings.get(id);
       if (!item || item.kind !== "parallel-channel") return;
       const again = published.some((row) => row.id === id);
-      const where = chartLines() === "raw" ? "сыром" : "очищенном";
+      const line = channelLine(item);
+      const where = line === "raw" ? "сыром" : "очищенном";
       if (!confirm(`${again ? "Обновить" : "Опубликовать"} этот канал в «Просмотр» на паре ${currentPair()}?\n` +
         `В «Просмотре» его увидят точно таким, как сейчас (на ${where} спреде), по нему пойдут оповещения в Телеграм.`)) return;
       try {
-        await sendPublished("POST", { pair: currentPair(), drawing: JSON.parse(JSON.stringify(item)), lines: chartLines() === "raw" ? "raw" : "rate", tf: currentTf() });
+        await sendPublished("POST", { pair: currentPair(), drawing: JSON.parse(JSON.stringify(item)), lines: line, tf: currentTf() });
         await refreshPublished();
       } catch (error) { alert("Опубликовать не удалось: " + error.message); }
     });

@@ -5,10 +5,15 @@
 считаются по торговым часам, как пустые слоты графика (tradingHour в home.html).
 Значение — последний бар пары: сырой спред (lines=raw) или очищенный.
 
+Сигнал — 5-минутные бары, на каком бы таймфрейме канал ни был нарисован: номер бара
+пропорционален торговому времени (fill_times), и канал с часа на 5 минутах тот же.
+У пары без 5-минуток канал проверяется по часам.
+
 Зоны: above (на верхней границе и выше), upper (верхняя половина), lower,
 below. Событие — вход в above или below (касание границы) и переход середины.
-Первая проверка после публикации только запоминает зону. Одно и то же событие
-не чаще раза в REPEAT: у границы спред может дрожать туда-обратно.
+Первая проверка после публикации только запоминает зону. Сообщений по каналу —
+не чаще раза в REPEAT, какое бы ни было событие: у границы спред может дрожать
+туда-обратно. Событие внутри паузы не отправляется и не копится.
 
 Отправка — Bot API напрямую (httpx), без отдельного процесса бота:
 проверку вызывает run_live после пересчёта пар.
@@ -161,13 +166,13 @@ def _number(value):
     return f"{value:,.3f}".replace(",", " ")
 
 
-def message(channel, event, value, lower, middle, upper, stamp):
+def message(channel, event, value, lower, middle, upper, stamp, signal="5м"):
     pair = channel.pair
     line = "сырой спред" if channel.lines == "raw" else "очищенный спред"
     border = {"above": upper, "below": lower}.get(event, middle)
     frame = {"M5": "5м", "M15": "15м", "H1": "1ч", "H4": "4ч"}.get(channel.frame, "1ч")
     return (
-        f"{pair.code} · {pair.title} · {frame}\n"
+        f"{pair.code} · {pair.title} · канал {frame}, сигнал {signal}\n"
         f"{line[0].upper() + line[1:]} {_number(value)} {EVENTS[event]} канала ({_number(border)}).\n"
         f"Канал: низ {_number(lower)} · середина {_number(middle)} · верх {_number(upper)} {pair.quote}\n"
         f"{stamp:%d.%m %H:%M} UTC"
@@ -177,13 +182,12 @@ def message(channel, event, value, lower, middle, upper, stamp):
 def check_channels(codes=None, log=None, now=None, base="H1"):
     """Проверить опубликованные каналы пар codes (None — все). Вернуть отправленные события.
 
-    base — какие каналы: H1 (часовые и 4-часовые, после часового пересчёта) или
-    M5 (5- и 15-минутные, после пересчёта 5 мин). Границы — по барам таймфрейма канала.
+    base — по каким барам: M5 (после пересчёта 5 мин) — все каналы пар с 5-минутками;
+    H1 (после часового пересчёта) — только каналы пар, у которых 5-минуток нет.
     """
     from charts import frames as tf
     now = now or dj_timezone.now()
-    kinds = [frame for frame in tf.MINUTES if tf.base(frame) == base]
-    channels = PublishedChannel.objects.select_related("pair").filter(pair__active=True, frame__in=kinds)
+    channels = PublishedChannel.objects.select_related("pair").filter(pair__active=True)
     if codes is not None:
         channels = channels.filter(pair__code__in=list(codes))
     sent = []
@@ -192,8 +196,13 @@ def check_channels(codes=None, log=None, now=None, base="H1"):
         if len(points) < 3:
             continue
         since = datetime.fromtimestamp(min(point["time"] for point in points[:3]), timezone.utc) - timedelta(days=3)
-        frame = channel.frame if channel.frame in tf.MINUTES else "H1"
+        frame = "M5"
         rows = tf.rows(channel.pair, frame, since=since)
+        if base != "M5":
+            if rows:
+                continue  # проверит 5-минутный пересчёт
+            frame = "H1"
+            rows = tf.rows(channel.pair, frame, since=since)
         if not rows:
             continue
         times = fill_times([int(row.ts.timestamp()) for row in rows], channel.pair.venue, tf.MINUTES[frame])
@@ -207,9 +216,9 @@ def check_channels(codes=None, log=None, now=None, base="H1"):
         zone = zone_of(value, lower, middle, upper)
         event = event_of(channel.zone, zone)
         fields = {"zone": zone}
-        repeated = event and channel.event == event and channel.event_at and now - channel.event_at < REPEAT
-        if event and not repeated:
-            send(message(channel, event, value, lower, middle, upper, ts), log)
+        paused = event and channel.event_at and now - channel.event_at < REPEAT
+        if event and not paused:
+            send(message(channel, event, value, lower, middle, upper, ts, "5м" if frame == "M5" else "1ч"), log)
             fields.update(event=event, event_at=now)
             sent.append((channel.pair.code, event))
         if fields["zone"] != channel.zone or "event" in fields:
