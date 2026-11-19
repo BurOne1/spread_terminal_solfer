@@ -35,6 +35,10 @@
     .tb svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.5; }
     .grow { flex: 1; }
     #status { color: var(--muted); font-size: 12px; }
+    .run { background: var(--accent); color: #fff; font-weight: 600; margin-left: 6px; }
+    .run:hover { background: var(--accent); filter: brightness(1.1); }
+    .run:disabled { opacity: .6; cursor: progress; }
+    .run.due { box-shadow: 0 0 0 2px var(--gold); }
 
     .side { grid-area: side; overflow-y: auto; padding: 10px 12px; border-right: 1px solid var(--line); background: var(--panel); }
     .field { display: grid; gap: 4px; margin-bottom: 12px; }
@@ -81,12 +85,13 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="title"><b>Аналитика</b><span>контракты спреда по дням до экспирации</span></div>
+    <div class="title"><b>Аналитика</b><span>контракты спреда по дням и часам до экспирации</span></div>
     <a class="tb" href="/">Спреды</a>
     <a class="tb" href="/radar/">Радар</a>
     <a class="tb on" href="/analytics/">Аналитика</a>
     <div class="grow"></div>
     <span id="status"></span>
+    <button type="button" class="tb run" id="run" title="Посчитать карты и зоны с текущими параметрами">▶ Рассчитать</button>
     <button type="button" class="tb" id="theme" title="Светлая / тёмная тема"><svg viewBox="0 0 18 18"><path d="M15 10.5A6.5 6.5 0 0 1 7.5 3a6.5 6.5 0 1 0 7.5 7.5Z"/></svg></button>
   </header>
 
@@ -98,6 +103,16 @@
       <div class="seg" id="series">
         <button type="button" data-value="raw" class="on" title="Фактический спред ног — PnL сделки">сырой</button>
         <button type="button" data-value="rate" title="Спред минус справедливая стоимость переноса">очищенный</button>
+      </div>
+    </div>
+    <div class="field"><span>Шаг сетки</span>
+      <div class="seg" id="step" title="Клетка карты. Мельче — точнее вход и выход, но не больше 300 клеток по оси: для длинного окна шаг крупнее">
+        <button type="button" data-value="4">4 ч</button><button type="button" data-value="8" class="on">8 ч</button><button type="button" data-value="16">16 ч</button>
+      </div>
+    </div>
+    <div class="field"><span>Вейвлет-сглаживание (db4)</span>
+      <div class="seg" id="wavelet" title="Добеши 4, мягкий порог: убирает часовой шум спреда и дневной шум фандинга. Видит весь ряд, включая будущее">
+        <button type="button" data-value="0" class="on">выкл</button><button type="button" data-value="1">вкл</button>
       </div>
     </div>
     <div class="field"><span>Месяц контракта</span><div class="chips" id="months"></div></div>
@@ -129,7 +144,17 @@
       <section class="card"><h3>Движение спреда к нулю</h3><div class="sub">медиана по годам, каждый контракт в своём масштабе: + сужение, − расхождение</div><div class="best" id="best-move"></div><div class="plot" id="plot-move"></div></section>
       <section class="card"><h3>Куда шёл спред: лонг или шорт</h3><div class="sub">медиана по годам, каждый контракт в своём масштабе: + рос (лонг), − падал (шорт)</div><div class="best" id="best-direction"></div><div class="plot" id="plot-direction"></div></section>
       <section class="card"><h3>Риск: MAE</h3><div class="sub">худшее движение против позиции на пути до выхода, % капитала, максимум по годам: зелёный — спокойно, красный — тянуло в минус</div><div class="best" id="best-mae"></div><div class="plot" id="plot-mae"></div></section>
-      <section class="card"><h3>Локальное движение в сигмах (z)</h3><div class="sub">(выход − вход) / (σ дневных изменений за 20 дн. до входа × √дней); уровень и ноль не важны. + рос (лонг), − падал (шорт); |z| ≥ 2 — сильнее шума</div><div class="best" id="best-zscore"></div><div class="plot" id="plot-zscore"></div></section>
+      <section class="card"><h3>Локальное движение в сигмах (z)</h3><div class="sub">(выход − вход) / (σ изменений за 20 дн. до входа × √шагов); уровень и ноль не важны. + рос (лонг), − падал (шорт); |z| ≥ 2 — сильнее шума</div><div class="best" id="best-zscore"></div><div class="plot" id="plot-zscore"></div></section>
+      <section class="card" id="card-funding" hidden>
+        <div class="card-head"><h3>Фандинг за удержание</h3>
+          <div class="seg" id="fmetric" style="margin-top:6px">
+            <button type="button" data-value="sum" class="on" title="Сумма фандинга от входа до выхода, % капитала">% капитала</button>
+            <button type="button" data-value="ann" title="Та же сумма в % годовых">% годовых</button>
+            <button type="button" data-value="rate" title="Средняя дневная ставка к цене, % годовых — без капитала">средняя ставка</button>
+          </div>
+        </div>
+        <div class="sub" id="sub-funding"></div><div class="best" id="best-funding"></div><div class="plot" id="plot-funding"></div>
+      </section>
     </div>
     <section class="card" style="margin-top:8px">
       <div class="card-head"><h3>Зоны входа и выхода</h3><a class="tb" id="export" href="#" title="Таблица зон и параметры расчёта в Excel">⤓ Excel</a></div>
@@ -160,9 +185,11 @@
     let last = null;
 
     function loadSettings() {
-      settings = { series: "raw", month: "", exclude: [], ...store.get(settingsKey(), {}) };
+      settings = { series: "raw", month: "", exclude: [], step: "8", wavelet: "0", fmetric: "sum", ...store.get(settingsKey(), {}) };
       for (const name of PARAMS) if (settings[name] !== undefined) $(name).value = settings[name];
-      document.querySelectorAll("#series button").forEach((button) => button.classList.toggle("on", button.dataset.value === settings.series));
+      for (const name of ["series", "step", "wavelet", "fmetric"]) {
+        document.querySelectorAll(`#${name} button`).forEach((button) => button.classList.toggle("on", button.dataset.value === String(settings[name])));
+      }
     }
     function saveSettings() {
       for (const name of PARAMS) settings[name] = $(name).value;
@@ -187,26 +214,53 @@
     }
 
     function query() {
-      const params = new URLSearchParams({ pair: $("pair").value, series: settings.series, month: settings.month, exclude: settings.exclude.join(",") });
+      const params = new URLSearchParams({ pair: $("pair").value, series: settings.series, month: settings.month, exclude: settings.exclude.join(","),
+        step: settings.step, wavelet: settings.wavelet });
       for (const name of PARAMS) params.set(name, $(name).value);
       return params.toString();
     }
 
-    let timer = null;
-    function schedule() { clearTimeout(timer); timer = setTimeout(refresh, 300); }
+    // Расчёт — только по кнопке «Рассчитать»: открытие страницы и смена параметров ВМ не грузят.
+    function schedule() {
+      saveSettings();
+      $("run").classList.add("due");
+      $("status").textContent = last ? "параметры изменены — нажмите «Рассчитать»" : "выберите параметры и нажмите «Рассчитать»";
+    }
+
+    const PLOTS = ["plot-lines", "plot-returns", "plot-move", "plot-direction", "plot-mae", "plot-zscore"];
+    // До расчёта: пустые карты с подсказкой.
+    function placeholder() {
+      last = null;
+      for (const id of PLOTS) empty(id, "Нажмите «Рассчитать»: карты считаются по запросу.");
+      for (const id of ["sub-lines", "best-lines", "sub-returns", "best-returns", "best-move", "best-direction", "best-mae", "best-zscore", "zone-target"]) $(id).textContent = "";
+      $("ranges").innerHTML = "";
+      $("card-funding").hidden = true;
+      $("export").removeAttribute("href");
+      $("run").classList.add("due");
+      $("status").textContent = "выберите параметры и нажмите «Рассчитать»";
+    }
 
     async function refresh() {
       saveSettings();
+      const button = $("run");
+      button.disabled = true;
+      button.classList.remove("due");
       $("status").textContent = "считаю…";
       try {
         const response = await fetch("/api/analytics/?" + query());
+        if (!response.ok) throw new Error(response.status);
         last = await response.json();
+        for (const id of PLOTS) if ($(id).querySelector(".empty")) $(id).innerHTML = "";
         paint(last);
         $("status").textContent = `контрактов в статистике ${last.used.length}` + (last.years.length ? ` · годы ${last.years.join(", ")}` : "");
       } catch (error) {
         $("status").textContent = "не удалось посчитать";
+        button.classList.add("due");
+      } finally {
+        button.disabled = false;
       }
     }
+    $("run").addEventListener("click", refresh);
 
     function layout(extra = {}) {
       return {
@@ -221,6 +275,15 @@
     // Красный — убыток или расхождение, зелёный — доход или сужение, как в gas_spreads.py (RdYlGn).
     const RDYLGN = [[0, "#a50026"], [0.15, "#d73027"], [0.3, "#f46d43"], [0.45, "#fee08b"], [0.5, "#ffffbf"],
       [0.55, "#d9ef8b"], [0.7, "#66bd63"], [0.85, "#1a9850"], [1, "#006837"]];
+    // Шаг сетки текущего ответа: клетка i — i × DAY дней до экспирации.
+    let STEP = 24, DAY = 1;
+    // «за 12 дн. 8 ч» по номеру клетки.
+    function when(index) {
+      const hours = Math.round(index * STEP);
+      const d = Math.floor(hours / 24), h = hours % 24;
+      return h ? `${d} дн. ${h} ч` : `${d} дн.`;
+    }
+    const num = (value) => Number.isInteger(value) ? String(value) : fmt(value, 1);
     const PALETTE = ["#4a88c7", "#cc7832", "#59a869", "#9876aa", "#c75450", "#d6a536", "#3fa9a0", "#b0715d", "#7f8fa6", "#c46bb0"];
 
     function paintLines(body) {
@@ -241,11 +304,12 @@
       }));
       const shapes = [{ type: "line", xref: "paper", x0: 0, x1: 1, y0: 0, y1: 0, line: { color: css("--muted"), width: 1 } }];
       if (best) {
-        shapes.push({ type: "line", yref: "paper", y0: 0, y1: 1, x0: best[0], x1: best[0], line: { color: css("--gold"), width: 1.5, dash: "dashdot" } });
-        shapes.push({ type: "line", yref: "paper", y0: 0, y1: 1, x0: best[1], x1: best[1], line: { color: css("--red"), width: 1.2, dash: "dash" } });
+        shapes.push({ type: "line", yref: "paper", y0: 0, y1: 1, x0: best[0] * DAY, x1: best[0] * DAY, line: { color: css("--gold"), width: 1.5, dash: "dashdot" } });
+        shapes.push({ type: "line", yref: "paper", y0: 0, y1: 1, x0: best[1] * DAY, x1: best[1] * DAY, line: { color: css("--red"), width: 1.2, dash: "dash" } });
       }
       Plotly.react("plot-lines", traces, layout({ shapes, showlegend: true, legend: { font: { size: 10 }, orientation: "h", x: 0, y: 1.02, yanchor: "bottom" }, margin: { l: 48, r: 12, t: 26, b: 38 } }), config);
-      $("sub-lines").textContent = `${body.title}, ${body.params.series === "rate" ? "очищенный" : "сырой"} спред, дневные средние, ${body.width - 1} дн. до склейки; жирная — идёт, пунктир — исключён`;
+      $("sub-lines").textContent = `${body.title}, ${body.params.series === "rate" ? "очищенный" : "сырой"} спред, дневные средние` +
+        `${body.params.wavelet ? " после вейвлета" : ""}, ${body.width_days - 1} дн. до склейки; жирная — идёт, пунктир — исключён`;
       if (body.period_days) {
         // Подписи глубины под пару: квартал у квартальных, месяц у нефти и газа.
         const unit = body.period_days > 45 ? ["квартал", "2 квартала"] : ["месяц", "2 месяца"];
@@ -253,16 +317,18 @@
         options[0].textContent = `${unit[0]}, ${body.period_days} дн.`;
         options[1].textContent = `${unit[1]}, ${body.period_days * 2} дн.`;
       }
-      $("best-lines").innerHTML = best ? `<span style="color:${css("--gold")}">┆ вход за ${best[0]} дн.</span> → <span style="color:${css("--red")}">┆ выход за ${best[1]} дн.</span> — лучшая клетка сетки дохода` : "";
+      $("best-lines").innerHTML = best ? `<span style="color:${css("--gold")}">┆ вход за ${when(best[0])}</span> → <span style="color:${css("--red")}">┆ выход за ${when(best[1])}</span> — лучшая клетка сетки дохода` : "";
     }
 
     function heat(id, grid, best, text, colorbar, opts = {}) {
       const width = grid.length;
+      const day = opts.day || DAY;
+      const axis = Array.from({ length: width }, (_, index) => index * day);
       const z = [], hover = [];
       for (let dout = 0; dout < width; dout++) {
         const row = [], hrow = [];
         for (let din = 0; din < width; din++) {
-          const value = grid[din][dout];
+          const value = grid[din][dout] ?? null;  // строки обрезаны после последнего выхода
           row.push(value);
           hrow.push(value === null ? "" : text(din, dout));
         }
@@ -274,19 +340,20 @@
       const scale = opts.sequential ? { zmin: 0, zmax: vmax, colorscale: opts.colorscale || RISK }
         : { zmin: -vmax, zmax: vmax, zmid: 0, colorscale: RDYLGN };
       const traces = [{
-        type: "heatmap", z, text: hover, hovertemplate: "%{text}<extra></extra>", ...scale,
+        type: "heatmap", x: axis, y: axis, z, text: hover, hovertemplate: "%{text}<extra></extra>", ...scale,
         colorbar: { title: { text: colorbar, side: "right", font: { size: 10 } }, thickness: 12 },
       }];
-      if (best) traces.push({ type: "scatter", mode: "markers", x: [best[0]], y: [best[1]], hoverinfo: "skip",
+      if (best) traces.push({ type: "scatter", mode: "markers", x: [best[0] * day], y: [best[1] * day], hoverinfo: "skip",
         marker: { symbol: "star", size: 16, color: "#ffd23f", line: { color: "#000", width: 1 } } });
       const hold = Number($("hold").value) || 0;
-      const shapes = [{ type: "line", x0: hold, y0: 0, x1: width - 1, y1: width - 1 - hold, line: { color: css("--muted"), width: 1, dash: "dot" } }]
+      const end = (width - 1) * day;
+      const shapes = [{ type: "line", x0: hold, y0: 0, x1: end, y1: end - hold, line: { color: css("--muted"), width: 1, dash: "dot" } }]
         .concat(opts.shapes || []);
       // Одинаковый отступ у всех карт: диапазон осей задан явно, ★ на краю его не раздвигает.
-      const pad = Math.max(2, width * 0.03);
+      const pad = Math.max(2 * day, end * 0.03);
       Plotly.react(id, traces, layout({ shapes, annotations: opts.annotations || [], margin: { l: 56, r: 12, t: 8, b: 40 },
-        yaxis: { title: { text: "день выхода", font: { size: 11 } }, gridcolor: css("--grid"), range: [-pad, width - 1 + pad], autorange: false },
-        xaxis: { title: { text: "день входа, дней до экспирации", font: { size: 11 } }, gridcolor: css("--grid"), range: [width - 1 + pad, -pad], autorange: false } }), config);
+        yaxis: { title: { text: "выход, дней до экспирации", font: { size: 11 } }, gridcolor: css("--grid"), range: [-pad, end + pad], autorange: false },
+        xaxis: { title: { text: "вход, дней до экспирации", font: { size: 11 } }, gridcolor: css("--grid"), range: [end + pad, -pad], autorange: false } }), config);
     }
 
     function empty(id, note) {
@@ -297,7 +364,10 @@
     const METRIC = { ret: "% за период", ann: "% годовых", ratio: "доход / разброс" };
 
     function paint(body) {
+      STEP = body.step || 24;
+      DAY = STEP / 24;
       paintLines(body);
+      paintFunding(body);
       if (body.note) {
         for (const id of ["plot-returns", "plot-move", "plot-direction", "plot-mae", "plot-zscore"]) empty(id, body.note + ". Статистика появится, когда накопятся контракты или загрузится история (import_tv).");
         for (const id of ["best-returns", "best-move", "best-direction", "sub-returns", "best-mae", "best-zscore"]) $(id).textContent = "";
@@ -307,54 +377,81 @@
       for (const id of ["plot-returns", "plot-move", "plot-direction", "plot-mae", "plot-zscore"]) if ($(id).querySelector(".empty")) $(id).innerHTML = "";
       const R = body.returns, metric = body.params.metric;
       heat("plot-returns", R.smooth, body.best.returns, (i, o) =>
-        `вход ${i} → выход ${o} дн. (${R.side[i][o] > 0 ? "продажа" : "покупка"})<br>` +
+        `вход за ${when(i)} → выход за ${when(o)} (${R.side[i][o] > 0 ? "продажа" : "покупка"})<br>` +
         `${fmt(R.ret[i][o], 2, true)}% за период, ${fmt(R.ann[i][o], 1, true)}% год.<br>` +
         `худший год ${fmt(R.worst[i][o], 1, true)}% год., в плюс ${pct(R.win[i][o])}<br>` +
         `MAE ${fmt(R.mae[i][o], 2)}%, доход/разброс ${fmt(R.ratio[i][o], 2)}, лет ${R.n[i][o]}`, METRIC[metric] + " (сглаж.)", zoneMarks(body.ranges));
       $("sub-returns").textContent = `${METRIC[metric]}, выход по фактическому спреду; капитал ${body.params.capital}% цены, удержание ≥ ${body.params.hold} дн.` +
+        `; клетка ${STEP < 24 ? STEP + " ч" : "день"}` + (STEP !== body.params.step ? ` (${body.params.step} ч дали бы больше 300 клеток)` : "") +
+        (body.params.wavelet ? "; вейвлет видит весь ряд, включая будущее — доход выглядит лучше достижимого, сверяйте без него" : "") +
         (body.absolute ? "; цены у пары нет, база — 1 $: при капитале 100 % 1 % = 0.01 $/MMBtu" : "");
       const b = body.best.returns;
-      $("best-returns").textContent = b ? `★ вход за ${b[0]} → выход за ${b[1]} дн., ${R.side[b[0]][b[1]] > 0 ? "продажа" : "покупка"}: ` +
+      $("best-returns").textContent = b ? `★ вход за ${when(b[0])} → выход за ${when(b[1])}, ${R.side[b[0]][b[1]] > 0 ? "продажа" : "покупка"}: ` +
         `${fmt(R.ret[b[0]][b[1]], 2, true)}% за период, ${fmt(R.ann[b[0]][b[1]], 1, true)}% год., в плюс ${pct(R.win[b[0]][b[1]])}, MAE ${fmt(R.mae[b[0]][b[1]], 2)}%` : "прибыльных клеток нет";
 
       const M = body.move;
       heat("plot-move", M.smooth, body.best.move, (i, o) =>
-        `вход ${i} → выход ${o} дн.<br>сужение ${fmt(M.move[i][o], 2, true)} масштаба (медиана)<br>в ${pct(M.agree[i][o])} лет, |Δспреда| ${fmt(M.raw[i][o], 4, true)}`, "+ сужение / − расхождение");
+        `вход за ${when(i)} → выход за ${when(o)}<br>сужение ${fmt(M.move[i][o], 2, true)} масштаба (медиана)<br>в ${pct(M.agree[i][o])} лет, |Δспреда| ${fmt(M.raw[i][o], 4, true)}`, "+ сужение / − расхождение");
       const m = body.best.move;
-      $("best-move").textContent = m ? `★ вход за ${m[0]} → выход за ${m[1]} дн.: сужение ${fmt(M.move[m[0]][m[1]], 2, true)} масштаба в ${pct(M.agree[m[0]][m[1]])} лет, |Δ| ${fmt(M.raw[m[0]][m[1]], 4, true)}` : "сужения нет";
+      $("best-move").textContent = m ? `★ вход за ${when(m[0])} → выход за ${when(m[1])}: сужение ${fmt(M.move[m[0]][m[1]], 2, true)} масштаба в ${pct(M.agree[m[0]][m[1]])} лет, |Δ| ${fmt(M.raw[m[0]][m[1]], 4, true)}` : "сужения нет";
 
       const D = body.direction;
       heat("plot-direction", D.smooth, body.best.direction, (i, o) =>
-        `вход ${i} → выход ${o} дн.: ${D.move[i][o] > 0 ? "рос — лонг" : "падал — шорт"}<br>${fmt(D.move[i][o], 2, true)} масштаба (медиана), в ${pct(D.agree[i][o])} лет<br>Δспреда ${fmt(D.raw[i][o], 4, true)}`, "+ лонг / − шорт");
+        `вход за ${when(i)} → выход за ${when(o)}: ${D.move[i][o] > 0 ? "рос — лонг" : "падал — шорт"}<br>${fmt(D.move[i][o], 2, true)} масштаба (медиана), в ${pct(D.agree[i][o])} лет<br>Δспреда ${fmt(D.raw[i][o], 4, true)}`, "+ лонг / − шорт");
       const d = body.best.direction;
-      $("best-direction").innerHTML = d ? `★ вход за ${d[0]} → выход за ${d[1]} дн.: <span class="${D.move[d[0]][d[1]] > 0 ? "up" : "down"}">${D.move[d[0]][d[1]] > 0 ? "лонг" : "шорт"}</span>, ` +
+      $("best-direction").innerHTML = d ? `★ вход за ${when(d[0])} → выход за ${when(d[1])}: <span class="${D.move[d[0]][d[1]] > 0 ? "up" : "down"}">${D.move[d[0]][d[1]] > 0 ? "лонг" : "шорт"}</span>, ` +
         `${fmt(D.move[d[0]][d[1]], 2, true)} масштаба в ${pct(D.agree[d[0]][d[1]])} лет, Δ ${fmt(D.raw[d[0]][d[1]], 4, true)}` : "устойчивого направления нет";
 
       paintZones(body);
       $("export").href = "/api/analytics/export.xlsx?" + query();
 
       heat("plot-mae", R.mae, null, (i, o) =>
-        `вход ${i} → выход ${o} дн. (${R.side[i][o] > 0 ? "продажа" : "покупка"})<br>MAE ${fmt(R.mae[i][o], 2)}% капитала<br>` +
+        `вход за ${when(i)} → выход за ${when(o)} (${R.side[i][o] > 0 ? "продажа" : "покупка"})<br>MAE ${fmt(R.mae[i][o], 2)}% капитала<br>` +
         `${fmt(R.ret[i][o], 2, true)}% за период, в плюс ${pct(R.win[i][o])}, лет ${R.n[i][o]}`, "MAE, % капитала", { sequential: true, ...zoneMarks(body.ranges) });
       const zone = body.ranges[0];
       $("best-mae").textContent = zone ? `зона 1, лучшая клетка: MAE ${fmt(zone.mae, 2)}% капитала при ${fmt(zone.ret, 2, true)}% за период` : "";
 
       const Z = body.zscore;
       heat("plot-zscore", Z.smooth, body.best.zscore, (i, o) =>
-        `вход ${i} → выход ${o} дн.: ${Z.move[i][o] > 0 ? "рос — лонг" : "падал — шорт"}<br>z ${fmt(Z.move[i][o], 2, true)} (медиана), в ${pct(Z.agree[i][o])} лет<br>Δспреда ${fmt(Z.raw[i][o], 4, true)}, лет ${Z.n[i][o]}`, "z: + лонг / − шорт");
+        `вход за ${when(i)} → выход за ${when(o)}: ${Z.move[i][o] > 0 ? "рос — лонг" : "падал — шорт"}<br>z ${fmt(Z.move[i][o], 2, true)} (медиана), в ${pct(Z.agree[i][o])} лет<br>Δспреда ${fmt(Z.raw[i][o], 4, true)}, лет ${Z.n[i][o]}`, "z: + лонг / − шорт");
       const zb = body.best.zscore;
-      $("best-zscore").innerHTML = zb ? `★ вход за ${zb[0]} → выход за ${zb[1]} дн.: <span class="${Z.move[zb[0]][zb[1]] > 0 ? "up" : "down"}">${Z.move[zb[0]][zb[1]] > 0 ? "лонг" : "шорт"}</span>, ` +
+      $("best-zscore").innerHTML = zb ? `★ вход за ${when(zb[0])} → выход за ${when(zb[1])}: <span class="${Z.move[zb[0]][zb[1]] > 0 ? "up" : "down"}">${Z.move[zb[0]][zb[1]] > 0 ? "лонг" : "шорт"}</span>, ` +
         `z ${fmt(Z.move[zb[0]][zb[1]], 2, true)} в ${pct(Z.agree[zb[0]][zb[1]])} лет, Δ ${fmt(Z.raw[zb[0]][zb[1]], 4, true)}` : "устойчивого движения нет";
     }
 
-    const days = (range) => range[0] === range[1] ? `${range[0]}` : `${range[1]}–${range[0]}`;
+    const days = (range) => range[0] === range[1] ? num(range[0]) : `${num(range[1])}–${num(range[0])}`;
+
+    // Фандинг: дневная сетка, знак — для лонга спреда (шорт вечного): + получает, − платит.
+    const FUNDING = { sum: "% капитала за удержание", ann: "% годовых за удержание", rate: "средняя ставка, % годовых" };
+    function paintFunding(body) {
+      const card = $("card-funding");
+      const F = body.funding;
+      card.hidden = !F;
+      if (!F) return;
+      if (F.note || body.note) {
+        empty("plot-funding", F.note || body.note);
+        $("sub-funding").textContent = ""; $("best-funding").textContent = "";
+        return;
+      }
+      if ($("plot-funding").querySelector(".empty")) $("plot-funding").innerHTML = "";
+      const metric = FUNDING[settings.fmetric] ? settings.fmetric : "sum";
+      heat("plot-funding", F[metric], null, (i, o) =>
+        `вход за ${i} → выход за ${o} дн.<br>${fmt(F.sum[i][o], 3, true)}% капитала, ${fmt(F.ann[i][o], 2, true)}% год.<br>` +
+        `средняя ставка ${fmt(F.rate[i][o], 2, true)}% год., лет ${F.n[i][o]}`, FUNDING[metric], { day: 1 });
+      $("sub-funding").textContent = `+ получает лонг спреда (шорт вечного), − платит; медиана по годам; по дням — фандинг начисляется раз в день` +
+        `; капитал ${body.params.capital}% цены` + (body.params.wavelet ? "; ряд фандинга сглажен вейвлетом" : "");
+      const hold = Number(body.params.hold) || 1;
+      // Ставка на самом коротком удержании вдоль окна: строки обрезаны, короче удержания клеток нет.
+      const typical = F.rate.map((row, i) => (i >= hold ? row[i - hold] : null)).filter((value) => value !== null && value !== undefined);
+      $("best-funding").textContent = typical.length ? `средняя ставка за окно: ${fmt(typical.reduce((a, b) => a + b, 0) / typical.length, 2, true)}% год.` : "";
+    }
 
     // Рамки зон на картах: номер зоны в углу, цвет — сторона.
     function zoneMarks(ranges) {
       const shapes = [], annotations = [];
       (ranges || []).forEach((zone, index) => {
         const color = zone.side === "лонг" ? css("--green") : css("--red");
-        shapes.push({ type: "rect", x0: zone.entry[0] - 0.5, x1: zone.entry[1] + 0.5, y0: zone.exit[0] - 0.5, y1: zone.exit[1] + 0.5,
+        shapes.push({ type: "rect", x0: zone.entry[0] - DAY / 2, x1: zone.entry[1] + DAY / 2, y0: zone.exit[0] - DAY / 2, y1: zone.exit[1] + DAY / 2,
           line: { color, width: 2, dash: "dash" } });
         annotations.push({ x: zone.entry[1], y: zone.exit[1], text: `<b>${index + 1}</b>`, showarrow: false, xanchor: "left", yanchor: "bottom",
           font: { color: "#fff", size: 11 }, bgcolor: color, borderpad: 2 });
@@ -392,7 +489,7 @@
           `<td>${days(r.buy)}</td><td>${days(r.sell)}</td>` +
           (target ? `<td class="${r.late && r.side === "лонг" ? "dim" : ""}">${dateSpan(r.buy_dates)}</td><td class="${r.late && r.side === "шорт" ? "dim" : ""}">${dateSpan(r.sell_dates)}</td>` : "") +
           `<td>${days(r.hold)} дн.</td>` +
-          `<td>за ${r.best[0]} → за ${r.best[1]} дн. <span class="dim">(${r.cells} кл.)</span></td>` +
+          `<td>за ${num(r.best[0])} → за ${num(r.best[1])} дн. <span class="dim">(${r.cells} кл.)</span></td>` +
           `<td class="${r.ret > 0 ? "up" : "down"}">${fmt(r.ret, 2, true)}%</td><td>${fmt(r.ann, 1, true)}%</td><td>${fmt(r.worst, 1, true)}%</td>` +
           `<td>${pct(r.win)}</td><td>${fmt(r.mae, 2)}%</td><td>${fmt(r.ratio, 2)}</td><td>${pct(r.agree)} лет</td><td>${fmt(r.z, 2, true)}</td><td>${r.n}</td></tr>`).join("") +
         `</tbody></table>`;
@@ -406,7 +503,7 @@
       history.replaceState(null, "", "?pair=" + encodeURIComponent($("pair").value));
       loadSettings();
       await loadContracts();
-      refresh();
+      placeholder();
     });
     $("series").addEventListener("click", (event) => {
       const button = event.target.closest("button");
@@ -414,6 +511,23 @@
       settings.series = button.dataset.value;
       document.querySelectorAll("#series button").forEach((b) => b.classList.toggle("on", b === button));
       schedule();
+    });
+    for (const name of ["step", "wavelet"]) {
+      $(name).addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        settings[name] = button.dataset.value;
+        document.querySelectorAll(`#${name} button`).forEach((b) => b.classList.toggle("on", b === button));
+        schedule();
+      });
+    }
+    $("fmetric").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      settings.fmetric = button.dataset.value;
+      document.querySelectorAll("#fmetric button").forEach((b) => b.classList.toggle("on", b === button));
+      saveSettings();
+      if (last) paintFunding(last);
     });
     $("months").addEventListener("click", (event) => {
       const chip = event.target.closest(".chip");
@@ -452,7 +566,7 @@
       if (!$("pair").value) { $("status").textContent = "нет активных пар"; return; }
       loadSettings();
       await loadContracts();
-      refresh();
+      placeholder();
     })();
   </script>
 </body>

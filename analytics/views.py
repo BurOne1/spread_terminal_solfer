@@ -1,12 +1,14 @@
 """Страница аналитики контрактов и её JSON.
 
 Выбор: пара, ряд (сырой или очищенный), месяц контракта или все, исключённые
-контракты и параметры сделки. Ответ: линии контрактов по дням до склейки,
-три сетки «вход × выход» и лучшие диапазоны. Расчёт кэшируется, пока у пары
-не появились новые бары.
+контракты, шаг сетки (4/8/16 ч, 24 — дни), вейвлет и параметры сделки. Ответ:
+линии контрактов по дням до склейки, сетки «вход × выход» в шагах (day — дней
+в шаге), лучшие диапазоны в днях и сетка фандинга по дням. Расчёт кэшируется,
+пока у пары не появились новые бары.
 """
 
 import json
+import math
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 
@@ -15,7 +17,7 @@ from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
 
 from analytics import core
-from analytics.data import MONTH_NAMES, MONTHS, contracts
+from analytics.data import MONTH_NAMES, MONTHS, contracts, funding_matrix, load
 from analytics.history import refresh, stale
 from analytics.models import HistoryBar
 from analytics.xlsx import workbook
@@ -37,6 +39,21 @@ def period_days(pair):
 CACHE_SIZE = 24
 CACHE_BYTES = 48 * 1024 * 1024
 _cache = OrderedDict()
+
+STEPS = (4, 8, 16, 24)
+DEFAULT_STEP = 8
+# Клеток по оси не больше: дальше карта — десятки МБ и неразличимые клетки.
+MAX_CELLS = 300
+# Допуск ближайшей точки, как у дневных рядов: 3 дня.
+TOLERANCE_DAYS = 3
+
+
+def grid_step(chosen, width_days):
+    """Шаг сетки в часах: выбранный или крупнее, чтобы по оси было не больше MAX_CELLS клеток."""
+    for step in STEPS:
+        if step >= chosen and math.ceil(width_days * 24 / step) <= MAX_CELLS:
+            return step
+    return STEPS[-1]
 
 
 def _pair(code):
@@ -97,6 +114,8 @@ def _params(request):
         "capital": _float(request, "capital", 100.0, 1.0, 1000.0),
         "cost": _float(request, "cost", 0.0, 0.0, 1e9),
         "metric": request.GET.get("metric") if request.GET.get("metric") in ("ret", "ann", "ratio") else "ret",
+        "step": _int(request, "step", DEFAULT_STEP, 4, 24) if _int(request, "step", DEFAULT_STEP, 4, 24) in STEPS else DEFAULT_STEP,
+        "wavelet": request.GET.get("wavelet") == "1",
     }
 
 
@@ -173,7 +192,9 @@ def analytics_xlsx(request):
                 ["месяц контракта", params["month"] or "все"],
                 ["контракты в статистике", ", ".join(body.get("used") or [])],
                 ["исключены", ", ".join(params["exclude"])],
-                ["окно, дн. до склейки", body.get("width", 1) - 1],
+                ["окно, дн. до склейки", body.get("width_days", 1) - 1],
+                ["клетка сетки", f"{body.get('step', 24)} ч" if body.get("step", 24) < 24 else "день"],
+                ["вейвлет db4", "вкл" if params["wavelet"] else "выкл"],
                 ["склейка для дат", "" if not body.get("target") else
                  f"{body['target']['code']} {datetime.fromisoformat(body['target']['roll']):%d.%m.%Y}"
                  + (" (оценка по прошлому году)" if body["target"]["estimated"] else "")],
@@ -233,8 +254,38 @@ def _add_dates(body, chosen, now=None):
         zone["late"] = first[1] < today.isoformat()
 
 
+def _triangle(grid, hold):
+    """Сетка без пустого верхнего треугольника: строка входа din — выходы 0 … din − hold.
+
+    Выход не раньше входа плюс удержание, остальное всегда пусто, а в JSON это
+    почти половина ответа. Страница дочитывает недостающие клетки как пустые.
+    """
+    return [row[:max(0, din - hold + 1)] for din, row in enumerate(grid)]
+
+
+def _in_days(zone, day):
+    """Поля зоны из шагов сетки в дни до экспирации."""
+    convert = (lambda value: value if day == 1 else round(value * day, 2))
+    for key in ("buy", "sell", "entry", "exit", "hold", "best"):
+        zone[key] = [convert(value) for value in zone[key]]
+    return zone
+
+
+def _funding(pair, used, width_days, params):
+    """Сетка фандинга по дням для пар с вечным: сумма за удержание, годовые, средняя ставка."""
+    found = funding_matrix(pair, used, width_days, params["wavelet"])
+    if found is None:
+        return None
+    F, P = found
+    grid = core.funding_grid(F, P, params["hold"], params["capital"], params["years"])
+    if not core.np.isfinite(grid["n"]).any():
+        return {"note": "фандинг есть, но не покрывает окна истёкших контрактов"}
+    return {key: _triangle(grid[key], params["hold"]) for key in ("sum", "ann", "rate", "n")}
+
+
 def _compute(pair, params):
-    found = contracts(pair, params["series"])
+    loaded = load(pair, params["series"])
+    found = contracts(pair, params["series"], denoise=params["wavelet"], loaded=loaded)
     chosen = [item for item in found if not params["month"] or item["month"] == params["month"]]
     excluded = set(params["exclude"])
     used = [item for item in chosen if not item["live"] and item["code"] not in excluded and item["points"]]
@@ -244,7 +295,7 @@ def _compute(pair, params):
     limit = period * params["periods"]
     if params["max_days"]:
         limit = min(limit, params["max_days"])
-    width = min(longest, limit) + 1
+    width = width_days = min(longest, limit) + 1
     lines = [
         {
             "code": item["code"], "year": item["year"], "month": item["month"], "live": item["live"],
@@ -254,9 +305,11 @@ def _compute(pair, params):
         }
         for item in chosen
     ]
+    step = grid_step(params["step"], width_days)
+    day = step / 24
     body = {
         "pair": pair.code, "title": pair.title, "quote": pair.quote, "absolute": pair.absolute_levels,
-        "params": params, "width": width, "period_days": period,
+        "params": params, "width": width, "width_days": width_days, "step": step, "day": day, "period_days": period,
         "lines": lines, "used": [item["code"] for item in used],
         "years": sorted({item["year"] for item in used}),
     }
@@ -266,20 +319,34 @@ def _compute(pair, params):
             if len(used) < params["years"] else f"окно {width} дн. не длиннее удержания {params['hold']} дн."
         )
         return core.clean(body)
-    S, P = core.matrix(used, width)
+    per_day = 24 // step if step < 24 else 1
+    if step < 24:
+        codes = {item["code"] for item in used}
+        stepped = contracts(pair, params["series"], step_hours=step, denoise=params["wavelet"], loaded=loaded)
+        grid_items = [item for item in stepped if item["code"] in codes and item["points"]]
+        width = math.ceil(width_days * 24 / step)
+    else:
+        grid_items = used
+    hold = max(1, math.ceil(params["hold"] / day))
+    smooth = round(params["smooth"] / day)
+    tolerance = round(TOLERANCE_DAYS / day)
+    lookback = round(core.Z_LOOKBACK / day)
+    body["width"] = width
+    S, P = core.matrix(grid_items, width, tolerance)
     G, best = core.returns_grid(
-        S, P, params["hold"], params["capital"], params["cost"], params["years"], params["smooth"], params["metric"],
+        S, P, hold, params["capital"], params["cost"], params["years"], smooth, params["metric"], day,
     )
-    M, best_move = core.move_grid(S, params["hold"], params["years"], params["smooth"])
-    D, best_side = core.side_grid(S, params["hold"], params["years"], params["smooth"])
-    Z, best_z = core.zscore_grid(S, params["hold"], params["years"], params["smooth"])
+    M, best_move = core.move_grid(S, hold, params["years"], smooth)
+    D, best_side = core.side_grid(S, hold, params["years"], smooth)
+    Z, best_z = core.zscore_grid(S, hold, params["years"], smooth, lookback, core.Z_MIN_CHANGES * per_day)
     body.update({
-        "returns": {key: G[key] for key in ("smooth", "ret", "ann", "worst", "win", "mae", "ratio", "n", "side")},
-        "move": {key: M[key] for key in ("smooth", "move", "agree", "raw", "n")},
-        "direction": {key: D[key] for key in ("smooth", "move", "agree", "raw", "n")},
-        "zscore": {key: Z[key] for key in ("smooth", "move", "agree", "raw", "n")},
+        "returns": {key: _triangle(G[key], hold) for key in ("smooth", "ret", "ann", "worst", "win", "mae", "ratio", "n", "side")},
+        "move": {key: _triangle(M[key], hold) for key in ("smooth", "move", "agree", "raw", "n")},
+        "direction": {key: _triangle(D[key], hold) for key in ("smooth", "move", "agree", "raw", "n")},
+        "zscore": {key: _triangle(Z[key], hold) for key in ("smooth", "move", "agree", "raw", "n")},
         "best": {"returns": best, "move": best_move, "direction": best_side, "zscore": best_z},
-        "ranges": core.zones(G, D, Z, M, params["share"] / 100),
+        "ranges": [_in_days(zone, day) for zone in core.zones(G, D, Z, M, params["share"] / 100)],
+        "funding": _funding(pair, used, width_days, params),
     })
     if params["month"]:
         _add_dates(body, chosen)

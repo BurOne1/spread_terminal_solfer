@@ -117,6 +117,53 @@ class CoreTests(SimpleTestCase):
 
     def test_clean_replaces_nan(self):
         self.assertEqual(core.clean({"a": [core.NAN, 1.234567891]}), {"a": [None, 1.23457]})
+        self.assertEqual(core.clean(core.np.array([[core.NAN, 2.0]])), [[None, 2.0]])
+
+    def test_hours_turn_into_days_for_annual(self):
+        # Тот же спред по 4-часовым шагам: годовые — по дням удержания, а не по шагам.
+        G, _ = core.returns_grid(self.S, self.P, min_hold=5, min_years=2, smooth_half=0)
+        G4, _ = core.returns_grid(self.S, self.P, min_hold=5, min_years=2, smooth_half=0, day=1 / 6)
+        self.assertAlmostEqual(G4["ret"][20][0], G["ret"][20][0], places=9)
+        self.assertAlmostEqual(G4["ann"][20][0], G["ann"][20][0] * 6, places=6)
+
+    def test_funding_grid_sums_days_of_holding(self):
+        # Два года по 0.01 на единицу в день при цене 100: 10 дней — 0.1 % капитала.
+        F = [[0.01] * 30, [0.01] * 30]
+        P = [[100.0] * 30, [100.0] * 30]
+        grid = core.funding_grid(F, P, min_hold=5, capital_pct=100, min_years=2)
+        self.assertAlmostEqual(grid["sum"][10][0], 0.1, places=9)
+        self.assertAlmostEqual(grid["ann"][10][0], 0.1 * 36.5, places=9)
+        self.assertAlmostEqual(grid["rate"][10][0], 0.01 / 100 * 365 * 100, places=9)
+        self.assertEqual(grid["n"][10][0], 2)
+        self.assertFalse(core.finite(grid["sum"][3][0]))  # короче удержания
+        # День без фандинга (вечного ещё не было) — клетка по этому контракту не считается.
+        F[1][5] = core.NAN
+        grid = core.funding_grid(F, P, min_hold=5, capital_pct=100, min_years=2)
+        self.assertFalse(core.finite(grid["sum"][10][0]))
+        self.assertTrue(core.finite(grid["sum"][20][10]))
+
+
+class DenoiseTests(SimpleTestCase):
+    def test_wavelet_removes_noise_and_keeps_length(self):
+        import math
+        import random
+        from analytics.denoise import wavelet_denoise
+        random.seed(5)
+        clean = [math.sin(k / 40) for k in range(600)]
+        noisy = [value + random.gauss(0, 0.2) for value in clean]
+        smooth = wavelet_denoise(noisy)
+        self.assertEqual(len(smooth), len(noisy))
+        error = (lambda series: sum((a - b) ** 2 for a, b in zip(series, clean)) / len(clean))
+        self.assertLess(error(smooth), error(noisy) / 4)
+        # Короткий ряд не трогаем.
+        self.assertEqual(wavelet_denoise([1.0, 2.0, 3.0]), [1.0, 2.0, 3.0])
+
+    def test_grid_step_is_capped_by_cells(self):
+        self.assertEqual(views.grid_step(4, 31), 4)     # месяц: 186 клеток
+        self.assertEqual(views.grid_step(4, 93), 8)     # квартал: 4 ч дали бы 558
+        self.assertEqual(views.grid_step(8, 185), 16)   # два квартала
+        self.assertEqual(views.grid_step(16, 31), 16)   # крупнее не мельчит
+        self.assertEqual(views.grid_step(4, 400), 24)
 
     def test_contract_month(self):
         roll = datetime(2026, 11, 25, tzinfo=UTC)
@@ -166,7 +213,8 @@ class AnalyticsApiTests(TestCase):
         self.assertNotIn("note", body)
         self.assertEqual(body["used"], ["TTZ2022", "TTZ2023", "TTZ2024", "TTZ2025"])
         self.assertEqual(len(body["lines"]), 5)
-        self.assertEqual(body["width"], 41)
+        # Окно 41 день, по умолчанию шаг 8 часов: 123 клетки по оси.
+        self.assertEqual((body["width_days"], body["step"], body["width"]), (41, 8, 123))
         din, dout = body["best"]["returns"]
         self.assertEqual(body["returns"]["side"][din][dout], 1)
         self.assertLess(body["direction"]["move"][30][0], 0)
@@ -231,7 +279,7 @@ class AnalyticsApiTests(TestCase):
             one = self.client.get("/api/analytics/?pair=TEST&hold=5&periods=1").json()
             two = self.client.get("/api/analytics/?pair=TEST&hold=5&periods=2").json()
             cut = self.client.get("/api/analytics/?pair=TEST&hold=5&periods=2&max_days=20").json()
-        self.assertEqual((one["width"], two["width"], cut["width"]), (16, 31, 21))
+        self.assertEqual((one["width_days"], two["width_days"], cut["width_days"]), (16, 31, 21))
         self.assertEqual(one["period_days"], 15)
         self.assertLessEqual(max(max(line["x"]) for line in one["lines"]), 15)
 
@@ -240,6 +288,31 @@ class AnalyticsApiTests(TestCase):
         self.assertEqual(body["used"], ["TTZ2025"])
         self.assertIn("мало истории", body["note"])
         self.assertTrue(next(line for line in body["lines"] if line["code"] == "TTZ2022")["excluded"])
+
+    def test_hour_steps_wavelet_and_days_in_zones(self):
+        body = self.client.get("/api/analytics/?pair=TEST&hold=5&step=4&wavelet=1").json()
+        self.assertEqual(body["step"], 4)
+        self.assertTrue(body["params"]["wavelet"])
+        self.assertEqual(len(body["returns"]["smooth"]), body["width"])
+        zone = body["ranges"][0]
+        # Зоны — в днях до экспирации, не в шагах.
+        self.assertLessEqual(zone["entry"][1], body["width_days"])
+        self.assertIsNone(body["funding"])  # у пары нет фандинга
+        daily = self.client.get("/api/analytics/?pair=TEST&hold=5&step=24").json()
+        self.assertEqual((daily["step"], daily["width"]), (24, 41))
+
+    def test_funding_grid_in_api(self):
+        from rates.models import FundingDay
+        from strategy.runner import notional_of
+        start = datetime(2022, 10, 1).date()
+        FundingDay.objects.bulk_create([FundingDay(date=start + timedelta(days=k), swaprate_rub=2)
+                                        for k in range(365 * 4)])
+        body = self.client.get("/api/analytics/?pair=TEST&hold=5&step=24").json()
+        funding = body["funding"]
+        # 2 ₽ на контракт в день, номинал контракта → на единицу; цена 100, капитал 100 %.
+        per_day = 2 / notional_of(self.pair) / 100 * 100
+        self.assertAlmostEqual(funding["sum"][15][5], per_day * 10, places=5)
+        self.assertEqual(len(funding["sum"]), body["width_days"])
 
     def test_cleaned_series_and_cache(self):
         raw = self.client.get("/api/analytics/?pair=TEST&hold=5").json()
