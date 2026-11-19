@@ -27,7 +27,7 @@ class Command(BaseCommand):
         parser.add_argument("--dry-run", action="store_true", help="только показать")
 
     def handle(self, *args, **options):
-        pair = Pair.objects.filter(foreign_source="NGNYM").first()
+        pair = Pair.objects.filter(foreign_source="NGNYM", base="").first()
         if pair is None:
             raise CommandError("нет пары NGNYMEX: python manage.py add_extra_spreads")
         legs = sorted(
@@ -58,7 +58,7 @@ class Command(BaseCommand):
         self.stdout.write(f"окон {len(rows)}, ноги у {pair.code}")
         from analytics.history import refresh
         from strategy.rebuild import rebuild_spread
-        for code in ("NGNYMEX", "NGCAL"):
+        for code in ("NGNYMEX", "NGNYMEX2", "NGCAL"):
             target = Pair.objects.filter(code=code, active=True).first()
             if target is None:
                 continue

@@ -22,8 +22,11 @@ Django + PostgreSQL, данные Finam Trade API, Мосбиржи, ЦБ и Byb
 | BRNYMEX | BR Мосбиржи − BZ NYMEX, месячные, $/барр. | нет, fair = 0 |
 | CRCNH | CR × CNH × 1000 − Si, CNH — CME, пункты Si | нет, fair = 0 |
 | SI6E | Si × 6E − Eu, 6E — CME, пункты Eu | нет, fair = 0 |
+| CRSISPOT | CR × USDCNY × 1000 − Si, спот USDCNY из FX_CHECK_URL, пункты Si | нет, fair = 0 |
+| SIEUSPOT | Si × EURUSD − Eu, спот EURUSD из FX_CHECK_URL, пункты Eu | нет, fair = 0 |
 | NGCAL | календарь NG Мосбиржи одним инструментом (NGX6NGZ6), $/MMBtu | нет, fair = 0 |
 | NGNYMEX | NG Мосбиржи − NG NYMEX месяцем позже (NGZ6 ↔ NGF27), $/MMBtu | нет, fair = 0 |
+| NGNYMEX2 | то же на следующих контрактах обеих ног (в окне NGX6: NGZ6 ↔ NGF27), вкладка Second | нет, fair = 0 |
 | TRIGDS | GD·SI − GLDRUB_TOM: TRIGD на споте золота, без фандинга | RUONIA + ставка ФРС |
 | TRISVS | SV·SI − SLVRUB_TOM: TRISV на споте серебра, без фандинга (`add_trisvs`) | RUONIA + ставка ФРС |
 | BTCMOEX, ETHMOEX | месячный BT/EH − вечный BTCUSDF/ETHUSDF Мосбиржи, $ за монету | нет, fair = 0; фандинг вечного |
@@ -84,10 +87,11 @@ python manage.py migrate
 python manage.py add_usd | add_eur | add_gold | add_silver | add_tri | add_btc   # нужные пары
 python manage.py add_seconds        # календари и треугольники на секондах, после базовых пар
 python manage.py add_brent          # BR − BZ NYMEX и месячные контракты
-python manage.py add_extra_spreads  # CRCNH, SI6E, NGCAL, NGNYMEX, TRIGDS
+python manage.py add_extra_spreads  # CRCNH, SI6E, NGCAL, NGNYMEX, TRIGDS, CRSISPOT, SIEUSPOT
+python manage.py add_seconds        # ещё раз после add_extra_spreads: NGNYMEX2 нужна NGNYMEX
 python manage.py sync_rates
 python manage.py sync_funding
-python manage.py sync_bars          # Finam отдаёт час примерно за 30 дней
+python manage.py sync_bars          # 5-минутки за 30 дней (--days, максимум 120), часы — из них
 python manage.py build_spread
 python manage.py runserver
 ```

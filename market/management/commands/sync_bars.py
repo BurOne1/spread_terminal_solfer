@@ -1,7 +1,10 @@
-"""Часовые свечи всех активных пар: вечный, спот и квартал в окне загрузки.
+"""5-минутки всех активных пар (вечный, спот и квартал в окне загрузки), часы — из них.
 
-Finam отдаёт TIME_FRAME_H1 примерно за 30 дней. Окна старше этого часто пустые.
-Уже записанные свечи не удаляются, повторный запуск обновляет те же часы.
+Из Finam берутся только TIME_FRAME_M5, окнами по WINDOW. Часы собираются из этих
+5-минуток так же, как в онлайне (market.minutes.hours_from_minutes, сессия ФОРТС):
+1ч и 5м всегда согласованы. Глубина ограничена: по умолчанию DEFAULT_DAYS дней,
+не больше MAX_DAYS, --from старше границы обрезается. Глубже — sync_m5 / import_tv.
+Уже записанные свечи не удаляются, повторный запуск обновляет те же 5-минутки и часы.
 Неизвестный тикер пропускается, остальные инструменты пары всё равно пишутся.
 Календарю и треугольнику на секондах квартал нужен на окно раньше своего:
 там он второй. Инструмент, уже загруженный другой парой, второй раз не грузится.
@@ -15,33 +18,39 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from market.finam import FinamClient, FinamError
+from market.live import moex_trades
+from market.minutes import WINDOW, hours_from_minutes, save_minutes
 from market.models import Candle, Instrument, Pair
 from strategy.rebuild import HISTORY_MONTHLY, HISTORY_QUARTERLY
 
-H1_DEPTH = timedelta(days=30)
-WINDOW = timedelta(days=29)
+DEFAULT_DAYS = 30
+MAX_DAYS = 120
 
 
 class Command(BaseCommand):
-    help = "Загружает часовые свечи активных пар из Finam."
+    help = "Загружает 5-минутки активных пар из Finam (не глубже --days) и собирает из них часы."
 
     def add_arguments(self, parser):
         parser.add_argument("--pair", default="", help="код пары, пусто — все активные")
+        parser.add_argument("--days", type=int, default=DEFAULT_DAYS,
+                            help=f"не глубже N дней до конца, по умолчанию {DEFAULT_DAYS}, максимум {MAX_DAYS}")
         parser.add_argument("--from", dest="start", default="")
         parser.add_argument("--to", dest="end", default="")
 
     def handle(self, *args, **options):
         if not settings.FINAM_API_SECRET:
             raise CommandError("Нет FINAM_API_SECRET в окружении.")
+        days = options["days"]
+        if not 1 <= days <= MAX_DAYS:
+            raise CommandError(f"--days от 1 до {MAX_DAYS}; глубже — sync_m5 или import_tv")
         end = _parse(options["end"]) if options["end"] else datetime.now(timezone.utc)
-        start = _parse(options["start"]) if options["start"] else end - H1_DEPTH
+        floor = end - timedelta(days=days)
+        start = _parse(options["start"]) if options["start"] else floor
         if end <= start:
             raise CommandError("конец не позже начала")
-        if start < end - H1_DEPTH:
-            self.stdout.write(
-                "Finam отдаёт час примерно за 30 дней. Более старые окна, скорее всего, будут пустыми. "
-                "Строки, которые уже есть в базе, эта команда не стирает."
-            )
+        if start < floor:
+            self.stdout.write(f"--from раньше границы в {days} дн.: загрузка с {floor:%Y-%m-%d %H:%M}")
+            start = floor
 
         pairs = Pair.objects.filter(active=True).exclude(venue="bybit").order_by("code")
         if options["pair"]:
@@ -69,17 +78,18 @@ class Command(BaseCommand):
                         continue
                     loaded.add(instrument.id)
                     got = self._instrument_bars(client, instrument, start, end, optional)
+                    hours = _hours(instrument, start) if got else 0
                     total += got
-                    self.stdout.write(f"  {instrument.code}: {got} свечей")
+                    self.stdout.write(f"  {instrument.code}: {got} свечей 5 мин, {hours} ч")
         finally:
             client.close()
-        self.stdout.write(f"итого {total}")
+        self.stdout.write(f"итого {total} свечей 5 мин. Дальше: python manage.py build_spread")
 
     def _instrument_bars(self, client, instrument, start, end, optional):
         count = 0
         for window_start, window_end in _windows(start, end):
             try:
-                bars = client.bars(instrument.finam_symbol, window_start, window_end, settings.BAR_TIMEFRAME)
+                bars = client.bars(instrument.finam_symbol, window_start, window_end, "TIME_FRAME_M5")
             except FinamError as exc:
                 text = str(exc)
                 missing = exc.status in (400, 404) or "NOT_FOUND" in text or "doesn't exist" in text
@@ -96,7 +106,7 @@ class Command(BaseCommand):
                     "С этой машины Finam недоступен, свечи грузите на ВМ."
                 )
                 return count
-            count += _save(instrument, bars)
+            count += save_minutes(instrument, bars)
         return count
 
 
@@ -131,8 +141,14 @@ def _cross(pair, start, end):
 
 
 def _ngnymex(pair, start, end):
-    """Окна NYMEX пары и ноги NG Мосбиржи тех же окон."""
+    """Окна NYMEX пары и ноги NG Мосбиржи тех же окон.
+
+    У NGNYMEX2 (base) — окна базы и следующее за ними: цены следующего окна.
+    """
     from market.ngnymex import moex_code
+    if pair.base:
+        owner = _owner(pair.base)
+        return _ngnymex(owner, start, end + timedelta(days=40)) if owner is not None else []
     windows = [target for target, _optional in _brent(pair, start, end) if target.kind == Instrument.Kind.FUTURE]
     moex = list(Instrument.objects.filter(code__in={moex_code(window.code) for window in windows}))
     return [(item, True) for item in windows + moex]
@@ -173,6 +189,11 @@ def _targets(pair, start, end):
         return _listed(pair, start, end)
     if pair.cross:
         return _cross(pair, start, end)
+    if pair.spotfx:
+        # Кварталы — у USD, CNY, EUR; спот USDCNY/EURUSD не из Finam: онлайн — run_live, история — import_tv.
+        from market.spotfx import SPOTFX
+        spec = SPOTFX[pair.code]
+        return [target for code in (spec["a_owner"], spec["c_owner"]) for target in _quarters(_owner(code), start, end)]
     if pair.ngnymex:
         return _ngnymex(pair, start, end)
     if pair.foreign_source == "TRI":
@@ -196,16 +217,13 @@ def _targets(pair, start, end):
     return targets + _quarters(pair, start, end)
 
 
-def _save(instrument, bars):
-    if not bars:
+def _hours(instrument, start):
+    """Часы из 5-минуток с start, только сессия ФОРТС. Час, начатый до start, — неполный, не трогается.
+    Вернуть число часов в базе с первого записанного."""
+    first = hours_from_minutes(instrument, start, keep=moex_trades, fetched_from=start)
+    if first is None:
         return 0
-    Candle.objects.bulk_create(
-        [Candle(instrument=instrument, **bar) for bar in bars],
-        update_conflicts=True,
-        unique_fields=["instrument", "ts"],
-        update_fields=["open", "high", "low", "close", "volume"],
-    )
-    return len(bars)
+    return Candle.objects.filter(instrument=instrument, ts__gte=first).count()
 
 
 def _windows(start, end):

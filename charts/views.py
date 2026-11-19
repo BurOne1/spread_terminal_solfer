@@ -72,6 +72,10 @@ def _labels(pair, codes):
         }
     if pair is None or not pair.base:
         return {}
+    if pair.ngnymex:
+        # NGNYMEX2: ноги следующего окна, NGF7/NGG27.
+        from market.ngnymex import next_legs
+        return {code: "/".join(symbol.split("@")[0] for symbol in next_legs(code)[1:]) for code in codes}
     root = pair.future_root
 
     def short(code):
@@ -133,7 +137,7 @@ def _points(pair, start="", end="", basis="close", rows=None, model=Candle):
         legs = _calendar_legs(pair, codes, since, model)
     elif pair.nymex:
         legs = _nymex_legs(pair, codes, since, model)
-    elif pair.foreign_source != "TRI" and not pair.cross and not pair.listed and not pair.ngnymex:
+    elif pair.foreign_source != "TRI" and not pair.cross and not pair.listed and not pair.ngnymex and not pair.spotfx:
         scale = pair.future_scale or 1
         perp = Instrument.objects.filter(pair=pair, code=pair.perp_code).first()
         if perp is not None:
@@ -490,10 +494,15 @@ def _subtitle(pair):
     if pair.cross:
         from market.cross import CROSS
         return f"{CROSS[pair.code]['note']}, третья нога CME, справедливый 0"
+    if pair.spotfx:
+        from market.spotfx import SPOTFX
+        spec = SPOTFX[pair.code]
+        return f"{spec['note']}, третья нога спот {spec['spot']}, справедливый 0"
     if pair.listed:
         return "календарь биржи одним инструментом, $/MMBtu, уровни в $/MMBtu"
     if pair.ngnymex:
-        return "месячные, NYMEX месяцем позже, только общие часы бирж, справедливый 0, $/MMBtu"
+        second = "следующие контракты обеих ног, " if pair.base else ""
+        return f"месячные, {second}NYMEX месяцем позже, только общие часы бирж, справедливый 0, $/MMBtu"
     if pair.crypto:
         return f"месячный {pair.future_root} − вечный {pair.perp_code}, справедливый 0, фандинг вечного, $"
     rate = "только RUONIA" if pair.foreign_source == "NONE" else _rate_label(pair)
@@ -551,7 +560,7 @@ def _rate_label(pair):
         return "EWMA14 фандинга"
     if pair.nymex:
         return "BR MOEX − BZ NYMEX"
-    if pair.cross or pair.listed or pair.ngnymex:
+    if pair.cross or pair.listed or pair.ngnymex or pair.spotfx:
         return pair.title
     if pair.crypto:
         return "справедливый 0"

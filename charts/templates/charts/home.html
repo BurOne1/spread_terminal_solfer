@@ -155,6 +155,14 @@
     .wl-row:hover { background: var(--hover); }
     .wl-group { position: sticky; top: 0; z-index: 1; display: flex; justify-content: space-between; padding: 6px 12px; background: var(--raised); color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }
     .wl-row.on { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+    /* Цветная метка пары: полоса слева видна всегда, и у выбранной пары тоже. */
+    .wl-row.tagged::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--tag); }
+    .wl-menu { position: fixed; z-index: 50; padding: 8px; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(0, 0, 0, .35); }
+    .wl-menu .title { margin-bottom: 6px; color: var(--muted); font-size: 11px; }
+    .wl-menu .colors { display: grid; grid-template-columns: repeat(5, 22px); gap: 6px; }
+    .wl-menu button { width: 22px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--c); cursor: pointer; }
+    .wl-menu button:hover, .wl-menu button.on { outline: 2px solid var(--ink); outline-offset: 1px; }
+    .wl-menu button.none { display: grid; place-items: center; background: transparent; color: var(--muted); font-size: 13px; line-height: 1; }
     .wl-name { min-width: 0; }
     .wl-name b { display: block; font-weight: 600; }
     .wl-name span { display: block; color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -282,6 +290,7 @@
       <div class="wl-head"><span>Пара</span><span title="spread_rate последнего бара">rate</span><span title="Сырой спред последнего бара">raw</span><span title="spread_rate последнего бара минус spread_rate бара сутки назад, в единицах спреда">Δ сутки</span></div>
       <div class="wl-list" id="wl-list"></div>
       <div class="wl-foot note" id="wl-note">Цена часа — как на графике.</div>
+      <div class="wl-foot note" style="border-top: 0; padding-top: 0">Правый клик (на телефоне — долгое нажатие) по паре — цветная метка.</div>
     </div>
     <div class="view" data-view="strategy">
     <div class="side-body">
@@ -1342,6 +1351,7 @@
     // Порядок строк задаётся перетаскиванием внутри группы и хранится в браузере.
     // Новая пара, которой нет в сохранённом порядке, встаёт в конец группы.
     const WATCH_ORDER = "spread-watch-order";
+    const WATCH_COLORS = "spread-watch-colors";
     let dragCode = null;
     function ordered(rows) {
       const order = readStore(WATCH_ORDER, []);
@@ -1366,6 +1376,11 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "wl-row" + (item.code === current ? " on" : "");
+      const tag = readStore(WATCH_COLORS, {})[item.code];
+      if (tag) {
+        button.classList.add("tagged");
+        button.style.setProperty("--tag", tag);
+      }
       button.dataset.code = item.code;
       button.dataset.group = item.group || "front";
       button.draggable = true;
@@ -1392,6 +1407,64 @@
       return button;
     }
     const watchList = document.getElementById("wl-list");
+    // Цветные метки пар: {код: цвет} в браузере, как и порядок строк.
+    const TAG_COLORS = ["#e5484d", "#f76b15", "#ffc53d", "#30a46c", "#12a594", "#3e63dd", "#8e4ec6", "#d6409f", "#8d8d8d"];
+    let tagMenu = null;
+    function closeTagMenu() {
+      if (tagMenu) tagMenu.remove();
+      tagMenu = null;
+    }
+    function setTag(code, color) {
+      const tags = readStore(WATCH_COLORS, {});
+      if (color) tags[code] = color; else delete tags[code];
+      writeStore(WATCH_COLORS, tags);
+      closeTagMenu();
+      renderWatchlist();
+    }
+    function openTagMenu(code, x, y) {
+      closeTagMenu();
+      const current = readStore(WATCH_COLORS, {})[code];
+      const menu = document.createElement("div");
+      menu.className = "wl-menu";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = "Метка " + code;
+      const colors = document.createElement("div");
+      colors.className = "colors";
+      TAG_COLORS.forEach((color) => {
+        const swatch = document.createElement("button");
+        swatch.type = "button";
+        swatch.title = color;
+        swatch.style.setProperty("--c", color);
+        if (color === current) swatch.classList.add("on");
+        swatch.addEventListener("click", () => setTag(code, color));
+        colors.append(swatch);
+      });
+      const none = document.createElement("button");
+      none.type = "button";
+      none.className = "none";
+      none.title = "Без метки";
+      none.textContent = "✕";
+      none.addEventListener("click", () => setTag(code, null));
+      colors.append(none);
+      menu.append(title, colors);
+      document.body.append(menu);
+      const box = menu.getBoundingClientRect();
+      menu.style.left = Math.max(4, Math.min(x, innerWidth - box.width - 4)) + "px";
+      menu.style.top = Math.max(4, Math.min(y, innerHeight - box.height - 4)) + "px";
+      tagMenu = menu;
+    }
+    watchList.addEventListener("contextmenu", (event) => {
+      const row = event.target.closest(".wl-row");
+      if (!row) return;
+      event.preventDefault();
+      openTagMenu(row.dataset.code, event.clientX, event.clientY);
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (tagMenu && !tagMenu.contains(event.target)) closeTagMenu();
+    }, true);
+    document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeTagMenu(); });
+    watchList.addEventListener("scroll", closeTagMenu);
     function clearDrop() {
       watchList.querySelectorAll(".drop-before, .drop-after").forEach((node) => node.classList.remove("drop-before", "drop-after"));
     }

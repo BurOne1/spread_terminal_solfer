@@ -24,7 +24,7 @@ import websockets
 from django.conf import settings
 from django.db import close_old_connections
 
-from market import cross, ngcal, ngnymex
+from market import cross, ngcal, ngnymex, spotfx
 from market.brent import front_symbols
 from market.finam import PERP_SYMBOL, SPOT_SYMBOL, FinamClient, FinamError, future_symbol, parse_decimal
 from market.minutes import bucket, hours_from_minutes, save_minutes
@@ -117,6 +117,12 @@ def live_symbols():
             continue
         if pair.cross:
             symbols.extend(cross.front_symbols(pair, now))
+            continue
+        if pair.spotfx:
+            # Кварталы — у USD, CNY, EUR; спот — не Finam, его опрашивает _fx.
+            spec = spotfx.SPOTFX[pair.code]
+            for code in (spec["a_owner"], spec["c_owner"]):
+                symbols.extend(quarter_symbols(owner(code), now, 1))
             continue
         if pair.listed:
             symbols.extend(ngcal.front_symbols(pair, now))
@@ -688,6 +694,46 @@ async def _minutes(log):
         await asyncio.sleep(MINUTES_EVERY)
 
 
+def _fx_once(seen, log=None):
+    """Один опрос сервиса спота: новые котировки USDCNY / EURUSD — в свечи 1ч и 5м. Вернуть число."""
+    close_old_connections()
+    url = getattr(settings, "FX_CHECK_URL", "")
+    pairs = [pair for pair in Pair.objects.filter(active=True, foreign_source=spotfx.SOURCE) if pair.spotfx]
+    if not url or not pairs:
+        return 0
+    instruments = {}
+    for pair in pairs:
+        instrument = Instrument.objects.select_related("pair").filter(code=spotfx.SPOTFX[pair.code]["spot"]).first()
+        if instrument is not None:
+            instruments[instrument.code] = instrument
+    if not instruments:
+        return 0
+    quotes = spotfx.new_quotes(spotfx.parse_check(spotfx.fetch(url), set(instruments)), seen)
+    count = 0
+    for ticker, rows in quotes.items():
+        for ts, price in rows:
+            book_quote(instruments[ticker], ts, price)
+            count += 1
+    return count
+
+
+async def _fx(log):
+    """Раз в FX_EVERY секунд: спот USDCNY и EURUSD из сервиса котировок (CRSISPOT, SIEUSPOT)."""
+    seen = {}
+    failed = False
+    while True:
+        try:
+            await asyncio.to_thread(_fx_once, seen, log)
+            if failed:
+                log("спот USDCNY/EURUSD снова приходит")
+            failed = False
+        except Exception as exc:
+            if not failed:
+                log(f"спот USDCNY/EURUSD не получен: {exc}")
+            failed = True
+        await asyncio.sleep(spotfx.FX_EVERY)
+
+
 async def _flush(log):
     """Раз в FLUSH_SECONDS: свечи из памяти в базу, потом хвосты задетых пар."""
     pending = {}
@@ -758,6 +804,7 @@ async def run_forever(log):
     funding = asyncio.create_task(_funding(log))
     flush = asyncio.create_task(_flush(log))
     minutes = asyncio.create_task(_minutes(log))
+    fx = asyncio.create_task(_fx(log))
     try:
         while True:
             symbols = await asyncio.to_thread(live_symbols)
@@ -790,6 +837,7 @@ async def run_forever(log):
         funding.cancel()
         flush.cancel()
         minutes.cancel()
+        fx.cancel()
         # Последние секунды котировок не теряются при остановке.
         try:
             await asyncio.to_thread(_flush_now, log)

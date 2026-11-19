@@ -24,6 +24,8 @@ SECONDS = (
     ("TRIGD2", "TRIGD", "GD2 + SI2 − GLDRUBF"),
     ("TRIGL2", "TRIGL", "GD2 + SI2 − GL2"),
 )
+# Газ на следующих контрактах: окна и ноги у NGNYMEX, см. market/ngnymex.py.
+NG_SECOND = ("NGNYMEX2", "NGNYMEX", "NG MOEX − NG NYMEX, следующие")
 LEVELS = {
     "long_levels": {"signed": True, "values": [-0.001]},
     "short_levels": {"signed": True, "values": [0.001]},
@@ -33,7 +35,7 @@ LEVELS = {
 
 
 class Command(BaseCommand):
-    help = "Добавляет календари SI/EU/CR/GD/SV и треугольники TRIGD2, TRIGL2 на секондах."
+    help = "Добавляет календари SI/EU/CR/GD/SV, треугольники TRIGD2, TRIGL2 и NGNYMEX2 на секондах."
 
     def handle(self, *args, **options):
         for code, base_code, title in CALENDARS:
@@ -93,5 +95,25 @@ class Command(BaseCommand):
                     long_tp=base.long_tp, short_tp=base.short_tp,
                 )
             self.stdout.write(f"{code} {'создана' if created else 'обновлена'}: {title}")
+        code, base_code, title = NG_SECOND
+        base = Pair.objects.filter(code=base_code).first()
+        if base is None:
+            self.stdout.write(f"{code}: нет пары {base_code}, сначала python manage.py add_extra_spreads")
+        else:
+            pair, created = Pair.objects.update_or_create(
+                code=code,
+                defaults={
+                    "title": title, "base": base.code, "future_root": base.future_root,
+                    "perp_code": "", "perp_symbol": "", "spot_code": "", "spot_symbol": "",
+                    "mic": base.mic, "foreign_source": base.foreign_source, "venue": base.venue,
+                    "quote": base.quote, "lot": base.lot, "future_scale": base.future_scale, "active": True,
+                },
+            )
+            if created:
+                Pair.objects.filter(pk=pair.pk).update(
+                    long_levels=base.long_levels, short_levels=base.short_levels,
+                    long_tp=base.long_tp, short_tp=base.short_tp,
+                )
+            self.stdout.write(f"{code} {'создана' if created else 'обновлена'}: {title}, окна {base.code}")
         self.stdout.write("Дальше: python manage.py sync_bars — догрузит секонды за ~30 дней,")
         self.stdout.write("потом python manage.py build_spread и перезапуск run_live.")

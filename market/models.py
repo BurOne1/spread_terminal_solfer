@@ -62,6 +62,12 @@ class Pair(models.Model):
         return self.foreign_source == "CMEFX" and self.code in CROSS
 
     @property
+    def spotfx(self):
+        """CR × USDCNY − Si, Si × EURUSD − Eu: третья нога — спот из сервиса котировок, см. market/spotfx.py."""
+        from market.spotfx import SOURCE, SPOTFX
+        return self.foreign_source == SOURCE and self.code in SPOTFX
+
+    @property
     def ngnymex(self):
         """NG Мосбиржи минус NG NYMEX, см. market/ngnymex.py."""
         return self.foreign_source == "NGNYM"
@@ -88,7 +94,7 @@ class Pair(models.Model):
     @property
     def zero_fair(self):
         """Справедливое значение ноль: spread_rate = raw, фандинга нет."""
-        return self.nymex or self.cross or self.listed or self.ngnymex
+        return self.nymex or self.cross or self.listed or self.ngnymex or self.spotfx
 
     @property
     def tri_code(self):
@@ -98,7 +104,11 @@ class Pair(models.Model):
     @property
     def quarters_code(self):
         """Пара, чьи кварталы задают окна. У TRIGL свои ноги чужие, окна — GL из GOLD.
-        У TRIGDS — GD из TRIGD: тот же треугольник, только третья нога спот."""
+        У TRIGDS — GD из TRIGD: тот же треугольник, только третья нога спот.
+        У CRSISPOT и SIEUSPOT — кварталы ноги c: Si у USD, Eu у EUR."""
+        if self.spotfx:
+            from market.spotfx import SPOTFX
+            return SPOTFX[self.code]["c_owner"]
         code = self.base or self.code
         return {"TRIGL": "GOLD", "TRIGDS": "TRIGD", "TRISVS": "TRISV"}.get(code, code)
 

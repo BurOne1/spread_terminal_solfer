@@ -51,6 +51,15 @@ class Command(BaseCommand):
                         f"{row['listed_at']:%Y-%m-%d} → {row['roll_at']:%Y-%m-%d}"
                     )
                 continue
+            if pair.spotfx:
+                from market import spotfx
+                spec = spotfx.SPOTFX[pair.code]
+                spotfx.ensure(pair)
+                self.stdout.write(f"{pair.code}: кварталы {spec['a_owner']} и {spec['c_owner']}, спот {spec['spot']}")
+                continue
+            if pair.ngnymex and pair.base:
+                self.stdout.write(f"{pair.code}: следующие контракты окон {pair.base}")
+                continue
             if pair.cross or pair.listed or pair.ngnymex:
                 module = cross if pair.cross else ngcal if pair.listed else ngnymex
                 client = _client()

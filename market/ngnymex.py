@@ -12,6 +12,10 @@ MOEX, ROLL_TIME UTC (NGX2026 → 30.11.2026). Обе ноги истекают �
 (NGZ2026-NYM, символ NGF27@XNYM): коды NGZ2026 уже заняты фронтами
 календаря NGCAL. Ноги Мосбиржи (NGZ2026, NGZ6@RTSX) принадлежат этой паре,
 вид FOREIGN, окно то же; календарь NGCAL находит в них свой фронт по символу.
+
+NGNYMEX2 — та же пара на следующих контрактах обеих ног (base = NGNYMEX):
+в окне NGZ2026-NYM это NGF2027 (NGF7@RTSX) минус NGG27@XNYM. Своих
+инструментов у неё нет: окна и ноги — у NGNYMEX, цены — следующего окна.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -103,8 +107,32 @@ def moex_leg(pair, row):
     return leg
 
 
+def next_legs(code):
+    """Окно NGZ2026-NYM → ноги следующего окна: (код окна, символ MOEX, символ NYMEX)."""
+    year, month = parse_code(code)
+    return legs(year + 1, 1) if month == 12 else legs(year, month + 1)
+
+
 def front_symbols(pair, now):
-    """NYMEX и MOEX текущего окна. Недостающее окно заводится по правилу."""
+    """NYMEX и MOEX текущего окна. Недостающее окно заводится по правилу.
+
+    У пары на секондах (base) окна чужие, символы — следующего окна, ничего не заводится.
+    """
+    if pair.base:
+        from market.models import Pair
+        owner = Pair.objects.filter(code=pair.base).first()
+        if owner is None:
+            return []
+        current = front_symbols(owner, now)
+        window = (
+            Instrument.objects.filter(pair=owner, kind=Instrument.Kind.FUTURE, roll_at__gt=now)
+            .order_by("roll_at").first()
+        )
+        if window is None or not current:
+            return []
+        _code, moex, nymex = next_legs(window.code)
+        ensure(owner, window.roll_at - timedelta(days=1), window.roll_at + timedelta(days=40))
+        return [nymex, moex]
     def current():
         return (
             Instrument.objects.filter(pair=pair, kind=Instrument.Kind.FUTURE, roll_at__gt=now)

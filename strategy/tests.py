@@ -560,6 +560,38 @@ class GasNymexTests(TestCase):
         rebuild.mark_dirty("NGNYMEX", NG_TS)
         self.assertEqual(rebuild.flush_dirty(), {"NGNYMEX": 1})
 
+    def test_second_pair_takes_next_contracts_of_both_legs(self):
+        from market import ngnymex
+        from charts.views import _labels
+        from django.core.management import call_command
+        start, end = datetime(2026, 11, 1, tzinfo=UTC), datetime(2026, 12, 20, tzinfo=UTC)
+        base = Pair.objects.create(code="NGNYMEX", title="NG MOEX − NG NYMEX", future_root="NG", perp_code="", perp_symbol="", spot_code="", spot_symbol="", foreign_source="NGNYM", lot=100, quote="USD")
+        ngnymex.ensure(base, start, end)
+        call_command("add_seconds", stdout=StringIO())
+        second = Pair.objects.get(code="NGNYMEX2")
+        self.assertEqual((second.base, second.foreign_source), ("NGNYMEX", "NGNYM"))
+        # В окне ноября (NGX6 ↔ NGZ26) второй спред — NGZ6 (NGZ2026) минус NGF27 (окно NGZ2026-NYM).
+        moex_next = Instrument.objects.get(code="NGZ2026")
+        nymex_next = Instrument.objects.get(code="NGZ2026-NYM")
+        self.assertEqual((moex_next.finam_symbol, nymex_next.finam_symbol), ("NGZ6@RTSX", "NGF27@XNYM"))
+        candle(Instrument.objects.get(code="NGX2026"), NG_TS, Decimal("3.40"), Decimal("3.45"))
+        candle(Instrument.objects.get(code="NGX2026-NYM"), NG_TS, Decimal("3.38"), Decimal("3.41"))
+        candle(moex_next, NG_TS, Decimal("3.70"), Decimal("3.75"))
+        candle(nymex_next, NG_TS, Decimal("3.60"), Decimal("3.62"))
+        self.assertEqual(rebuild.rebuild_spread("NGNYMEX2"), 1)
+        bar = SpreadBar.objects.get(pair=second)
+        self.assertAlmostEqual(float(bar.raw_spread), 0.13, places=6)
+        self.assertAlmostEqual(float(bar.raw_open), 0.10, places=6)
+        # Окно и склейка — фронта, ноги не переехали к NGNYMEX2.
+        self.assertEqual(bar.contract.code, "NGX2026-NYM")
+        self.assertEqual(Instrument.objects.filter(pair=second).count(), 0)
+        self.assertEqual(_labels(second, ["NGX2026-NYM"]), {"NGX2026-NYM": "NGZ6/NGF27"})
+        self.assertEqual(ngnymex.front_symbols(second, NG_TS), ["NGF27@XNYM", "NGZ6@RTSX"])
+        self.assertEqual(Instrument.objects.filter(pair=second).count(), 0)
+        rebuild._dirty.clear()
+        rebuild.mark_dirty("NGNYMEX", NG_TS)
+        self.assertEqual(rebuild.flush_dirty(), {"NGNYMEX": 1, "NGNYMEX2": 1})
+
 
 class HistoryBarsTests(TestCase):
     """Режим истории аналитики: окна перекрываются, в базу ничего не пишется."""
@@ -892,3 +924,72 @@ class CandleTests(TestCase):
         self.assertAlmostEqual(candle_["h"], max(0.45, float(bar.raw_open), float(bar.raw_spread)), places=6)
         self.assertAlmostEqual(candle_["l"], min(0.20, float(bar.raw_open), float(bar.raw_spread)), places=6)
         self.assertAlmostEqual(candle_["c"], float(bar.raw_spread), places=6)
+
+
+class SpotFxTests(TestCase):
+    """CRSISPOT: CR × USDCNY × 1000 − Si, спот — из сервиса котировок и import_tv."""
+
+    def setUp(self):
+        from market import spotfx
+        roll = datetime(2026, 12, 17, 15, 45, tzinfo=UTC)
+        listed = datetime(2026, 9, 17, 15, 45, tzinfo=UTC)
+        # USD и CNY могут уже быть (миграция с парами по умолчанию).
+        self.usd, _ = Pair.objects.get_or_create(code="USD", defaults={"title": "доллар", "future_root": "Si", "foreign_source": "DFEDTARU", "future_scale": 1000})
+        self.cny, _ = Pair.objects.get_or_create(code="CNY", defaults={"title": "юань", "future_root": "CR", "foreign_source": "SHIBOR"})
+        Instrument.objects.filter(code__in=["SiZ2026", "CRZ2026"]).delete()
+        self.si = Instrument.objects.create(pair=self.usd, code="SiZ2026", finam_symbol="SiZ6@RTSX", kind="future", listed_at=listed, roll_at=roll)
+        self.cr = Instrument.objects.create(pair=self.cny, code="CRZ2026", finam_symbol="CRZ6@RTSX", kind="future", listed_at=listed, roll_at=roll)
+        self.pair = Pair.objects.create(code="CRSISPOT", title="CR × USDCNY − Si", future_root="Si", perp_code="", perp_symbol="", spot_code="USDCNY", spot_symbol="", foreign_source="SPOTFX", lot=1)
+        self.spot = spotfx.ensure(self.pair)
+
+    def test_spread_with_spot_filled_from_last_quote(self):
+        self.assertTrue(self.pair.spotfx and self.pair.zero_fair)
+        # График делит ряд по кварталам Si пары USD: своих кварталов у пары нет.
+        from charts.views import _contracts
+        self.assertEqual(self.pair.quarters_code, "USD")
+        self.assertEqual(_contracts(self.pair), ["SiZ2026"])
+        ts = datetime(2026, 11, 10, 10, 0, tzinfo=UTC)
+        candle(self.cr, ts, Decimal("12.24"), Decimal("12.25"))
+        candle(self.si, ts, Decimal("81600"), Decimal("81650"))
+        # В часе спота нет: берётся закрытие часом раньше (не старше CROSS_FILL).
+        candle(self.spot, ts - timedelta(hours=1), Decimal("6.66"), Decimal("6.665"))
+        self.assertEqual(rebuild.rebuild_spread("CRSISPOT"), 1)
+        bar = SpreadBar.objects.get(pair=self.pair)
+        self.assertAlmostEqual(float(bar.raw_spread), 12.25 * 6.665 * 1000 - 81650, places=4)
+        self.assertAlmostEqual(float(bar.raw_open), 12.24 * 6.665 * 1000 - 81600, places=4)
+        self.assertEqual((bar.contract.code, float(bar.fair), float(bar.foreign_rate)), ("SiZ2026", 0.0, 6.665))
+        rebuild._dirty.clear()
+        rebuild.mark_dirty("CNY", ts)
+        self.assertIn("CRSISPOT", rebuild.flush_dirty())
+
+    def test_check_quotes_go_to_book_once(self):
+        from unittest import mock
+
+        from market import live, spotfx
+        payload = [
+            {"msg": "quote", "ticker": "USDCNY", "bid": "6.665", "ask": "6.670", "utcdt": "19-11-2026 11:04:01.000000"},
+            {"msg": "quote", "ticker": "USDCNY", "bid": "6.660", "ask": "6.670", "utcdt": "19-11-2026 11:04:19.500000"},
+            {"msg": "quote", "ticker": "EURUSD", "bid": "1.101", "ask": "1.102", "utcdt": "19-11-2026 11:08:02.000000"},
+            {"msg": "quote", "ticker": "gold", "bid": "x", "ask": "1", "utcdt": "bad"},
+        ]
+        quotes = spotfx.parse_check(payload, {"USDCNY"})
+        self.assertEqual(list(quotes), ["USDCNY"])
+        self.assertEqual(quotes["USDCNY"][-1], (datetime(2026, 11, 19, 11, 4, 19, 500000, tzinfo=UTC), Decimal("6.665")))
+        booked, seen = [], {}
+        with mock.patch.object(spotfx, "fetch", return_value=payload), \
+                mock.patch.object(live, "book_quote", side_effect=lambda inst, ts, price: booked.append((inst.code, price))):
+            self.assertEqual(live._fx_once(seen), 2)
+            # Повторный опрос с теми же котировками ничего не пишет.
+            self.assertEqual(live._fx_once(seen), 0)
+        self.assertEqual(booked, [("USDCNY", Decimal("6.6675")), ("USDCNY", Decimal("6.665"))])
+
+    def test_import_tv_finds_spot_by_ticker(self):
+        from market.management.commands.import_tv import find_instrument
+        instrument, code, make, owner = find_instrument("FX_IDC_USDCNY, 5")
+        self.assertEqual((instrument, code, make, owner), (self.spot, "USDCNY", None, "CRSISPOT"))
+        Pair.objects.create(code="SIEUSPOT", title="Si × EURUSD − Eu", future_root="Eu", perp_code="", perp_symbol="", spot_code="EURUSD", spot_symbol="", foreign_source="SPOTFX", lot=1)
+        instrument, code, make, owner = find_instrument("OANDA_EURUSD, 60")
+        self.assertEqual((instrument, code, owner), (None, "EURUSD", "SIEUSPOT"))
+        make()
+        made = Instrument.objects.get(code="EURUSD")
+        self.assertEqual((made.pair.code, made.kind, made.finam_symbol), ("SIEUSPOT", "spot", ""))

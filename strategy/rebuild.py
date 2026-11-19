@@ -107,6 +107,8 @@ def _rebuild_one(pair, since):
         return _rebuild_nymex(pair, since)
     if pair.cross:
         return _rebuild_cross(pair, since)
+    if pair.spotfx:
+        return _rebuild_spotfx(pair, since)
     if pair.listed:
         return _rebuild_listed(pair, since)
     if pair.ngnymex:
@@ -141,6 +143,9 @@ def _dependencies():
     # Кросс-пары берут кварталы Мосбиржи у USD, CNY, EUR.
     crosses = Pair.objects.filter(active=True, foreign_source="CMEFX", code__in=list(CROSS)).values_list("code", flat=True)
     deps.update({code: (code, *CROSS[code]["deps"]) for code in crosses})
+    from market.spotfx import SOURCE, SPOTFX, deps as spot_deps
+    spot_fx = Pair.objects.filter(active=True, foreign_source=SOURCE, code__in=list(SPOTFX)).values_list("code", flat=True)
+    deps.update({code: spot_deps(code) for code in spot_fx})
     spot = Pair.objects.filter(active=True, code__in=list(TRI_SPOT_DEPS)).values_list("code", flat=True)
     deps.update({code: TRI_SPOT_DEPS[code] for code in spot})
     rows = Pair.objects.filter(active=True).exclude(base="").values_list("code", "base", "foreign_source")
@@ -566,20 +571,86 @@ def _rebuild_cross(pair, since=None):
     return _store(pair, rows, since)
 
 
+def _rebuild_spotfx(pair, since=None):
+    """a × спот × mult − c, как _rebuild_cross, но третья нога — спот USDCNY или EURUSD.
+
+    Окна — кварталы c у её пары (Si у USD, Eu у EUR), a — квартал того же месяца
+    (склейка в пределах недели). Часы задают ноги Мосбиржи; если в часе нет
+    котировки спота, берётся последняя не старше CROSS_FILL (на 5 мин — FILL_M5).
+    """
+    from market.spotfx import SPOTFX
+
+    spec = SPOTFX.get(pair.code)
+    if spec is None:
+        return 0
+    spot = Instrument.objects.filter(pair=pair, code=spec["spot"]).first()
+    owners = {code: Pair.objects.filter(code=code).first() for code in (spec["a_owner"], spec["c_owner"])}
+    if spot is None or None in owners.values():
+        return 0
+    load_from = _load_from(since)
+    windows = _traded(_quarters(owners[spec["c_owner"]], load_from))
+    a_quarters = _traded(_quarters(owners[spec["a_owner"]], load_from))
+    if not windows or not a_quarters:
+        return 0
+    spot_bars = _ohlc_many([spot], load_from)[spot.id]
+    spot_times = sorted(spot_bars)
+    limit = FILL_M5 if _m5() else CROSS_FILL
+    mult = spec["mult"]
+    rows = []
+    for window in windows:
+        roll = window["roll_at"]
+        near = [row for row in a_quarters if abs(row["expires"] - roll) <= timedelta(days=7)]
+        if not near:
+            continue
+        a_bars, c_bars = near[0]["bars"], window["bars"]
+        for ts in sorted(set(a_bars) & set(c_bars)):
+            if since is not None and ts < since:
+                continue
+            if window["listed_at"] is not None and ts < window["listed_at"]:
+                continue
+            if ts >= roll or not _common_hour(ts):
+                continue
+            b = spot_bars.get(ts)
+            if b is None:
+                index = bisect.bisect_left(spot_times, ts)
+                if index == 0 or ts - spot_times[index - 1] > limit:
+                    continue
+                last = spot_bars[spot_times[index - 1]][1]
+                b = (last, last)
+            a, c = a_bars[ts], c_bars[ts]
+            synthetic = [float(a[index]) * float(b[index]) * mult for index in (0, 1)]
+            raw_open, raw = synthetic[0] - float(c[0]), synthetic[1] - float(c[1])
+            rows.append(SpreadBar(
+                pair=pair, ts=ts, contract_id=window["id"],
+                future_close=money(synthetic[1]), perp_close=money(float(c[1])), spot=money(float(c[1])),
+                raw_spread=money(raw), days_left=_days(roll, ts)[0], ruonia=None, foreign_rate=money(float(b[1])),
+                fair=money(0.0), spread_rate=money(raw), raw_open=money(raw_open), rate_open=money(raw_open),
+            ))
+    return _store(pair, rows, since)
+
+
 def _rebuild_ngnymex(pair, since=None):
     """NG Мосбиржи минус NG NYMEX месяцем позже, $/MMBtu, только общие будние часы Мосбиржи.
 
     Окна — ноги NYMEX пары (market/ngnymex.py), ноги Мосбиржи — по символу.
     fair = 0, spread_rate = raw, spot — цена NYMEX, от неё уровни.
+    С base (NGNYMEX2) — окна базы, а цены обеих ног — следующего окна (_seconds).
     """
     from market.ngnymex import moex_code
 
     load_from = _load_from(since)
-    windows = _traded(_quarters(pair, load_from))
+    if pair.base:
+        owner = Pair.objects.filter(code=pair.base).first()
+        windows = _traded([
+            {**row, "moex": moex_code(row["second"])}
+            for row in _seconds([{**window, "second": window["code"]} for window in _quarters(owner, load_from)])
+        ]) if owner is not None else []
+    else:
+        windows = [{**window, "moex": moex_code(window["code"])} for window in _traded(_quarters(pair, load_from))]
     if not windows:
         return 0
     # Нога Мосбиржи — по коду (NGZ2026): символ NGZ6@RTSX повторяется раз в десять лет.
-    moex_of = {window["id"]: moex_code(window["code"]) for window in windows}
+    moex_of = {window["id"]: window["moex"] for window in windows}
     instruments = list(Instrument.objects.filter(code__in=set(moex_of.values())))
     bars = _ohlc_many(instruments, load_from)
     by_symbol = {instrument.code: bars[instrument.id] for instrument in instruments}

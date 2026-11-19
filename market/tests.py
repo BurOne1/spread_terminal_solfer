@@ -243,6 +243,62 @@ class OwnPairTypeTests(TestCase):
         self.assertEqual(_targets(own, start, start + timedelta(days=10)), [])
 
 
+class SyncBarsMinutesTests(TestCase):
+    """sync_bars: из Finam только 5-минутки, не глубже --days, часы — из них."""
+
+    def test_loads_m5_within_days_and_builds_hours(self):
+        from decimal import Decimal
+        from io import StringIO
+        from unittest import mock
+
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        from django.test import override_settings
+
+        from market.models import Candle, MinuteCandle
+
+        pair = Pair.objects.create(code="XX", title="x", future_root="", perp_code="XXF", perp_symbol="XXF@RTSX",
+                                   spot_code="", spot_symbol="", foreign_source="NONE")
+        perp = Instrument.objects.create(pair=pair, code="XXF", finam_symbol="XXF@RTSX", kind="perp")
+        end = datetime(2026, 11, 18, 12, 0, tzinfo=UTC)  # среда
+        calls = []
+
+        class Fake:
+            def __init__(self, *args):
+                pass
+
+            def bars(self, symbol, start, finish, frame):
+                calls.append((symbol, start, finish, frame))
+                rows = []
+                ts = datetime(2026, 11, 18, 10, 0, tzinfo=UTC)
+                for step in range(12):
+                    if start <= ts < finish:
+                        price = Decimal(100 + step)
+                        rows.append({"ts": ts, "open": price, "high": price + 1, "low": price - 1, "close": price, "volume": 1})
+                    ts += timedelta(minutes=5)
+                return rows
+
+            def close(self):
+                pass
+
+        out = StringIO()
+        with override_settings(FINAM_API_SECRET="test"), \
+                mock.patch("market.management.commands.sync_bars.FinamClient", Fake):
+            call_command("sync_bars", "--pair", "XX", "--days", "40", "--from", "2026-01-01", "--to", end.isoformat(), stdout=out)
+            with self.assertRaises(CommandError):
+                call_command("sync_bars", "--days", "500", stdout=StringIO())
+        self.assertTrue(calls)
+        self.assertEqual({frame for *_rest, frame in calls}, {"TIME_FRAME_M5"})
+        # --from старше границы обрезан до end − 40 дней.
+        self.assertEqual(min(start for _s, start, _f, _fr in calls), end - timedelta(days=40))
+        self.assertIn("раньше границы в 40 дн.", out.getvalue())
+        self.assertEqual(MinuteCandle.objects.filter(instrument=perp).count(), 12)
+        hour = Candle.objects.get(instrument=perp)
+        self.assertEqual(hour.ts, datetime(2026, 11, 18, 10, 0, tzinfo=UTC))
+        self.assertEqual((hour.open, hour.high, hour.low, hour.close, hour.volume),
+                         (Decimal(100), Decimal(112), Decimal(99), Decimal(111), 12))
+
+
 class AddUsdTests(TestCase):
     def test_creates_pair_and_contracts(self):
         from django.core.management import call_command

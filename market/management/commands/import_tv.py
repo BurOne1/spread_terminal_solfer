@@ -12,7 +12,9 @@
 - квартал Мосбиржи — у пары с этим корнем (CR → CNY, Si → USD);
 - NG — по бирже в имени файла (TradingView пишет её первой): «NYMEX_…NGG2021» —
   окно пары NGNYMEX, иначе нога Мосбиржи (NGCAL или NGNYMEX); коды у бирж одинаковые;
-- BR и BZ — окна BRNYMEX; CNH и 6E — окна CRCNH и SI6E.
+- BR и BZ — окна BRNYMEX; CNH и 6E — окна CRCNH и SI6E;
+- спот USDCNY и EURUSD (CRSISPOT, SIEUSPOT) — по тикеру в имени:
+  «FX_IDC_USDCNY, 5.csv», «OANDA_EURUSD, 60.csv»; спот заводится у своей пары.
 
 Часовой проект: свечи мельче часа сворачиваются в часовые, крупнее —
 пропускаются с предупреждением. Совпавшие часы перезаписываются.
@@ -115,7 +117,7 @@ def quarter_owner(root):
     """Пара кварталов корня: та, у которой их уже больше всего (Si → USD, Eu → EUR),
     при равенстве — с большим future_scale. Никакого случайного «первого»."""
     pairs = Pair.objects.filter(future_root__iexact=root, base="").exclude(
-        foreign_source__in=("CMEFX", "LISTED", "NYMEX", "NGNYM", "TRI", "CAL"))
+        foreign_source__in=("CMEFX", "LISTED", "NYMEX", "NGNYM", "TRI", "CAL", "SPOTFX"))
     pairs = pairs.annotate(own=Count("instruments", filter=Q(instruments__kind=Instrument.Kind.FUTURE)))
     owner = pairs.order_by("-own", "-future_scale", "id").first()
     if owner is not None:
@@ -157,12 +159,12 @@ def _monthly_maker(root, letter, year, nymex):
     month = MONTHS.index(letter) + 1
     if root.upper() == "NG":
         if nymex:
-            pair = _owner(foreign_source="NGNYM")
+            pair = _owner(foreign_source="NGNYM", base="")
             moex_year, moex_month = (year - 1, 12) if month == 1 else (year, month - 1)
             code = ngnymex.legs(moex_year, moex_month)[0]
             return (lambda: ngnymex.ensure(pair, *_around(moex_year, moex_month))) if pair else None, code, pair.code if pair else ""
         # Нога Мосбиржи нужна только NGNYMEX: календарь NGCAL — готовая котировка.
-        pair = _owner(foreign_source="NGNYM")
+        pair = _owner(foreign_source="NGNYM", base="")
         return (lambda: ngnymex.ensure(pair, *_around(year, month))) if pair else None, f"NG{letter}{year}", pair.code if pair else ""
     if root.upper() in ("BR", "BZ"):
         pair = _owner(foreign_source="NYMEX")
@@ -183,8 +185,28 @@ def _monthly_maker(root, letter, year, nymex):
     return None, None, ""
 
 
+def _spot_fx(name):
+    """Спот USDCNY / EURUSD пар CRSISPOT, SIEUSPOT по тикеру в имени файла, иначе None."""
+    from market import spotfx
+    upper = name.upper().replace("/", "").replace(":", "_")
+    for pair_code, spec in spotfx.SPOTFX.items():
+        if spec["spot"] not in upper:
+            continue
+        instrument = Instrument.objects.filter(code=spec["spot"]).first()
+        if instrument is not None:
+            return instrument, spec["spot"], None, instrument.pair.code if instrument.pair else ""
+        pair = Pair.objects.filter(code=pair_code).first()
+        if pair is None:
+            return None, spec["spot"], None, ""
+        return None, spec["spot"], (lambda: spotfx.ensure(pair)), pair.code
+    return None
+
+
 def find_instrument(name):
     """По имени файла: (инструмент или None, код, функция создания или None, пара-владелец)."""
+    spot = _spot_fx(name)
+    if spot is not None:
+        return spot
     found = CONTRACT.search(name)
     if not found:
         upper = name.upper()

@@ -6,6 +6,8 @@ NGCAL  NGX6NGZ6@RTSX          календарь газа Мосбиржи од�
 NGNYMEX NG MOEX − NG NYMEX     NGZ6 ↔ NGF27: NYMEX месяцем позже, $/MMBtu
 TRIGDS GD × SI − GLDRUB_TOM   как TRIGD, но третья нога — спот золота, без фандинга
 TRISVS SV × SI − SLVRUB_TOM   как TRISV, но третья нога — спот серебра, без фандинга
+CRSISPOT CR × USDCNY × 1000 − Si  как CRCNH, но третья нога — спот USDCNY (market/spotfx.py)
+SIEUSPOT Si × EURUSD − Eu         как SI6E, но третья нога — спот EURUSD
 
 Кросс-пары и NGCAL — справедливый ноль. Уровни кросс-пар — доли цены Si или Eu,
 у NGCAL — абсолютные, в $/MMBtu.
@@ -18,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from market import cross, ngcal, ngnymex
+from market import cross, ngcal, ngnymex, spotfx
 from market.models import Instrument, Pair
 
 
@@ -81,7 +83,26 @@ class Command(BaseCommand):
                 client.close()
         self.add_trigds()
         self.add_trisvs()
+        self.add_spotfx()
         self.stdout.write("Дальше: python manage.py sync_bars, build_spread и перезапуск run_live.")
+
+    def add_spotfx(self):
+        """CRSISPOT и SIEUSPOT: кварталы чужие (USD, CNY, EUR), свой только спот без символа Finam."""
+        levels = next(spec["levels"] for spec in SPECS if spec["code"] == "CRCNH")
+        for code, spec in spotfx.SPOTFX.items():
+            missing = [owner for owner in (spec["a_owner"], spec["c_owner"]) if not Pair.objects.filter(code=owner).exists()]
+            pair, created = Pair.objects.update_or_create(code=code, defaults={
+                "title": spec["title"], "base": "", "future_root": spec["c"],
+                "perp_code": "", "perp_symbol": "", "spot_code": spec["spot"], "spot_symbol": "",
+                "mic": "RTSX", "foreign_source": spotfx.SOURCE, "venue": "finam",
+                "quote": "RUB", "lot": 1, "future_scale": 1, "active": True,
+            })
+            if created:
+                Pair.objects.filter(pk=pair.pk).update(**levels)
+            spotfx.ensure(pair)
+            note = f", нет пар {', '.join(missing)} — заведите их (add_usd, add_eur, ensure_contracts --pair CNY)" if missing else ""
+            self.stdout.write(f"{code} {'создана' if created else 'обновлена'}: {spec['title']}, спот {spec['spot']}{note}")
+        self.stdout.write("Спот USDCNY/EURUSD: онлайн опрашивает run_live (FX_CHECK_URL), историю — import_tv.")
 
     def add_trigds(self):
         trigd = Pair.objects.filter(code="TRIGD").first()

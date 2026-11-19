@@ -128,6 +128,8 @@ ACCESS_DEFAULT_GROUP = os.environ.get("ACCESS_DEFAULT_GROUP", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 FINAM_BASE_URL = os.environ.get("FINAM_BASE_URL", "https://api.finam.ru")
+# Сервис котировок спота USDCNY и EURUSD для CRSISPOT и SIEUSPOT (market/spotfx.py). Пусто — не опрашивать.
+FX_CHECK_URL = os.environ.get("FX_CHECK_URL", "http://172.16.207.80:3002/check")
 # MOEX AlgoPack (data.moex.com). Пусто — радар работает без него и пишет, что AlgoPack не подключён.
 ALGOPACK_TOKEN = os.environ.get("ALGOPACK_TOKEN", "")
 ALGOPACK_BASE_URL = os.environ.get("ALGOPACK_BASE_URL", "https://apim.moex.com")
