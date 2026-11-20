@@ -514,6 +514,11 @@ def watchlist_json(request):
     from datetime import timedelta
     basis = _settings(request)["basis"]
     rows = []
+    # Ждущие алерты пар — точка в списке. Только отделу трейдинга: у «Просмотра» алертов нет.
+    alerts = {}
+    if group_of(request) == ANALYST:
+        from charts.models import Alert
+        alerts = dict(Alert.objects.filter(status=Alert.ACTIVE).values_list("pair__code").annotate(n=Count("id")))
     for pair in viewer_pairs(request).order_by("code"):
         bars = SpreadBar.objects.filter(pair=pair).select_related("contract").order_by("-ts")
         last = bars.first()
@@ -522,6 +527,7 @@ def watchlist_json(request):
         item = {
             "code": pair.code, "title": _title(pair), "name": pair.title, "venue": pair.venue,
             "group": "second" if pair.base else "front",
+            "alerts": alerts.get(pair.code, 0),
         }
         if last is not None:
             raw, rate = priced(last, basis)
@@ -755,3 +761,152 @@ def published_json(request):
         defaults={"data": drawing, "lines": lines, "frame": frame, "zone": "", "event": "", "event_at": None},
     )
     return JsonResponse({"channel": _channel_json(item), "version": published_version(pair)})
+
+
+def _alert_json(item):
+    return {
+        "id": item.drawing_id, "pair": item.pair.code, "pair_title": item.pair.title, "kind": item.kind,
+        "data": item.data, "lines": item.lines, "frame": item.frame, "status": item.status, "target": item.target,
+        "repeat": item.repeat, "pause_minutes": item.pause_minutes,
+        "created_at": item.created_at.isoformat(), "updated_at": item.updated_at.isoformat(),
+        "fired_at": item.fired_at.isoformat() if item.fired_at else None,
+        "fired_value": item.fired_value, "fired_text": item.fired_text,
+    }
+
+
+@require_http_methods(["GET", "POST", "PATCH", "DELETE"])
+def alerts_json(request):
+    """Личные алерты отдела трейдинга (charts/user_alerts.py). Зрителям — 403.
+
+    GET [?pair=] — алерты (все пары или одной); ?fired_after=ISO — только сработавшие позже.
+    POST {pair, drawing, lines, tf} — создать алерт из рисунка или обновить его точки;
+    POST {pair, level: {share}, lines} — уровень в % спота (share — доля со знаком: 0.0015 = 0.15 %).
+    PATCH {pair, id} — включить сработавший заново; {pair, id, lines} — сменить ряд (raw / rate);
+    {pair, id, target} — на что срабатывает канал; {pair, id, paused} — выключить / включить;
+    {pair, id, repeat, pause_minutes} — повторять (канал, трендовая линия, луч);
+    {pair, id, share} — новый уровень в % спота.
+    DELETE {pair, id} — удалить алерт вместе с рисунком.
+    """
+    from charts.models import Alert
+    from charts.user_alerts import KINDS
+    if group_of(request) != ANALYST:
+        return JsonResponse({"error": "алерты — только у отдела трейдинга"}, status=403)
+    if request.method == "GET":
+        items = Alert.objects.select_related("pair").filter(pair__active=True)
+        if request.GET.get("pair"):
+            items = items.filter(pair__code=request.GET["pair"])
+        after = request.GET.get("fired_after")
+        if after:
+            from django.utils.dateparse import parse_datetime
+            moment = parse_datetime(after)
+            if moment is None:
+                return JsonResponse({"error": "fired_after — время ISO"}, status=400)
+            items = items.filter(status=Alert.FIRED, fired_at__gt=moment)
+        return JsonResponse({"alerts": [_alert_json(item) for item in items], "now": timezone.now().isoformat()})
+    try:
+        body = json.loads(request.body or b"{}")
+    except ValueError:
+        return JsonResponse({"error": "нужен JSON"}, status=400)
+    pair = Pair.objects.filter(active=True, code=body.get("pair", "")).first()
+    if pair is None:
+        return JsonResponse({"error": "нет такой пары"}, status=404)
+    if request.method == "DELETE":
+        removed, _ = Alert.objects.filter(pair=pair, drawing_id=str(body.get("id", ""))).delete()
+        return JsonResponse({"removed": removed})
+    if request.method == "PATCH":
+        item = Alert.objects.filter(pair=pair, drawing_id=str(body.get("id", ""))).first()
+        if item is None:
+            return JsonResponse({"error": "нет такого алерта"}, status=404)
+        if "lines" in body:
+            # Другой ряд — другая сторона: первая проверка заново только запомнит её.
+            Alert.objects.filter(pk=item.pk).update(lines="raw" if body["lines"] == "raw" else "rate", side="")
+        elif "target" in body:
+            if body["target"] not in (Alert.EDGES, Alert.MIDDLE, Alert.BOTH):
+                return JsonResponse({"error": "target — edges, middle или both"}, status=400)
+            Alert.objects.filter(pk=item.pk).update(target=body["target"])
+        elif "repeat" in body:
+            from charts.user_alerts import REPEATABLE
+            if item.kind not in REPEATABLE:
+                return JsonResponse({"error": "повторяются только канал, трендовая линия и луч"}, status=400)
+            pause = body.get("pause_minutes", item.pause_minutes)
+            if not isinstance(pause, int) or not 1 <= pause <= 24 * 60:
+                return JsonResponse({"error": "pause_minutes — от 1 до 1440"}, status=400)
+            # Включили повтор у сработавшего — он снова ждёт.
+            fields = {"repeat": bool(body["repeat"]), "pause_minutes": pause}
+            if body["repeat"] and item.status == Alert.FIRED:
+                fields.update(status=Alert.ACTIVE, side="")
+            Alert.objects.filter(pk=item.pk).update(**fields)
+        elif "share" in body:
+            share = body["share"]
+            if item.kind != "level-pct" or not isinstance(share, (int, float)) or not -1 < share < 1:
+                return JsonResponse({"error": "share — доля спота со знаком, у уровня в %"}, status=400)
+            Alert.objects.filter(pk=item.pk).update(data={**item.data, "share": share}, side="")
+        elif "paused" in body:
+            # Выключить — не проверять, но не удалять; включить — с чистого листа, сторона заново.
+            if body["paused"]:
+                Alert.objects.filter(pk=item.pk).exclude(status=Alert.FIRED).update(status=Alert.PAUSED)
+            else:
+                Alert.objects.filter(pk=item.pk).update(status=Alert.ACTIVE, side="", fired_at=None, fired_value=None, fired_text="")
+        else:
+            Alert.objects.filter(pk=item.pk).update(status=Alert.ACTIVE, side="", fired_at=None, fired_value=None, fired_text="")
+        item.refresh_from_db()
+        return JsonResponse({"alert": _alert_json(item)})
+    level = body.get("level")
+    if isinstance(level, dict):
+        share = level.get("share")
+        if not isinstance(share, (int, float)) or not -1 < share < 1:
+            return JsonResponse({"error": "share — доля спота со знаком"}, status=400)
+        import uuid
+        drawing_id = "lvl-" + uuid.uuid4().hex[:12]
+        item = Alert.objects.create(
+            pair=pair, drawing_id=drawing_id, kind="level-pct", lines="raw" if body.get("lines") == "raw" else "rate",
+            data={"id": drawing_id, "kind": "level-pct", "share": share},
+        )
+        return JsonResponse({"alert": _alert_json(item)})
+    drawing = body.get("drawing") or {}
+    points = drawing.get("points") or []
+    if drawing.get("kind") not in KINDS or drawing.get("kind") == "level-pct" or not drawing.get("id") or not points:
+        return JsonResponse({"error": "алерт — канал, трендовая или горизонтальная линия, луч или прямоугольник"}, status=400)
+    if not all(isinstance(point, dict) and isinstance(point.get("price"), (int, float)) for point in points):
+        return JsonResponse({"error": "у рисунка нет точек время/цена"}, status=400)
+    drawing_id = str(drawing["id"])[:64]
+    item = Alert.objects.filter(pair=pair, drawing_id=drawing_id).first()
+    lines = "raw" if body.get("lines") == "raw" else "rate"
+    frame = body.get("tf") if body.get("tf") in frames.MINUTES else "H1"
+    if item is None:
+        item = Alert.objects.create(pair=pair, drawing_id=drawing_id, kind=drawing["kind"], data=drawing, lines=lines, frame=frame)
+    else:
+        moved = (item.data or {}).get("points") != points
+        fields = {"data": drawing}
+        if moved:
+            # Рисунок сдвинули — сторона считается заново: первая проверка только запомнит её.
+            fields["side"] = ""
+        Alert.objects.filter(pk=item.pk).update(**fields)
+        item.refresh_from_db()
+    return JsonResponse({"alert": _alert_json(item)})
+
+
+def lots_json(request):
+    """Соотношение лотов ног пары для сделки (charts/lots.py). Только отделу трейдинга."""
+    if group_of(request) != ANALYST:
+        return JsonResponse({"error": "только у отдела трейдинга"}, status=403)
+    pair = Pair.objects.filter(active=True, code=request.GET.get("pair", "")).first()
+    if pair is None:
+        return JsonResponse({"error": "нет такой пары"}, status=404)
+    from charts.lots import table
+    try:
+        found = table(pair)
+    except Exception as exc:
+        found = {"legs": [], "note": f"Мосбиржа не ответила: {type(exc).__name__}"}
+    return JsonResponse({"pair": pair.code, **found})
+
+
+def funding_json(request):
+    """Фандинг вечного пары: ожидаемый на сегодня (ISS), последний день и средние (rates/expected.py)."""
+    if group_of(request) != ANALYST:
+        return JsonResponse({"error": "только у отдела трейдинга"}, status=403)
+    pair = Pair.objects.filter(active=True, code=request.GET.get("pair", "")).first()
+    if pair is None:
+        return JsonResponse({"error": "нет такой пары"}, status=404)
+    from rates.expected import panel
+    return JsonResponse({"pair": pair.code, **panel(pair)})

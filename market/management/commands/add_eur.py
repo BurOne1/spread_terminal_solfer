@@ -22,7 +22,7 @@ class Command(BaseCommand):
         pair, created = Pair.objects.update_or_create(
             code="EUR",
             defaults={
-                "title": "евро",
+                "title": "EU - EURRUBF",
                 "future_root": "Eu",
                 "perp_code": "EURRUBF",
                 "perp_symbol": PERP,

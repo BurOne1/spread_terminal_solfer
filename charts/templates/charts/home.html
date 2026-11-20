@@ -165,12 +165,71 @@
     .wl-menu button.none { display: grid; place-items: center; background: transparent; color: var(--muted); font-size: 13px; line-height: 1; }
     .wl-name { min-width: 0; }
     .wl-name b { display: block; font-weight: 600; }
+    /* Ждущие алерты пары — яркая точка у кода. */
+    .wl-name .alert-dot { display: inline-block; width: 7px; height: 7px; margin-left: 5px; border-radius: 50%; vertical-align: middle;
+      background: #ff9800; box-shadow: 0 0 0 2px rgba(255, 152, 0, .25), 0 0 6px #ff9800; }
     .wl-name span { display: block; color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .wl-row .num { font-variant-numeric: tabular-nums; font-size: 12px; }
     .wl-row .up { color: var(--green); }
     .wl-row .down { color: var(--red); }
     .wl-row .dim { color: var(--muted); }
     .wl-foot { flex: none; padding: 8px 12px; border-top: 1px solid var(--line); }
+    /* Алерты: список и всплывающие сообщения о срабатывании. */
+    .fund { padding: 10px 12px; font-size: 12px; overflow-y: auto; }
+    .fund .card { padding: 12px; border: 1px solid var(--line); border-left: 3px solid var(--gold, #f5c518); border-radius: 6px; background: var(--raised); }
+    .fund .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .fund .name { font-size: 15px; font-weight: 700; }
+    .fund .big { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .fund .annual { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+    .fund .rows { margin-top: 10px; border-top: 1px solid var(--line); }
+    .fund .rows div { display: flex; justify-content: space-between; padding: 5px 0; font-variant-numeric: tabular-nums; }
+    .fund .rows span:first-child { color: var(--muted); }
+    .fund .pos { color: var(--green); }
+    .fund .neg { color: var(--red); }
+    .fund .muted { color: var(--muted); font-size: 11px; line-height: 1.4; margin-top: 10px; }
+    .lots { padding: 10px 12px; font-size: 12px; overflow-y: auto; }
+    .lots table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    .lots th, .lots td { padding: 5px 4px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    .lots th:first-child, .lots td:first-child { text-align: left; }
+    .lots th { color: var(--muted); font-weight: 500; font-size: 11px; }
+    .lots .count { font-size: 15px; font-weight: 700; }
+    .lots .ratio { margin: 4px 0 10px; font-size: 16px; font-weight: 700; }
+    .lots .muted { color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .lots h3 { margin: 14px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    .al-hint { flex: none; padding: 8px 12px; color: var(--muted); font-size: 11.5px; line-height: 1.4; border-bottom: 1px solid var(--line); }
+    .al-add { flex: none; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+    .al-add > span { flex-basis: 100%; color: var(--muted); font-size: 11px; }
+    .al-add input { flex: 1 1 100%; min-width: 0; font-size: 13px; }
+    #al-add select { flex: 1 1 0; width: auto; min-width: 0; }
+    #al-add input { width: auto; }
+    .al-add input, .al-add select { height: 28px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--raised); color: var(--ink); font: inherit; }
+    .al-add button { height: 28px; padding: 0 10px; white-space: nowrap; flex: none; border: 0; border-radius: 4px; background: var(--accent); color: #fff; cursor: pointer; }
+    .al-lines .row { display: flex; gap: 6px; align-items: center; padding: 2px 6px; }
+    .al-lines .row input { width: 80px; height: 24px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--raised); color: var(--ink); }
+    .al-lines .row button { width: auto; padding: 2px 8px; background: var(--accent); color: #fff; }
+    .al-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+    .al-row:hover { background: var(--hover); }
+    .al-row.here { box-shadow: inset 2px 0 0 var(--orange); }
+    .al-row.fired, .al-row.paused { opacity: .55; }
+    .al-row.sel { background: var(--accent-soft); }
+    .al-row .head { display: flex; align-items: center; gap: 6px; }
+    .al-row .num { color: var(--muted); font-size: 11px; }
+    .al-row .series { padding: 0 5px; border-radius: 3px; font-size: 10.5px; font-weight: 600; color: #fff; background: var(--c); }
+    .al-row .geo { display: block; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+    .al-lines { min-width: 200px; }
+    .al-lines .sep { margin: 6px 0 4px; color: var(--muted); font-size: 11px; }
+    .al-row b { font-weight: 600; }
+    .al-row .what { display: block; color: var(--muted); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .al-row .state { display: block; font-size: 11px; }
+    .al-row .state.wait { color: var(--orange); }
+    .al-row .acts { display: flex; gap: 2px; }
+    .al-row .acts button { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+    .al-row .acts button:hover { background: var(--raised); color: var(--ink); }
+    .al-empty { padding: 16px 12px; color: var(--muted); font-size: 12px; }
+    .al-lines button { display: block; width: 100%; height: auto; outline: none; padding: 4px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); text-align: left; font-size: 12px; cursor: pointer; }
+    .al-lines button:hover { background: var(--hover); outline: none; }
+    .toasts { position: fixed; right: 56px; bottom: 34px; z-index: 60; display: flex; flex-direction: column; gap: 8px; max-width: 360px; }
+    .toast { padding: 10px 12px; background: var(--raised); border: 1px solid var(--line); border-left: 3px solid var(--orange); border-radius: 6px; box-shadow: 0 6px 20px rgba(0, 0, 0, .35); font-size: 12px; white-space: pre-line; cursor: pointer; }
 
     /* строка состояния */
     .statusbar { grid-area: status; display: flex; align-items: center; gap: 2px; padding: 0 8px; border-top: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 12px; min-width: 0; white-space: nowrap; }
@@ -273,6 +332,8 @@
       <label>прозрачность <input type="range" id="draw-alpha" min="0" max="90" value="80"></label>
       <label><input type="checkbox" id="draw-fill" checked> заливка</label>
       <button type="button" id="draw-delete">удалить</button>
+      <button type="button" id="draw-alert" hidden title="Перенести рисунок в алерты: из обычных рисунков он уйдёт">сделать алертом</button>
+      <i id="draw-alert-state" hidden></i>
       <span class="pub" id="draw-pub" hidden>
         <button type="button" id="draw-publish" title="Отправить точную копию канала в группу «Просмотр»">опубликовать</button>
         <button type="button" id="draw-unpublish" title="Убрать канал из «Просмотра»; ваш рисунок останется">снять</button>
@@ -292,6 +353,23 @@
       <div class="wl-foot note" id="wl-note">Цена часа — как на графике.</div>
       <div class="wl-foot note" style="border-top: 0; padding-top: 0">Правый клик (на телефоне — долгое нажатие) по паре — цветная метка.</div>
     </div>
+    {% if not viewer %}<div class="view" data-view="alerts" id="alerts">
+      <div class="al-hint">Пока открыта эта вкладка, на графике видны и алерты (пунктир). Нарисуйте канал, трендовую или горизонтальную линию, луч или прямоугольник — это алерт. Обычный рисунок: выделите → «сделать алертом». Срабатывает один раз, сообщение — в отдельный чат.</div>
+      <form class="al-add" id="al-add" title="Уровень с клавиатуры: в единицах спреда — обычная горизонтальная линия; в % спота — как уровни стратегии, линия идёт за спотом">
+        <span>Уровень с клавиатуры</span>
+        <input type="number" step="any" id="al-add-value" placeholder="например −88.5 или 0.15" required>
+        <select id="al-add-unit"><option value="value">спред</option><option value="pct">% спота</option></select>
+        <button type="submit">+ алерт</button>
+      </form>
+      <div class="wl-list" id="al-list"></div>
+      <div class="wl-foot note" id="al-note"></div>
+    </div>{% endif %}
+    {% if not viewer %}<div class="view" data-view="funding" id="funding-view">
+      <div class="fund" id="funding-body"><p class="muted">Загрузка…</p></div>
+    </div>{% endif %}
+    {% if not viewer %}<div class="view" data-view="lots" id="lots-view">
+      <div class="lots" id="lots-body"><p class="muted">Загрузка…</p></div>
+    </div>{% endif %}
     <div class="view" data-view="strategy">
     <div class="side-body">
       <div class="seg" id="strategy-kind" title="Стратегия по уровням считает сервер, по каналу — браузер">
@@ -350,9 +428,13 @@
 
   <nav class="rail" id="rail" aria-label="Боковая панель">
     <button type="button" class="tool" data-view="watchlist" title="Список спредов"><svg viewBox="0 0 18 18"><path d="M3 4.5h12M3 9h12M3 13.5h12"/><circle cx="3" cy="4.5" r=".6"/></svg></button>
+    {% if not viewer %}<button type="button" class="tool" data-view="funding" title="Фандинг вечного: ожидаемый сегодня, последний день и средние"><svg viewBox="0 0 18 18"><path d="M3 14l4-4 3 3 5-6"/><path d="M11 7h4v4"/></svg></button>{% endif %}
+    {% if not viewer %}<button type="button" class="tool" data-view="lots" title="Лоты: соотношение лотов ног для сделки"><svg viewBox="0 0 18 18"><path d="M9 3v12M4 6h10M4 6l-2 5h4zM14 6l-2 5h4zM6 15h6"/></svg></button>{% endif %}
+    {% if not viewer %}<button type="button" class="tool" data-view="alerts" title="Алерты: рисунки-сигналы, видны только здесь"><svg viewBox="0 0 18 18"><path d="M5 12.5V8a4 4 0 0 1 8 0v4.5l1.5 1.5h-11z"/><path d="M7.5 15.5a1.5 1.5 0 0 0 3 0"/></svg></button>{% endif %}
     <button type="button" class="tool" data-view="strategy" title="Стратегия: уровни и настройки"><svg viewBox="0 0 18 18"><path d="M3 5h7M13 5h2M3 13h2M8 13h7M3 9h3M9 9h6"/><circle cx="11.5" cy="5" r="1.5"/><circle cx="6.5" cy="13" r="1.5"/><circle cx="7.5" cy="9" r="1.5"/></svg></button>
   </nav>
 
+  <div class="toasts" id="toasts"></div>
   <footer class="statusbar" id="statusbar">
     <span class="tb" id="status-wrap"><i class="pulse"></i><span id="status">{{ count }} баров</span></span>
     <div class="sep"></div>
@@ -798,6 +880,7 @@
         priceLines.push(rateSeries.createPriceLine({ price: 0, color: colors.zero, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: false }));
         // Уровни стратегии — только аналитику: у зрителя стратегий нет.
         drawLevelSeries(strategyKind() === "levels" && !VIEWER);
+        if (!VIEWER) drawAlertLevels();
         const events = pnl.filter((point) => eventOf(point.marker));
         const marker = (point) => ({
           time: unix(point.t), position: eventOf(point.marker) === "entry" ? "belowBar" : "aboveBar",
@@ -853,6 +936,8 @@
       return node;
     }
     function lastKey(map) { let key = null; map.forEach((_value, time) => { key = time; }); return key; }
+    // Цена под курсором (верхняя панель): в легенде — её значение и доля спота бара под курсором.
+    let cursorPrice = null;
     function showLegends(time) {
       const at = time ?? lastKey(pointByTime);
       const point = pointByTime.get(at);
@@ -869,6 +954,13 @@
         }
         if (!sameRate && chartLines() !== "raw") top.append(pair("rate", fmt(point.rate), colors.rate));
         top.append(pair("дней", String(point.days ?? "—")));
+        // Курсор в % спота — как уровни стратегии и алертов: доля спота именно этого бара.
+        if (time !== null && time !== undefined && Number.isFinite(cursorPrice)) {
+          const text = !levels.absolute && point.price
+            ? `${fmt(cursorPrice)} = ${(cursorPrice / point.price * 100).toFixed(3)} % спота (спот ${fmt(point.price, point.price >= 100 ? 2 : 4)})`
+            : fmt(cursorPrice);
+          top.append(pair("курсор", text));
+        }
       }
       const carry = document.getElementById("legend-1");
       carry.style.display = carryOn ? "" : "none";
@@ -921,7 +1013,11 @@
       placeLegends();
       requestAnimationFrame(() => requestAnimationFrame(placeLegends));
     }
-    chart.subscribeCrosshairMove((param) => { if (!painting) showLegends(param && param.time !== undefined ? param.time : null); });
+    chart.subscribeCrosshairMove((param) => {
+      const main = param && param.point && (param.paneIndex === undefined || param.paneIndex === 0);
+      cursorPrice = main ? rateSeries.coordinateToPrice(param.point.y) : null;
+      if (!painting) showLegends(param && param.time !== undefined ? param.time : null);
+    });
     new ResizeObserver(() => {
       placeLegendsSoon();
       if (pendingFit !== null) requestAnimationFrame(() => { if (pendingFit !== null) { showReal(pendingFit); fitPrices(); } });
@@ -1177,6 +1273,8 @@
         // Канал — по номерам баров шкалы: считается после отрисовки новых данных.
         if (strategyKind() === "channel" && pnlOn) { fillChannelPick(); runChannel(true); }
         if (sideOpen() && sideView === "watchlist") refreshWatchlist();
+        if (sideOpen() && sideView === "lots") refreshLots(false);
+        if (sideOpen() && sideView === "funding") refreshFunding(false);
       } catch (error) {
         // Сеть — «нет связи»; ошибка на странице — её текст, чтобы было что прислать.
         const network = error instanceof TypeError && /fetch|network/i.test(error.message);
@@ -1288,7 +1386,7 @@
       if (!confirm("Выйти из группы? При следующем входе нужно будет снова выбрать группу.")) event.preventDefault();
     });
     // Боковая панель: узкая панель справа переключает вид, повторный клик закрывает.
-    const SIDE_VIEWS = { strategy: "Стратегия", watchlist: "Список спредов" };
+    const SIDE_VIEWS = { strategy: "Стратегия", watchlist: "Список спредов", ...(VIEWER ? {} : { alerts: "Алерты", lots: "Лоты", funding: "Фандинг" }) };
     let sideView = "strategy";
     function sideOpen() { return !document.documentElement.classList.contains("side-closed"); }
     function markRail() {
@@ -1299,6 +1397,9 @@
       try { localStorage.setItem("spread-side", open ? "1" : "0"); } catch (error) { /* хранилище недоступно */ }
       markRail();
       if (open && sideView === "watchlist") refreshWatchlist();
+      if (open && sideView === "lots") refreshLots(true);
+      if (open && sideView === "funding") refreshFunding(true);
+      syncAlertMode();
     }
     function setView(view) {
       sideView = SIDE_VIEWS[view] ? view : "strategy";
@@ -1306,6 +1407,9 @@
       document.getElementById("side-title").textContent = SIDE_VIEWS[sideView];
       writeStore("spread-side-view", sideView);
       markRail();
+      if (sideOpen() && sideView === "lots") refreshLots(true);
+      if (sideOpen() && sideView === "funding") refreshFunding(true);
+      syncAlertMode();
     }
     document.getElementById("rail").addEventListener("click", (event) => {
       const button = event.target.closest("[data-view]");
@@ -1316,6 +1420,114 @@
     });
     document.getElementById("side-close").addEventListener("click", () => setSide(false));
 
+    // Лоты: соотношение лотов ног для сделки по стоимости лота Мосбиржи (charts/lots.py).
+    const LOTS_EVERY = 60000;
+    let lotsAt = 0, lotsPair = "";
+    async function refreshLots(force) {
+      const body = document.getElementById("lots-body");
+      if (!body) return;
+      const pair = currentPair();
+      if (!force && pair === lotsPair && Date.now() - lotsAt < LOTS_EVERY) return;
+      lotsAt = Date.now();
+      lotsPair = pair;
+      try {
+        const response = await fetch("/api/lots/?pair=" + encodeURIComponent(pair), { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || response.status);
+        renderLots(data);
+      } catch (error) {
+        body.replaceChildren(Object.assign(document.createElement("p"), { className: "muted", textContent: "Не посчитать: " + error.message }));
+      }
+    }
+    function renderLots(data) {
+      const body = document.getElementById("lots-body");
+      const nodes = [];
+      const add = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; node.textContent = text; nodes.push(node); return node; };
+      const money = (value) => Math.round(value).toLocaleString("ru-RU") + " ₽";
+      const legs = data.legs || [];
+      if (!legs.length) {
+        add("p", "muted", data.note || "Считать нечего.");
+        body.replaceChildren(...nodes);
+        return;
+      }
+      add("h3", "", "Минимально");
+      add("div", "ratio", legs.map((leg) => `${leg.secid} ${leg.minimal}`).join(" : "));
+      add("p", "muted", `ошибка округления ${(data.minimal_error * 100).toFixed(1)} %`);
+      if (data.exact_error !== null && data.exact_error !== undefined) {
+        add("h3", "", "Точнее");
+        add("div", "ratio", legs.map((leg) => `${leg.secid} ${leg.exact}`).join(" : "));
+        add("p", "muted", `ошибка ${(data.exact_error * 100).toFixed(1)} %`);
+      }
+      add("h3", "", "Ноги");
+      const table = document.createElement("table");
+      table.innerHTML = "<thead><tr><th>нога</th><th>цена</th><th>лот, ₽</th><th>мин.</th><th>точн.</th></tr></thead>";
+      const tbody = document.createElement("tbody");
+      legs.forEach((leg) => {
+        const row = document.createElement("tr");
+        [leg.secid, fmt(leg.price, leg.price >= 100 ? 1 : 3) + (leg.live ? "" : "*"), money(leg.cost), String(leg.minimal), String(leg.exact ?? leg.minimal)]
+          .forEach((text, index) => { const cell = document.createElement("td"); cell.textContent = text; if (index >= 3) cell.className = "count"; row.append(cell); });
+        tbody.append(row);
+      });
+      table.append(tbody);
+      nodes.push(table);
+      add("p", "muted", "Стоимость лота = цена × STEPPRICE / MINSTEP (Мосбиржа, раз в час). Цена — последняя 5-минутка"
+        + (legs.some((leg) => !leg.live) ? "; * — расчётная цена биржи" : "") + "." + (data.note ? " " + data.note[0].toUpperCase() + data.note.slice(1) + "." : ""));
+      body.replaceChildren(...nodes);
+    }
+    // Фандинг вечного пары (rates/expected.py): ожидаемый сегодня по Мосбирже, последний день, средние.
+    const FUNDING_EVERY = 60000;
+    let fundTabAt = 0, fundTabPair = "";
+    async function refreshFunding(force) {
+      const body = document.getElementById("funding-body");
+      if (!body) return;
+      const pair = currentPair();
+      if (!force && pair === fundTabPair && Date.now() - fundTabAt < FUNDING_EVERY) return;
+      fundTabAt = Date.now();
+      fundTabPair = pair;
+      try {
+        const response = await fetch("/api/funding/?pair=" + encodeURIComponent(pair), { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || response.status);
+        renderFunding(data);
+      } catch (error) {
+        body.replaceChildren(Object.assign(document.createElement("p"), { className: "muted", textContent: "Не загрузить: " + error.message }));
+      }
+    }
+    function renderFunding(data) {
+      const body = document.getElementById("funding-body");
+      const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
+      const sign = (value) => value > 0 ? "pos" : value < 0 ? "neg" : "";
+      const num = (value, digits = 5) => value === null || value === undefined ? "—" : value.toFixed(digits).replace(".", ",");
+      const pct = (value) => value === null || value === undefined ? "" : (value > 0 ? "+" : "") + value.toFixed(2).replace(".", ",") + " % годовых";
+      if (!data.perp) {
+        body.replaceChildren(el("p", "muted", data.note || "Фандинга нет."));
+        return;
+      }
+      const card = el("div", "card");
+      const top = el("div", "top");
+      top.append(el("span", "name", data.perp));
+      const right = el("div", "annual");
+      right.append(el("div", "big " + sign(data.expected), num(data.expected)), el("div", sign(data.annual), pct(data.annual)));
+      right.title = "Ожидаемый фандинг на сегодня (SWAPRATE Мосбиржи), на единицу котировки";
+      top.append(right);
+      const rows = el("div", "rows");
+      (data.rows || []).forEach((row) => {
+        const line = el("div");
+        const name = el("span", "", row.name);
+        name.title = row.hint;
+        const value = el("span", sign(row.value), num(row.value));
+        value.title = pct(row.annual);
+        line.append(name, value);
+        rows.append(line);
+      });
+      card.append(top, rows);
+      const notes = [];
+      if (data.per_contract !== null && data.per_contract !== undefined) notes.push(`На 1 контракт ${data.perp} (лот ${data.lot}): ${num(data.per_contract, 2)}.`);
+      notes.push("Верхнее число — ожидаемый фандинг на сегодня (SWAPRATE Мосбиржи), на единицу котировки. % годовых = фандинг / цена × 365"
+        + (data.price ? ` (цена ${num(data.price, 2)}${data.time ? ", " + data.time.slice(11, 16) : ""})` : "") + ". Наведите на строку — % годовых.");
+      if (data.note) notes.push(data.note);
+      body.replaceChildren(card, el("p", "muted", notes.join(" ")));
+    }
     // Список спредов: последний бар каждой пары, клик — открыть пару.
     let watchRows = [];
     async function refreshWatchlist() {
@@ -1393,6 +1605,12 @@
       name.className = "wl-name";
       const code = document.createElement("b");
       code.textContent = item.code;
+      if (item.alerts) {
+        const dot = document.createElement("span");
+        dot.className = "alert-dot";
+        dot.title = `ждущих алертов: ${item.alerts}`;
+        code.append(dot);
+      }
       const detail = document.createElement("span");
       detail.textContent = item.contract ? item.title + " · " + item.contract + " · " + item.days + " дн." : item.title + " · нет баров";
       name.append(code, detail);
@@ -1908,6 +2126,17 @@
         .then(() => refreshPublished()).catch((error) => alert("Снять не удалось: " + error.message));
     }
     function removeDrawings(ids) {
+      // Рисунок-алерт удаляется вместе с алертом — как из списка, только после вопроса.
+      const alerts = ids.filter((id) => alertIds.has(id));
+      if (alerts.length) {
+        const names = alerts.map((id) => {
+          const row = alertItems.find((item) => item.pair === currentPair() && item.id === id);
+          return row ? "#" + alertNumber(row) + " " + (ALERT_TITLES[row.kind] || row.kind) : id;
+        });
+        if (!confirm(`Удалить алерт${alerts.length > 1 ? "ы" : ""} ${names.join(", ")} на ${currentPair()} вместе с рисунком?`)) {
+          ids = ids.filter((id) => !alertIds.has(id));
+        }
+      }
       askUnpublish(ids);
       ids.forEach((id) => drawings.remove(id));
     }
@@ -1962,6 +2191,476 @@
     // Рисунки — одни на все таймфреймы: точки хранятся во времени и цене, на любом
     // таймфрейме библиотека ставит их на свои бары.
     function drawingKey() { return "drawings:" + (pairSelect ? pairSelect.value : ""); }
+
+    // Алерты (charts/user_alerts.py): рисунки-сигналы хранятся на сервере и видны на графике,
+    // только пока открыта вкладка «Алерты». Обычные рисунки — в браузере, как раньше.
+    const ALERT_KINDS = ["horizontal-line", "trend-line", "ray", "parallel-channel", "rectangle"];
+    const ALERT_TITLES = { "horizontal-line": "горизонтальная линия", "trend-line": "трендовая линия", ray: "луч", "parallel-channel": "канал", rectangle: "прямоугольник", "level-pct": "уровень" };
+    const REPEATABLE = ["trend-line", "ray", "parallel-channel"];
+    let alertMode = false;
+    let alertItems = [];
+    const alertIds = new Set();
+    let alertTimer = null;
+    let alertsSeen = null;
+    function alertsOn() { return !VIEWER && sideOpen() && sideView === "alerts"; }
+    async function sendAlert(method, payload) {
+      const response = await fetch("/api/alerts/", {
+        method, headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken() }, body: JSON.stringify(payload),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || response.status);
+      return body;
+    }
+    async function loadAlerts() {
+      if (VIEWER) return;
+      try {
+        const response = await fetch("/api/alerts/", { cache: "no-store" });
+        if (!response.ok) throw new Error(response.status);
+        const body = await response.json();
+        alertItems = body.alerts || [];
+        if (alertsSeen === null) alertsSeen = body.now;
+      } catch (error) {
+        document.getElementById("al-note").textContent = "Алерты не загрузились";
+      }
+      renderAlerts();
+    }
+    function pairAlerts() { return alertItems.filter((row) => row.pair === currentPair()); }
+    // Как алерт выглядит на графике: пунктир, сработавший — серый. В базе стиль не меняется.
+    function alertLook(row) {
+      const color = row.status !== "active" ? "#8d8d8d" : ((row.data.style || {}).color || "#ff9800");
+      const style = { ...(row.data.style || {}), lineStyle: "dashed", color, textColor: color };
+      if (style.backgroundColor) style.backgroundColor = color;
+      if (style.levels) style.levels = style.levels.map((level) => ({ ...level, color, style: "dashed" }));
+      return { ...row.data, id: row.id, style };
+    }
+    function layerJSON() {
+      alertIds.clear();
+      const stored = localStorage.getItem(drawingKey()) || "[]";
+      if (!alertMode) return stored;
+      let items;
+      try { items = JSON.parse(stored); } catch (error) { items = []; }
+      const extra = pairAlerts().map(alertLook);
+      extra.forEach((item) => alertIds.add(item.id));
+      return JSON.stringify([...items.filter((item) => !alertIds.has(item.id)), ...extra]);
+    }
+    async function syncAlertMode() {
+      const on = alertsOn();
+      if (on && sideView === "alerts") loadAlerts();
+      if (on === alertMode) return;
+      alertMode = on;
+      if (on) await loadAlerts();
+      loadDrawings();
+      showEditor();
+    }
+    // На какой линии рисунок: показана одна — она; обе — та, что ближе к точкам рисунка.
+    function drawingLine(item) {
+      if (item.kind === "parallel-channel") return channelLine(item);
+      const shown = chartLines();
+      if (shown !== "both") return shown === "raw" ? "raw" : "rate";
+      let raw = 0, rate = 0;
+      (item.points || []).forEach((dot) => {
+        let best = null;
+        points.forEach((point) => {
+          if (point.raw === null || point.rate === null) return;
+          if (!best || Math.abs(unix(point.t) - dot.time) < Math.abs(unix(best.t) - dot.time)) best = point;
+        });
+        if (!best) return;
+        raw += Math.abs(best.raw - dot.price);
+        rate += Math.abs(best.rate - dot.price);
+      });
+      return raw < rate ? "raw" : "rate";
+    }
+    async function makeAlert(id) {
+      const item = drawings && drawings.get(id);
+      if (!item || !ALERT_KINDS.includes(item.kind)) return;
+      const original = drawingOriginals.get(id) || item;
+      const drawing = JSON.parse(JSON.stringify({ ...item, points: original.points || item.points }));
+      try {
+        const body = await sendAlert("POST", { pair: currentPair(), drawing, lines: drawingLine(item), tf: currentTf() });
+        alertItems = [body.alert, ...alertItems.filter((row) => !(row.pair === body.alert.pair && row.id === body.alert.id))];
+        alertIds.add(id);
+        // Из обычных рисунков — убрать, на графике — показать как алерт.
+        saveDrawingsNow(keepOriginals(drawings.exportJSON()));
+        restoring = true;
+        try { drawings.update(alertLook(body.alert)); } finally { restoring = false; }
+        renderAlerts();
+        showEditor();
+      } catch (error) {
+        alert("Алерт не создан: " + error.message);
+      }
+    }
+    // Изменения слоя алертов — на сервер: сдвинутые точки, удалённые рисунки. Стиль берётся из базы.
+    function syncAlerts(items) {
+      clearTimeout(alertTimer);
+      const pair = currentPair();
+      alertTimer = setTimeout(async () => {
+        const byId = new Map(items.map((item) => [item.id, item]));
+        const jobs = [];
+        // Уровень в % спота — не рисунок библиотеки: его нет среди items, удаляется только из списка.
+        pairAlerts().filter((row) => row.kind !== "level-pct").forEach((row) => {
+          const item = byId.get(row.id);
+          if (!item) {
+            jobs.push(sendAlert("DELETE", { pair, id: row.id }).then(() => { alertItems = alertItems.filter((other) => !(other.pair === pair && other.id === row.id)); }));
+            return;
+          }
+          if (JSON.stringify(item.points) === JSON.stringify(row.data.points)) return;
+          jobs.push(sendAlert("POST", { pair, drawing: { ...row.data, points: item.points }, lines: row.lines, tf: row.frame })
+            .then((body) => { Object.assign(row, body.alert); }));
+        });
+        // Рисунок вернули Ctrl+Z после удаления — завести алерт заново.
+        items.filter((item) => !pairAlerts().some((row) => row.id === item.id)).forEach((item) => {
+          jobs.push(sendAlert("POST", { pair, drawing: item, lines: drawingLine(item), tf: currentTf() })
+            .then((body) => { alertItems = [body.alert, ...alertItems]; }));
+        });
+        if (!jobs.length) return;
+        try { await Promise.all(jobs); } catch (error) { document.getElementById("al-note").textContent = "Не сохранилось: " + error.message; }
+        renderAlerts();
+      }, 600);
+    }
+    function alertTime(value) {
+      return value ? new Date(value).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+    }
+    // Уровни в % спота: не рисунок библиотеки, а линия по споту каждого бара, как уровни стратегии.
+    const alertLevelSeries = [];
+    function drawAlertLevels() {
+      const rows = alertMode ? pairAlerts().filter((row) => row.kind === "level-pct") : [];
+      while (alertLevelSeries.length < rows.length) {
+        alertLevelSeries.push(chart.addSeries(LightweightCharts.LineSeries, {
+          lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, priceLineVisible: false,
+          crosshairMarkerVisible: false, lastValueVisible: true, priceFormat, autoscaleInfoProvider: () => null,
+        }, 0));
+      }
+      alertLevelSeries.forEach((series, index) => {
+        const row = rows[index];
+        if (!row) { series.setData([]); return; }
+        series.applyOptions({ color: row.status === "active" ? "#ff9800" : "#8d8d8d", title: "#" + alertNumber(row) });
+        series.setData(points.filter((point) => point.price).map((point) => ({ time: unix(point.t), value: row.data.share * point.price })));
+      });
+    }
+    function lastSpot() {
+      for (let index = points.length - 1; index >= 0; index -= 1) if (points[index].price) return points[index].price;
+      return null;
+    }
+    const addForm = document.getElementById("al-add");
+    function syncAddUnit() {
+      // У пар с абсолютными уровнями (готовый календарь) процента спота нет.
+      const pct = document.querySelector('#al-add-unit option[value="pct"]');
+      if (!pct) return;
+      pct.hidden = !!levels.absolute;
+      if (levels.absolute) document.getElementById("al-add-unit").value = "value";
+    }
+    if (addForm) addForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const value = Number(document.getElementById("al-add-value").value);
+      if (!Number.isFinite(value)) return;
+      const unit = document.getElementById("al-add-unit").value;
+      const lines = chartLines() === "raw" ? "raw" : "rate";
+      try {
+        let body;
+        if (unit === "pct") {
+          body = await sendAlert("POST", { pair: currentPair(), level: { share: value / 100 }, lines });
+        } else {
+          const last = points.length ? unix(points[points.length - 1].t) : Math.floor(Date.now() / 1000);
+          const style = { color: "#ff9800", width: 2, lineStyle: "solid", textColor: "#ff9800", showPriceLabels: true, ...(styleFor("horizontal-line") || {}) };
+          const id = "h" + Math.random().toString(36).slice(2, 12);
+          body = await sendAlert("POST", { pair: currentPair(), drawing: { id, kind: "horizontal-line", points: [{ time: last, price: value }], style }, lines, tf: currentTf() });
+        }
+        alertItems = [body.alert, ...alertItems];
+        document.getElementById("al-add-value").value = "";
+        loadDrawings();
+        renderAlerts();
+      } catch (error) { alert("Алерт не создан: " + error.message); }
+    });
+    // Номер алерта на паре — по порядку создания: «#2» в списке, чтобы различать линии одной пары.
+    function alertNumber(row) {
+      const same = alertItems.filter((item) => item.pair === row.pair).sort((a, b) => a.created_at.localeCompare(b.created_at));
+      return same.findIndex((item) => item.id === row.id) + 1;
+    }
+    const TARGET_TITLES = { both: "границы и середина", edges: "границы", middle: "середина" };
+    // Числа рисунка: по ним видно, какая это линия на графике.
+    function alertGeometry(row) {
+      if (row.kind === "level-pct") {
+        const spot = row.pair === currentPair() ? lastSpot() : null;
+        return fmt(row.data.share * 100) + "% спота" + (spot ? " ≈ " + fmt(row.data.share * spot) + " сейчас" : "");
+      }
+      const dots = ((row.data || {}).points || []).filter((dot) => Number.isFinite(dot.price));
+      if (!dots.length) return "";
+      const prices = dots.map((dot) => dot.price);
+      if (row.kind === "horizontal-line") return "уровень " + fmt(prices[0]);
+      if (row.kind === "rectangle") return "зона " + fmt(Math.min(...prices.slice(0, 2))) + " … " + fmt(Math.max(...prices.slice(0, 2)));
+      if (row.kind === "parallel-channel") return "канал от " + fmt(prices[0]) + " → " + fmt(prices[1] ?? prices[0]) + " · " + (TARGET_TITLES[row.target] || "");
+      const [first, second] = [...dots].sort((a, b) => a.time - b.time);
+      return "от " + fmt(first.price) + " → " + fmt((second || first).price);
+    }
+    function renderAlerts() {
+      const list = document.getElementById("al-list");
+      if (!list) return;
+      const here = currentPair();
+      const order = { active: 0, paused: 1, fired: 2 };
+      const selected = drawings && alertMode ? drawings.selection() : [];
+      const rows = [...alertItems].sort((a, b) => (a.pair === here ? 0 : 1) - (b.pair === here ? 0 : 1)
+        || a.pair.localeCompare(b.pair) || (order[a.status] ?? 3) - (order[b.status] ?? 3) || alertNumber(a) - alertNumber(b));
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "al-empty";
+        empty.textContent = "Алертов нет.";
+        list.replaceChildren(empty);
+      } else {
+        list.replaceChildren(...rows.map((row) => {
+          const node = document.createElement("div");
+          node.className = "al-row " + row.status + (row.pair === here ? " here" : "")
+            + (row.pair === here && selected.includes(row.id) ? " sel" : "");
+          node.dataset.pair = row.pair;
+          node.dataset.id = row.id;
+          const text = document.createElement("div");
+          const head = document.createElement("div");
+          head.className = "head";
+          const title = document.createElement("b");
+          title.textContent = row.pair;
+          const number = document.createElement("span");
+          number.className = "num";
+          number.textContent = "#" + alertNumber(row);
+          // Ряд — крупно и цветом его линии на графике.
+          const series = document.createElement("span");
+          series.className = "series";
+          series.textContent = row.lines === "raw" ? "по сырому" : "по очищенному";
+          series.style.setProperty("--c", row.lines === "raw" ? colors.raw : (sameRate ? colors.raw : colors.rate));
+          head.append(title, number, series);
+          const geo = document.createElement("span");
+          geo.className = "geo";
+          geo.textContent = (ALERT_TITLES[row.kind] || row.kind) + ": " + alertGeometry(row);
+          const state = document.createElement("span");
+          state.className = "state" + (row.status === "active" ? " wait" : "");
+          state.textContent = row.status === "fired"
+            ? "сработал " + alertTime(row.fired_at) + (row.fired_value !== null ? " · " + fmt(row.fired_value) : "")
+            : row.status === "paused" ? "выключен"
+            : row.repeat ? `повтор, пауза ${row.pause_minutes} мин` + (row.fired_at ? " · последний " + alertTime(row.fired_at) + " · " + fmt(row.fired_value) : "")
+            : "ждёт · с " + alertTime(row.created_at);
+          node.title = row.fired_text || (row.pair === here ? "Клик — выделить рисунок на графике" : "Клик — открыть пару");
+          text.append(head, geo, state);
+          const acts = document.createElement("div");
+          acts.className = "acts";
+          const toggle = document.createElement("button");
+          toggle.type = "button";
+          if (row.status === "fired") {
+            toggle.dataset.act = "rearm";
+            toggle.title = "Включить снова";
+            toggle.textContent = "↻";
+          } else {
+            toggle.dataset.act = row.status === "paused" ? "resume" : "pause";
+            toggle.title = row.status === "paused" ? "Включить" : "Выключить, не удаляя";
+            toggle.textContent = row.status === "paused" ? "▶" : "⏸";
+          }
+          acts.append(toggle);
+          const gear = document.createElement("button");
+          gear.type = "button";
+          gear.dataset.act = "lines";
+          gear.title = row.kind === "parallel-channel" ? "По какому спреду и на что срабатывать" : "По какому спреду алерт: сырой или очищенный";
+          gear.textContent = "⚙";
+          acts.append(gear);
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.dataset.act = "delete";
+          remove.title = "Удалить алерт и его рисунок";
+          remove.textContent = "✕";
+          acts.append(remove);
+          node.append(text, acts);
+          return node;
+        }));
+      }
+      const count = (status) => alertItems.filter((row) => row.status === status).length;
+      document.getElementById("al-note").textContent = `ждут ${count("active")}, выключены ${count("paused")}, сработали ${count("fired")}`;
+    }
+    const alertList = document.getElementById("al-list");
+    if (alertList) alertList.addEventListener("click", async (event) => {
+      const node = event.target.closest(".al-row");
+      if (!node) return;
+      const act = event.target.closest("[data-act]");
+      const { pair, id } = node.dataset;
+      if (act && act.dataset.act === "delete") {
+        if (!confirm(`Удалить алерт на ${pair} вместе с его рисунком?`)) return;
+        try {
+          await sendAlert("DELETE", { pair, id });
+          alertItems = alertItems.filter((row) => !(row.pair === pair && row.id === id));
+          if (pair === currentPair()) loadDrawings();
+          renderAlerts();
+        } catch (error) { alert("Не удалилось: " + error.message); }
+        return;
+      }
+      if (act && act.dataset.act === "lines") {
+        const row = alertItems.find((item) => item.pair === pair && item.id === id);
+        const box = act.getBoundingClientRect();
+        openLinesMenu(row, box.left - 150, box.bottom + 4);
+        return;
+      }
+      if (act && (act.dataset.act === "pause" || act.dataset.act === "resume")) {
+        try {
+          const body = await sendAlert("PATCH", { pair, id, paused: act.dataset.act === "pause" });
+          alertItems = alertItems.map((row) => row.pair === pair && row.id === id ? body.alert : row);
+          if (pair === currentPair()) loadDrawings();
+          renderAlerts();
+        } catch (error) { alert("Не сохранилось: " + error.message); }
+        return;
+      }
+      if (act && act.dataset.act === "rearm") {
+        try {
+          const body = await sendAlert("PATCH", { pair, id });
+          alertItems = alertItems.map((row) => row.pair === pair && row.id === id ? body.alert : row);
+          if (pair === currentPair()) loadDrawings();
+          renderAlerts();
+        } catch (error) { alert("Не включился: " + error.message); }
+        return;
+      }
+      if (pairSelect && pair !== pairSelect.value) {
+        addPairOption(pair, "");
+        pairSelect.value = pair;
+        pairSelect.dispatchEvent(new Event("change"));
+        return;
+      }
+      // Алерт этой пары — выделить его рисунок на графике.
+      if (drawings && alertMode && drawings.get(id)) {
+        drawings.select([id]);
+        showEditor();
+        renderAlerts();
+      }
+    });
+    // Шестерёнка алерта: по какому ряду проверять. Меню — как у цветных меток списка спредов.
+    let linesMenu = null;
+    function closeLinesMenu() { if (linesMenu) linesMenu.remove(); linesMenu = null; }
+    function openLinesMenu(row, x, y) {
+      closeLinesMenu();
+      if (!row) return;
+      const menu = document.createElement("div");
+      menu.className = "wl-menu al-lines";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = "Алерт " + row.pair + " — по спреду";
+      menu.append(title);
+      [["rate", "очищенному"], ["raw", "сырому"]].forEach(([value, label]) => {
+        const choice = document.createElement("button");
+        choice.type = "button";
+        choice.textContent = (row.lines === value ? "● " : "○ ") + label;
+        choice.addEventListener("click", async () => {
+          closeLinesMenu();
+          if (row.lines === value) return;
+          try {
+            const body = await sendAlert("PATCH", { pair: row.pair, id: row.id, lines: value });
+            alertItems = alertItems.map((item) => item.pair === row.pair && item.id === row.id ? body.alert : item);
+            renderAlerts();
+          } catch (error) { alert("Не сохранилось: " + error.message); }
+        });
+        menu.append(choice);
+      });
+      if (REPEATABLE.includes(row.kind)) {
+        const sep = document.createElement("div");
+        sep.className = "sep";
+        sep.textContent = "после срабатывания";
+        menu.append(sep);
+        [[false, 0, "выключиться"], [true, 5, "повторять, пауза 5 мин"], [true, 15, "повторять, пауза 15 мин"], [true, 60, "повторять, пауза 1 ч"]].forEach(([repeat, pause, label]) => {
+          const choice = document.createElement("button");
+          choice.type = "button";
+          const on = repeat ? row.repeat && row.pause_minutes === pause : !row.repeat;
+          choice.textContent = (on ? "● " : "○ ") + label;
+          choice.addEventListener("click", async () => {
+            closeLinesMenu();
+            if (on) return;
+            try {
+              const body = await sendAlert("PATCH", { pair: row.pair, id: row.id, repeat, ...(repeat ? { pause_minutes: pause } : {}) });
+              alertItems = alertItems.map((item) => item.pair === row.pair && item.id === row.id ? body.alert : item);
+              if (row.pair === currentPair()) loadDrawings();
+              renderAlerts();
+            } catch (error) { alert("Не сохранилось: " + error.message); }
+          });
+          menu.append(choice);
+        });
+      }
+      if (row.kind === "level-pct") {
+        const sep = document.createElement("div");
+        sep.className = "sep";
+        sep.textContent = "уровень, % спота";
+        const line = document.createElement("form");
+        line.className = "row";
+        const input = document.createElement("input");
+        input.type = "number";
+        input.step = "any";
+        input.value = String(+(row.data.share * 100).toFixed(6));
+        const save = document.createElement("button");
+        save.type = "submit";
+        save.textContent = "сохранить";
+        line.append(input, save);
+        line.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const share = Number(input.value) / 100;
+          if (!Number.isFinite(share)) return;
+          closeLinesMenu();
+          try {
+            const body = await sendAlert("PATCH", { pair: row.pair, id: row.id, share });
+            alertItems = alertItems.map((item) => item.pair === row.pair && item.id === row.id ? body.alert : item);
+            drawAlertLevels();
+            renderAlerts();
+          } catch (error) { alert("Не сохранилось: " + error.message); }
+        });
+        menu.append(sep, line);
+      }
+      if (row.kind === "parallel-channel") {
+        const sep = document.createElement("div");
+        sep.className = "sep";
+        sep.textContent = "срабатывать на";
+        menu.append(sep);
+        [["both", "границы и середину"], ["edges", "только границы"], ["middle", "только середину"]].forEach(([value, label]) => {
+          const choice = document.createElement("button");
+          choice.type = "button";
+          choice.textContent = (row.target === value ? "● " : "○ ") + label;
+          choice.addEventListener("click", async () => {
+            closeLinesMenu();
+            if (row.target === value) return;
+            try {
+              const body = await sendAlert("PATCH", { pair: row.pair, id: row.id, target: value });
+              alertItems = alertItems.map((item) => item.pair === row.pair && item.id === row.id ? body.alert : item);
+              renderAlerts();
+            } catch (error) { alert("Не сохранилось: " + error.message); }
+          });
+          menu.append(choice);
+        });
+      }
+      document.body.append(menu);
+      const box = menu.getBoundingClientRect();
+      menu.style.left = Math.max(4, Math.min(x, innerWidth - box.width - 4)) + "px";
+      menu.style.top = Math.max(4, Math.min(y, innerHeight - box.height - 4)) + "px";
+      linesMenu = menu;
+    }
+    document.addEventListener("pointerdown", (event) => {
+      if (linesMenu && !linesMenu.contains(event.target)) closeLinesMenu();
+    }, true);
+    // Сработавшие алерты — всплывающим сообщением, пока страница открыта.
+    function toast(text) {
+      const box = document.getElementById("toasts");
+      const node = document.createElement("div");
+      node.className = "toast";
+      node.textContent = text;
+      node.title = "Скрыть";
+      node.addEventListener("click", () => node.remove());
+      box.append(node);
+      setTimeout(() => node.remove(), 30000);
+    }
+    async function pollAlerts() {
+      if (VIEWER || alertsSeen === null) return;
+      try {
+        const response = await fetch("/api/alerts/?fired_after=" + encodeURIComponent(alertsSeen), { cache: "no-store" });
+        if (!response.ok) return;
+        const body = await response.json();
+        alertsSeen = body.now;
+        const fired = body.alerts || [];
+        if (!fired.length) return;
+        fired.forEach((row) => toast(row.fired_text || `🔔 ${row.pair}: алерт сработал`));
+        await loadAlerts();
+        if (alertMode && fired.some((row) => row.pair === currentPair())) loadDrawings();
+      } catch (error) { /* следующий опрос */ }
+    }
+    if (!VIEWER) {
+      loadAlerts();
+      setInterval(() => { if (!document.hidden) pollAlerts(); }, 15000);
+    }
     // Точки рисунка — во времени. На таймфрейме, где такого бара нет (12:35 на часе), библиотека
     // ставила точку мимо, и канал с 5 минут на часе уезжал. Поэтому при показе точка встаёт на
     // бар этого таймфрейма (12:35 → 12:00 на часе), а в хранилище остаётся исходная.
@@ -2028,12 +2727,14 @@
       mergeFrameDrawings();
       restoring = true;
       drawingOriginals.clear();
-      try { drawings.importJSON(snapJSON(localStorage.getItem(drawingKey()))); } catch (error) { drawings.clear(); }
+      try { drawings.importJSON(snapJSON(layerJSON())); } catch (error) { drawings.clear(); }
       drawings.drawings().forEach((item) => {
         if (item.kind === "parallel-channel" && item.style && item.style.levels) drawings.update({ ...item, style: dashMiddle({ ...item.style }) });
       });
       restoring = false;
       resetDrawHistory();
+      drawAlertLevels();
+      syncAddUnit();
     }
     const styleKey = "drawing-styles";
     function savedStyles() { return readStore(styleKey, {}) || {}; }
@@ -2093,7 +2794,14 @@
       document.getElementById("draw-style").value = style.lineStyle || "solid";
       document.getElementById("draw-alpha").value = style.transparency ?? 80;
       document.getElementById("draw-fill").checked = style.fillBackground !== false;
-      const one = !VIEWER && rows.length === 1 && rows[0].kind === "parallel-channel";
+      const single = !VIEWER && rows.length === 1 ? rows[0] : null;
+      const alertRow = single && alertIds.has(single.id) ? alertItems.find((row) => row.pair === currentPair() && row.id === single.id) : null;
+      document.getElementById("draw-alert").hidden = !(alertMode && single && !alertIds.has(single.id) && ALERT_KINDS.includes(single.kind));
+      const alertState = document.getElementById("draw-alert-state");
+      alertState.hidden = !alertRow;
+      alertState.textContent = alertRow ? `алерт #${alertNumber(alertRow)} · ${alertRow.lines === "raw" ? "по сырому" : "по очищенному"} · `
+        + ({ fired: "сработал", paused: "выключен" }[alertRow.status] || "ждёт") : "";
+      const one = !VIEWER && rows.length === 1 && rows[0].kind === "parallel-channel" && !alertRow;
       const shared = one ? published.find((item) => item.id === rows[0].id) : null;
       document.getElementById("draw-pub").hidden = !one;
       document.getElementById("draw-unpublish").hidden = !shared;
@@ -2122,9 +2830,14 @@
     document.getElementById("draw-alpha").addEventListener("input", (event) => restyle({ transparency: Number(event.target.value) }));
     document.getElementById("draw-fill").addEventListener("change", (event) => restyle({ fillBackground: event.target.checked }));
     document.getElementById("draw-delete").addEventListener("click", () => removeDrawings(drawings.selection()));
-    if (drawings) drawings.on("selection", showEditor);
+    document.getElementById("draw-alert").addEventListener("click", () => {
+      const id = drawings.selection()[0];
+      if (id) makeAlert(id);
+    });
+    if (drawings) drawings.on("selection", () => { showEditor(); if (alertMode) renderAlerts(); });
     if (drawings) drawings.on("tool", () => markTool(drawings.tool() || ""));
     if (drawings) drawings.on("add", (item) => {
+      if (alertMode && !restoring && ALERT_KINDS.includes(item.kind)) setTimeout(() => makeAlert(item.id), 0);
       if (item.kind !== "parallel-channel" || !item.style || !item.style.levels) return;
       drawings.update({ ...item, style: dashMiddle({ ...item.style, levels: item.style.levels.map((level) => ({ ...level })) }) });
     });
@@ -2141,6 +2854,13 @@
     let pointerDown = false;
     let restoring = false;
     function saveDrawingsNow(json) {
+      // В режиме алертов на графике и обычные рисунки, и алерты: в браузер — только обычные.
+      if (alertIds.size) {
+        let items;
+        try { items = JSON.parse(json || "[]"); } catch (error) { items = []; }
+        syncAlerts(items.filter((item) => alertIds.has(item.id)));
+        json = JSON.stringify(items.filter((item) => !alertIds.has(item.id)));
+      }
       try { localStorage.setItem(drawingKey(), json); } catch (error) { /* хранилище недоступно */ }
     }
     function markHistory() {
@@ -2229,7 +2949,15 @@
       if (button.id === "draw-undo") { undoDrawing(); return; }
       if (button.id === "draw-redo") { redoDrawing(); return; }
       if (button.dataset.clear) {
-        if (confirm("Удалить все рисунки этой пары? Вернуть — Ctrl+Z.")) { askUnpublish(drawings.drawings().map((item) => item.id)); drawings.clear(); }
+        // В режиме алертов «удалить всё» не трогает алерты: их удаляют по одному (из списка или рисунка).
+        const keep = drawings.drawings().filter((item) => alertIds.has(item.id)).map((item) => item.id);
+        const note = keep.length ? `
+Алерты (${keep.length}) останутся — их удаляют по одному.` : "";
+        if (confirm("Удалить все рисунки этой пары? Вернуть — Ctrl+Z." + note)) {
+          const ids = drawings.drawings().map((item) => item.id).filter((id) => !keep.includes(id));
+          askUnpublish(ids);
+          ids.forEach((id) => drawings.remove(id));
+        }
         return;
       }
       if (!("tool" in button.dataset)) return;

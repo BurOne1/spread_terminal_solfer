@@ -993,3 +993,19 @@ class SpotFxTests(TestCase):
         make()
         made = Instrument.objects.get(code="EURUSD")
         self.assertEqual((made.pair.code, made.kind, made.finam_symbol), ("SIEUSPOT", "spot", ""))
+
+
+class SpotLookbackTests(TestCase):
+    """Спот — последний известный, даже старше окна LOOKBACK (выходные, праздники)."""
+
+    def test_last_spot_before_window_is_kept(self):
+        pair = Pair.objects.create(code="XSP", title="x", future_root="X", perp_code="", perp_symbol="", spot_code="XTOM", spot_symbol="")
+        spot = Instrument.objects.create(pair=pair, code="XTOM", finam_symbol="", kind="spot")
+        friday = datetime(2026, 11, 13, 15, 0, tzinfo=UTC)
+        candle(spot, friday - timedelta(hours=1), Decimal("12.29"), Decimal("12.30"))
+        candle(spot, friday, Decimal("12.30"), Decimal("12.3005"))
+        load_from = friday + timedelta(days=5)  # окно начинается позже последнего спота
+        rows = rebuild._spot_ohlc(spot, load_from)
+        self.assertEqual(rows, {friday: (Decimal("12.300000"), Decimal("12.300500"))})
+        self.assertEqual(rebuild._ohlc(spot, load_from), {})
+        self.assertEqual(rebuild.LOOKBACK, timedelta(days=4))

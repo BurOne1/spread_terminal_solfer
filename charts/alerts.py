@@ -123,17 +123,23 @@ def event_of(before, after):
     return ""
 
 
-def send(text, log=None):
-    """Сообщение в чат TELEGRAM_CHAT_ID. Без токена — только в лог."""
-    token, chat = settings.TELEGRAM_BOT_TOKEN, settings.TELEGRAM_CHAT_ID
+def send(text, log=None, chat=None, missing="TELEGRAM_CHAT_ID", html=False):
+    """Сообщение в чат TELEGRAM_CHAT_ID (или chat — личные алерты). Без токена или чата — только в лог.
+
+    html — текст с разметкой Телеграма (<b>жирный</b>, <i>курсив</i>); всё остальное в нём
+    должно быть экранировано (html.escape), иначе Телеграм сообщение не примет.
+    """
+    token = settings.TELEGRAM_BOT_TOKEN
+    chat = settings.TELEGRAM_CHAT_ID if chat is None else chat
     if not token or not chat:
         if log:
-            log("телеграм не настроен (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID): " + text.replace("\n", " | "))
+            log(f"телеграм не настроен (TELEGRAM_BOT_TOKEN, {missing}): " + text.replace("\n", " | "))
         return False
     # Токен — часть адреса Bot API: в логи идёт только причина от Телеграма, без адреса.
     try:
         response = httpx.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                              json={"chat_id": chat, "text": text, "disable_web_page_preview": True}, timeout=10.0)
+                              json={"chat_id": chat, "text": text, "disable_web_page_preview": True,
+                                    **({"parse_mode": "HTML"} if html else {})}, timeout=10.0)
     except httpx.HTTPError as exc:
         if log:
             log(f"телеграм недоступен: {type(exc).__name__}")

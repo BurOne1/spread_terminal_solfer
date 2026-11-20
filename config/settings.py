@@ -127,6 +127,10 @@ ACCESS_DEFAULT_GROUP = os.environ.get("ACCESS_DEFAULT_GROUP", "")
 # Оповещения о каналах в Телеграм (charts/alerts.py). Пусто — не отправлять.
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+# Личные алерты по рисункам (charts/user_alerts.py) — отдельный чат, тем же ботом. Пусто — только в лог.
+TELEGRAM_ALERT_CHAT_ID = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "")
+# run_live: раз в столько секунд пересчёт спреда и проверка алертов (market/live.py).
+LIVE_FLUSH_SECONDS = float(os.environ.get("LIVE_FLUSH_SECONDS", "3"))
 FINAM_BASE_URL = os.environ.get("FINAM_BASE_URL", "https://api.finam.ru")
 # Сервис котировок спота USDCNY и EURUSD для CRSISPOT и SIEUSPOT (market/spotfx.py). Пусто — не опрашивать.
 FX_CHECK_URL = os.environ.get("FX_CHECK_URL", "http://172.16.207.80:3002/check")

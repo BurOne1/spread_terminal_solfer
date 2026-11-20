@@ -17,7 +17,7 @@ class Command(BaseCommand):
         pair, created = Pair.objects.update_or_create(
             code="USD",
             defaults={
-                "title": "доллар",
+                "title": "SI - USDRUBF",
                 "future_root": "Si",
                 "perp_code": "USDRUBF",
                 "perp_symbol": "USDRUBF@RTSX",

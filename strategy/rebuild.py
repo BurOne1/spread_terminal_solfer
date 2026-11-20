@@ -29,7 +29,9 @@ from rates.models import RateDay
 from strategy.build import build_points, money, stepper
 from strategy.models import BAR_FIELDS, SpreadBar, SpreadBarM5
 
-LOOKBACK = timedelta(days=7)
+# Окно чтения свечей при пересчёте хвоста: since − LOOKBACK. Спот обычных пар не ограничен им —
+# последняя его свеча до окна берётся отдельно (_spot_ohlc): спот не торгуется в выходные и праздники.
+LOOKBACK = timedelta(days=4)
 # Кросс-пары: последняя цена ноги CME (CNH, 6E) годится для часа Мосбиржи не дольше этого.
 CROSS_FILL = timedelta(hours=4)
 RATE_LOOKBACK = timedelta(days=30)
@@ -198,6 +200,19 @@ def _ohlc(instrument, load_from):
     return {ts: (open_, close) for ts, open_, close in rows.values_list("ts", "open", "close")}
 
 
+def _spot_ohlc(instrument, load_from):
+    """Свечи спота с load_from плюс последняя до него: спот берётся «последний известный»,
+    а в выходные и праздники он не торгуется дольше окна LOOKBACK."""
+    rows = _ohlc(instrument, load_from)
+    if instrument is not None and load_from is not None:
+        model = MinuteCandle if _m5() else Candle
+        before = (model.objects.filter(instrument=instrument, ts__lt=load_from).order_by("-ts")
+                  .values_list("ts", "open", "close").first())
+        if before is not None:
+            rows[before[0]] = (before[1], before[2])
+    return rows
+
+
 def _ohlc_many(instruments, load_from):
     """{id инструмента: {час: (open, close)}} одним запросом."""
     found = {instrument.id: {} for instrument in instruments}
@@ -292,7 +307,7 @@ def _rebuild_pair(pair, since=None):
     if not perp_rows:
         return 0
     spot = Instrument.objects.filter(pair=pair, code=pair.spot_code).first()
-    spot_rows = _ohlc(spot, load_from) if spot is not None else {}
+    spot_rows = _spot_ohlc(spot, load_from) if spot is not None else {}
     futures = _traded(_quarters(pair, load_from, scale))
     if not futures:
         return 0
@@ -401,7 +416,7 @@ def _rebuild_calendar(pair, since=None):
         domestic = _stepper([(day, value) for day, value, _other in rates])
         foreign = _stepper([(day, value) for day, _value, value in rates])
         spot = Instrument.objects.filter(pair=base, code=base.spot_code).first()
-        spot_rows = _ohlc(spot, load_from)
+        spot_rows = _spot_ohlc(spot, load_from)
     spots = [_stepper(sorted(_side(spot_rows, index).items())) for index in (0, 1)]
     rows = []
     for window in windows:

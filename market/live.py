@@ -33,7 +33,9 @@ from market.roll import contract_points
 
 WS_URL = "wss://api.finam.ru/ws"
 JWT_REFRESH = 11 * 60
-FLUSH_SECONDS = 5
+# Раз в столько секунд: котировки в базу, пересчёт хвостов спреда, проверка алертов.
+# LIVE_FLUSH_SECONDS в .env; по умолчанию 3. Длительность пересчёта видна в минутной сводке лога.
+FLUSH_SECONDS = float(getattr(settings, "LIVE_FLUSH_SECONDS", 3) or 3)
 # 5-минутки бирж по REST: раз в столько секунд. Пропуск после простоя — не глубже MINUTES_GAP.
 MINUTES_EVERY = 300
 # Хвост спреда 5 мин пересчитывается не чаще этого (часовой — каждые FLUSH_SECONDS).
@@ -112,42 +114,156 @@ def live_symbols():
 
     symbols = []
     for pair in pairs.values():
-        if pair.nymex:
-            symbols.extend(front_symbols(pair, now))
-            continue
-        if pair.cross:
-            symbols.extend(cross.front_symbols(pair, now))
-            continue
-        if pair.spotfx:
-            # Кварталы — у USD, CNY, EUR; спот — не Finam, его опрашивает _fx.
-            spec = spotfx.SPOTFX[pair.code]
-            for code in (spec["a_owner"], spec["c_owner"]):
-                symbols.extend(quarter_symbols(owner(code), now, 1))
-            continue
-        if pair.listed:
-            symbols.extend(ngcal.front_symbols(pair, now))
-            continue
-        if pair.ngnymex:
-            symbols.extend(ngnymex.front_symbols(pair, now))
-            continue
-        if pair.calendar:
-            symbols.extend(quarter_symbols(owner(pair.base), now, 2))
-            continue
-        if pair.foreign_source == "TRI":
-            # Вечный и SI уже подписаны парами GOLD/SILVER и USD.
-            if pair.base:
-                legs = ["TRIGD", "USD", "GOLD"] if pair.tri_code == "TRIGL" else [pair.tri_code, "USD"]
-                for code in legs:
-                    symbols.extend(quarter_symbols(owner(code), now, 2)[1:])
-            elif pair.code not in ("TRIGL", "TRIGDS", "TRISVS"):
-                # TRIGL, TRIGDS и TRISVS берут кварталы у TRIGD/TRISV, GOLD/SILVER и USD: те подписаны своими парами.
-                symbols.extend(quarter_symbols(pair, now, 1))
-            continue
-        symbols.extend([pair.perp_symbol, pair.spot_symbol])
-        symbols.extend(quarter_symbols(pair, now, 1))
+        symbols.extend(pair_symbols(pair, now, owner))
     if not symbols:
         symbols = [PERP_SYMBOL, SPOT_SYMBOL]
     return list(dict.fromkeys(symbol for symbol in symbols if symbol))
+
+
+def pair_symbols(pair, now, owner=None, full=False):
+    """Символы Finam ног пары для сокета. full — все ноги спреда, и те, что подписаны
+    другими парами (вечный и SI треугольников): нужны для возраста ног в алертах."""
+    owner = owner or (lambda code: Pair.objects.filter(code=code).first())
+    if pair.nymex:
+        return front_symbols(pair, now)
+    if pair.cross:
+        return cross.front_symbols(pair, now)
+    if pair.spotfx:
+        # Кварталы — у USD, CNY, EUR; спот — не Finam, его опрашивает _fx.
+        spec = spotfx.SPOTFX[pair.code]
+        return [symbol for code in (spec["a_owner"], spec["c_owner"]) for symbol in quarter_symbols(owner(code), now, 1)]
+    if pair.listed:
+        return ngcal.front_symbols(pair, now)
+    if pair.ngnymex:
+        return ngnymex.front_symbols(pair, now)
+    if pair.calendar:
+        return quarter_symbols(owner(pair.base), now, 2)
+    if pair.foreign_source == "TRI":
+        if full:
+            return _tri_legs(pair, now, owner)
+        symbols = []
+        # Вечный и SI уже подписаны парами GOLD/SILVER и USD.
+        if pair.base:
+            legs = ["TRIGD", "USD", "GOLD"] if pair.tri_code == "TRIGL" else [pair.tri_code, "USD"]
+            for code in legs:
+                symbols.extend(quarter_symbols(owner(code), now, 2)[1:])
+        elif pair.code not in ("TRIGL", "TRIGDS", "TRISVS"):
+            # TRIGL, TRIGDS и TRISVS берут кварталы у TRIGD/TRISV, GOLD/SILVER и USD: те подписаны своими парами.
+            symbols.extend(quarter_symbols(pair, now, 1))
+        return symbols
+    return [pair.perp_symbol, pair.spot_symbol, *quarter_symbols(pair, now, 1)]
+
+
+def _tri_legs(pair, now, owner):
+    """Три ноги треугольника: квартал металла, квартал SI и третья нога (вечный, спот металла или GL)."""
+    from strategy.rebuild import TRI_OWNER, TRI_PERP
+    code = pair.base or pair.code
+    position = 1 if pair.base else 0
+
+    def quarter(owner_code):
+        found = quarter_symbols(owner(owner_code), now, position + 1)
+        return found[position:position + 1]
+    metal = TRI_OWNER.get(code) or ("TRIGD" if code == "TRIGL" else code)
+    symbols = quarter(metal) + quarter("USD")
+    if code == "TRIGL":
+        symbols += quarter("GOLD")
+    elif code in ("TRIGDS", "TRISVS"):
+        symbols.append(pair.perp_symbol)
+    else:
+        perp = owner(TRI_PERP.get(code, ""))
+        if perp is not None:
+            symbols.append(perp.perp_symbol)
+    return symbols
+
+
+# Время последней сделки ноги из сокета (и спота сервиса котировок): id инструмента → время.
+_last_trade = {}
+# Ноги пары для алертов: символы считаются не чаще раза в LEGS_TTL (quarter_symbols ходит в базу).
+_legs_cache = {}
+LEGS_TTL = timedelta(minutes=10)
+
+
+# Стакан радара старше этого не считается: радар не работает или символ ему не нужен.
+BOOK_FRESH = timedelta(minutes=2)
+# Стаканы ног алертов из сокета run_live: символ → radar.detect.Book. Чистятся при переподключении.
+_books = {}
+# Раз в столько секунд сокет проверяет, не появились ли ноги новых или снова включённых алертов.
+BOOK_RECHECK = 20
+
+
+def book_update(symbol, rows):
+    from radar.detect import Book
+    if not symbol:
+        return
+    _books.setdefault(symbol, Book()).apply(rows)
+
+
+def book_state(symbol):
+    """True — в стакане есть и покупатели, и продавцы; False — одна сторона пуста; None — стакана нет."""
+    book = _books.get(symbol)
+    if book is None:
+        return None
+    return bool(book.bids) and bool(book.asks)
+
+
+def alert_book_symbols(now=None):
+    """Символы ног пар, у которых есть ждущие алерты: на них run_live подписывает стакан."""
+    from charts.models import Alert
+    now = now or datetime.now(timezone.utc)
+    pairs = Pair.objects.filter(active=True, alerts__status=Alert.ACTIVE).exclude(venue="bybit").distinct()
+    symbols = []
+    for pair in pairs:
+        symbols.extend(pair_symbols(pair, now, full=True))
+    return list(dict.fromkeys(symbol for symbol in symbols if symbol))
+
+
+def pair_legs(pair, now=None, memory=True):
+    """Ноги пары для алертов (charts/user_alerts.py): [Leg(имя, время, стакан, примерно)].
+
+    Время последней сделки — самое позднее из: лента радара (radar.Trade), сокет run_live
+    (бары и котировки, memory). Нет ни того, ни другого — начало последней 5-минутки ноги
+    в базе, approx=True: годится только для проверки «торговалась сегодня».
+    Стакан — из сокета run_live (подписка на ноги алертов), иначе BookState радара не старше
+    BOOK_FRESH: True — есть и покупатели, и продавцы, False — одна из сторон пуста, None — не знаем.
+    """
+    from charts.user_alerts import Leg
+    from radar.models import BookState, Trade
+    now = now or datetime.now(timezone.utc)
+    cached = _legs_cache.get(pair.code)
+    if cached is None or now - cached[0] > LEGS_TTL:
+        symbols = [symbol for symbol in dict.fromkeys(pair_symbols(pair, now, full=True)) if symbol]
+        instruments = [item for item in (find_instrument(symbol) for symbol in symbols) if item is not None]
+        if pair.spotfx:
+            spot = Instrument.objects.filter(code=spotfx.SPOTFX[pair.code]["spot"]).first()
+            if spot is not None:
+                instruments.append(spot)
+        cached = (now, [(item.id, (item.finam_symbol or item.code).split("@")[0], item.finam_symbol) for item in instruments])
+        _legs_cache[pair.code] = cached
+    symbols = [symbol for _id, _name, symbol in cached[1] if symbol]
+    books = {row.symbol: row for row in BookState.objects.filter(symbol__in=symbols, updated_at__gte=now - BOOK_FRESH)}
+    out = []
+    for instrument_id, name, symbol in cached[1]:
+        times = [Trade.objects.filter(symbol=symbol).order_by("-ts").values_list("ts", flat=True).first()] if symbol else []
+        if memory:
+            times.append(_last_trade.get(instrument_id))
+        times = [ts for ts in times if ts is not None]
+        approx = not times
+        if approx:
+            times = [MinuteCandle.objects.filter(instrument_id=instrument_id).order_by("-ts").values_list("ts", flat=True).first()]
+        # Стакан: свой из сокета run_live, иначе радара (run_radar), иначе неизвестно.
+        state = book_state(symbol) if memory and symbol else None
+        if state is None and symbol in books:
+            state = bool(books[symbol].bids) and bool(books[symbol].asks)
+        out.append(Leg(name, max(times) if times[0] is not None else None, state, approx, not symbol))
+    return out
+
+
+def _seen(instrument):
+    """Сокет прислал по ноге новые данные: для возраста ног в алертах."""
+    now = datetime.now(timezone.utc)
+    last = _last_trade.get(instrument.id)
+    if last is None or now > last:
+        _last_trade[instrument.id] = now
 
 
 def find_instrument(symbol):
@@ -325,6 +441,9 @@ def book_quote(instrument, ts, price):
     Возвращает текст для лога или None, если это обычный тик внутри часа.
     """
     now = datetime.now(timezone.utc)
+    last = _last_trade.get(instrument.id)
+    if last is None or ts > last:
+        _last_trade[instrument.id] = ts
     if not market_open(now):
         return f"биржа закрыта, {hour_floor(now):%Y-%m-%d %H:%M} не пишу"
     if now - ts > STALE_QUOTE:
@@ -568,7 +687,7 @@ def _resolve(symbols):
     return {symbol: find_instrument(symbol) for symbol in symbols}
 
 
-async def _socket(symbols, frame, token, log):
+async def _socket(symbols, frame, token, log, books=()):
     # Инструменты разрешаются один раз на сессию: на тик базы нет.
     known = await asyncio.to_thread(_resolve, symbols)
 
@@ -579,63 +698,100 @@ async def _socket(symbols, frame, token, log):
 
     headers = {"Authorization": f"Bearer {token}"}
     async with websockets.connect(WS_URL, additional_headers=headers, ping_interval=20, ping_timeout=60) as socket:
+        # Часовых баров сокета нет: час собирается из котировок и 5-минуток (refresh_minutes),
+        # 1ч и 5м всегда из одних данных.
+        # Котировки — по символу на подписку: списком Finam отвечает «Maximum number of symbols
+        # exceeded» и не присылает ни одной котировки (так подписывается и радар).
         for symbol in symbols:
             await socket.send(json.dumps({
                 "action": "SUBSCRIBE",
-                "type": "BARS",
-                "data": {"symbol": symbol, "timeframe": frame},
+                "type": "QUOTES",
+                "data": {"symbols": [symbol]},
                 "token": token,
             }))
-            log(f"подписка баров {symbol} {frame}")
-        await socket.send(json.dumps({
-            "action": "SUBSCRIBE",
-            "type": "QUOTES",
-            "data": {"symbols": symbols},
-            "token": token,
-        }))
-        log("подписка котировок: " + ", ".join(symbols))
-        async for raw in socket:
-            text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
-            try:
-                message = json.loads(text)
-            except json.JSONDecodeError:
-                log("сокет не JSON: " + text[:200])
-                continue
-            kind = message.get("type")
-            if kind == "ERROR":
-                log(f"Finam ошибка: {message.get('error_info') or message}")
-                continue
-            if kind == "EVENT":
-                log(f"Finam событие: {message.get('event_info')}")
-                continue
-            quotes = extract_quotes(message)
-            if quotes:
-                for quote in quotes:
-                    symbol = quote["symbol"] or message_symbol(message)
-                    instrument = await instrument_of(symbol)
-                    if instrument is None:
-                        continue
-                    detail = book_quote(instrument, quote["ts"], quote["price"])
-                    if detail and detail.startswith("новый час"):
-                        log(f"{symbol}: {detail}")
-                continue
-            if message.get("subscription_type") == "QUOTES":
-                continue
-            bars = extract_bars(message)
-            symbol = message_symbol(message)
-            if not bars:
-                if message.get("subscription_type") != "QUOTES":
-                    log("сокет без баров: " + text[:400].replace("\n", " "))
-                continue
-            if len(bars) > 2:
-                log(f"{symbol or '?'}: снимок {len(bars)} баров, пишу последний")
-                bars = bars[-1:]
-            if not symbol and len(symbols) == 1:
-                symbol = symbols[0]
-            if await instrument_of(symbol) is None:
-                log(f"нет инструмента для {symbol or '?'}")
-                continue
-            book_bars(symbol, bars)
+        log("подписка котировок по одному символу: " + ", ".join(symbols))
+        # Стакан — только ног пар с ждущими алертами: условие «в стакане кто-то есть» без run_radar.
+        _books.clear()
+        subscribed = set()
+
+        async def subscribe_books(wanted):
+            fresh = [symbol for symbol in wanted if symbol not in subscribed]
+            for symbol in fresh:
+                await socket.send(json.dumps({"action": "SUBSCRIBE", "type": "ORDER_BOOK", "data": {"symbol": symbol}, "token": token}))
+                subscribed.add(symbol)
+            if fresh:
+                log("подписка стакана для алертов: " + ", ".join(fresh))
+
+        async def follow_alerts():
+            """Новый или снова включённый алерт — стакан его ног без переподключения сокета."""
+            while True:
+                await asyncio.sleep(BOOK_RECHECK)
+                try:
+                    await subscribe_books(await asyncio.to_thread(alert_book_symbols))
+                except Exception as exc:
+                    log(f"подписка стакана для алертов не удалась: {exc}")
+
+        await subscribe_books(books)
+        follower = asyncio.create_task(follow_alerts())
+        from radar.stream import books_of, payload_of
+        try:
+            await _read(socket, symbols, instrument_of, log, books_of, payload_of)
+        finally:
+            follower.cancel()
+
+
+async def _read(socket, symbols, instrument_of, log, books_of, payload_of):
+    """Сообщения сокета: стаканы, котировки, бары."""
+    async for raw in socket:
+        text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+        try:
+            message = json.loads(text)
+        except json.JSONDecodeError:
+            log("сокет не JSON: " + text[:200])
+            continue
+        kind = message.get("type")
+        if kind == "ERROR":
+            log(f"Finam ошибка: {message.get('error_info') or message}")
+            continue
+        if kind == "EVENT":
+            log(f"Finam событие: {message.get('event_info')}")
+            continue
+        found = books_of(payload_of(message))
+        if found:
+            for symbol, rows in found:
+                book_update(symbol or message_symbol(message), rows)
+            continue
+        quotes = extract_quotes(message)
+        if quotes:
+            for quote in quotes:
+                symbol = quote["symbol"] or message_symbol(message)
+                instrument = await instrument_of(symbol)
+                if instrument is None:
+                    continue
+                detail = book_quote(instrument, quote["ts"], quote["price"])
+                if detail and detail.startswith("новый час"):
+                    log(f"{symbol}: {detail}")
+            continue
+        if message.get("subscription_type") == "QUOTES":
+            continue
+        bars = extract_bars(message)
+        symbol = message_symbol(message)
+        if not bars:
+            if message.get("subscription_type") != "QUOTES":
+                log("сокет без баров: " + text[:400].replace("\n", " "))
+            continue
+        if len(bars) > 2:
+            log(f"{symbol or '?'}: снимок {len(bars)} баров, пишу последний")
+            bars = bars[-1:]
+        if not symbol and len(symbols) == 1:
+            symbol = symbols[0]
+        instrument = await instrument_of(symbol)
+        if instrument is None:
+            log(f"нет инструмента для {symbol or '?'}")
+            continue
+        if len(bars) <= 2:
+            _seen(instrument)  # снимок при подписке — не сделка
+        book_bars(symbol, bars)
 
 
 async def _rates(log):
@@ -737,20 +893,28 @@ async def _fx(log):
 async def _flush(log):
     """Раз в FLUSH_SECONDS: свечи из памяти в базу, потом хвосты задетых пар."""
     pending = {}
+    spent = []
     logged = time.monotonic()
     while True:
-        await asyncio.sleep(FLUSH_SECONDS)
+        started = time.monotonic()
         try:
             done = await asyncio.to_thread(_flush_now, log)
         except Exception as exc:
             log(f"пересчёт спреда не удался: {exc}")
-            continue
+            done = {}
+        took = time.monotonic() - started
+        spent.append(took)
         for code, count in done.items():
             pending[code] = pending.get(code, 0) + count
-        if pending and time.monotonic() - logged >= LOG_EVERY:
-            log("пересчёт спреда за минуту: " + ", ".join(f"{code} {count}" for code, count in sorted(pending.items())))
-            pending = {}
+        if time.monotonic() - logged >= LOG_EVERY:
+            # Пересчёт дольше интервала — следующий начнётся сразу, без паузы: ВМ не успевает.
+            speed = f"; пересчёт в среднем {sum(spent) / len(spent):.2f} с, максимум {max(spent):.2f} с при интервале {FLUSH_SECONDS:g} с"
+            if pending:
+                log("пересчёт спреда за минуту: " + ", ".join(f"{code} {count}" for code, count in sorted(pending.items())) + speed)
+            pending, spent = {}, []
             logged = time.monotonic()
+        # Ровный шаг: пауза — остаток интервала после пересчёта.
+        await asyncio.sleep(max(0.0, FLUSH_SECONDS - took))
 
 
 _m5_at = 0.0
@@ -774,6 +938,16 @@ def _flush_now(log=None):
         except Exception as exc:
             if log:
                 log(f"пересчёт спреда 5 мин или его оповещения не удались: {exc}")
+    if done:
+        # Личные алерты по рисункам — сразу, по последнему значению спреда (charts/user_alerts.py).
+        from charts.user_alerts import check_alerts
+        try:
+            for code, event in check_alerts(done, log, legs=pair_legs):
+                if log:
+                    log(f"алерт {code}: {event}")
+        except Exception as exc:
+            if log:
+                log(f"проверка алертов не прошла: {exc}")
     if done:
         # Опубликованные каналы пересчитанных пар: оповещения в Телеграм.
         from charts.alerts import check_channels
@@ -810,7 +984,14 @@ async def run_forever(log):
             symbols = await asyncio.to_thread(live_symbols)
             log("символы: " + ", ".join(symbols))
             try:
-                await asyncio.to_thread(fill_gaps, symbols, frame, log)
+                books = await asyncio.to_thread(alert_book_symbols)
+            except Exception as exc:
+                books = []
+                log(f"ноги алертов для стакана не получены: {exc}")
+            try:
+                # Разрыв после простоя — 5-минутками бирж (не глубже MINUTES_GAP), часы — из них.
+                count = await asyncio.to_thread(refresh_minutes, symbols, log)
+                log(f"догрузка разрывов: {count} свечей 5 мин, часы пересобраны из них")
             except Exception as exc:
                 log(f"проверка разрывов не удалась: {exc}")
             client = FinamClient(settings.FINAM_API_SECRET, settings.FINAM_BASE_URL)
@@ -825,7 +1006,7 @@ async def run_forever(log):
             finally:
                 client.close()
             try:
-                await asyncio.wait_for(_socket(symbols, frame, token, log), timeout=JWT_REFRESH)
+                await asyncio.wait_for(_socket(symbols, frame, token, log, books), timeout=JWT_REFRESH)
                 log("сокет закрылся, переподключение")
             except asyncio.TimeoutError:
                 log("обновляю JWT и проверяю разрывы")
